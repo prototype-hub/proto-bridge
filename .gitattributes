@@ -1,0 +1,12 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+*.png binary
+*.ico binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
+*.jar binary
+
+# Upstream legal text hashes require byte-for-byte preservation.
+scripts/license-texts/** -text
+scripts/license-notices/** -text

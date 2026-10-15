@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <springProperty scope="context" name="LOG_FILE" source="logging.file.name"
+                    defaultValue="./data/logs/proto-bridge.log"/>
+    <springProperty name="ROOT_LEVEL" source="logging.level.root" defaultValue="INFO"/>
+    <springProperty name="MAX_FILE_SIZE" source="logging.logback.rollingpolicy.max-file-size" defaultValue="20MB"/>
+    <springProperty name="MAX_HISTORY" source="logging.logback.rollingpolicy.max-history" defaultValue="14"/>
+    <springProperty name="TOTAL_SIZE_CAP" source="logging.logback.rollingpolicy.total-size-cap" defaultValue="1GB"/>
+    <springProperty name="CONSOLE_THRESHOLD" source="logging.threshold.console" defaultValue="TRACE"/>
+    <springProperty name="FILE_THRESHOLD" source="logging.threshold.file" defaultValue="INFO"/>
+    <springProperty name="ASYNC_QUEUE_SIZE" source="logging.async.queue-size" defaultValue="2048"/>
+    <springProperty name="ASYNC_MAX_FLUSH_TIME" source="logging.async.max-flush-time" defaultValue="1000"/>
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>${CONSOLE_THRESHOLD}</level>
+        </filter>
+        <encoder class="com.gaiys.proto.logging.encoder.MaskedPatternLayoutEncoder">
+            <charset>${CONSOLE_LOG_CHARSET:-UTF-8}</charset>
+            <pattern>${CONSOLE_LOG_PATTERN}</pattern>
+        </encoder>
+    </appender>
+    <appender name="FILE" class="ch.qos.logback.core.rolling.RollingFileAppender">
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>${FILE_THRESHOLD}</level>
+        </filter>
+        <file>${LOG_FILE}</file>
+        <rollingPolicy class="ch.qos.logback.core.rolling.SizeAndTimeBasedRollingPolicy">
+            <fileNamePattern>${LOG_FILE}.%d{yyyy-MM-dd}.%i.gz</fileNamePattern>
+            <maxFileSize>${MAX_FILE_SIZE}</maxFileSize>
+            <maxHistory>${MAX_HISTORY}</maxHistory>
+            <totalSizeCap>${TOTAL_SIZE_CAP}</totalSizeCap>
+        </rollingPolicy>
+        <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+            <includeContext>false</includeContext>
+            <jsonGeneratorDecorator class="net.logstash.logback.mask.MaskingJsonGeneratorDecorator">
+                <valueMasker class="com.gaiys.proto.logging.masker.SensitiveValueMasker"/>
+            </jsonGeneratorDecorator>
+        </encoder>
+    </appender>
+    <!-- 控制台和文件分别异步输出；队列满时直接丢弃输出，避免阻塞响应式请求。 -->
+    <appender name="ASYNC_CONSOLE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>${ASYNC_QUEUE_SIZE}</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <maxFlushTime>${ASYNC_MAX_FLUSH_TIME}</maxFlushTime>
+        <neverBlock>true</neverBlock>
+        <includeCallerData>false</includeCallerData>
+        <appender-ref ref="CONSOLE"/>
+    </appender>
+    <appender name="ASYNC_FILE" class="ch.qos.logback.classic.AsyncAppender">
+        <queueSize>${ASYNC_QUEUE_SIZE}</queueSize>
+        <discardingThreshold>0</discardingThreshold>
+        <maxFlushTime>${ASYNC_MAX_FLUSH_TIME}</maxFlushTime>
+        <neverBlock>true</neverBlock>
+        <includeCallerData>false</includeCallerData>
+        <appender-ref ref="FILE"/>
+    </appender>
+    <root level="${ROOT_LEVEL}">
+        <appender-ref ref="ASYNC_CONSOLE"/>
+        <appender-ref ref="ASYNC_FILE"/>
+    </root>
+</configuration>

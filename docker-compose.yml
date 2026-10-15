@@ -1,0 +1,188 @@
+# 本机开发默认栈；数据端口仅绑定回环地址，ES 无认证配置不可直接用于生产。
+# 外部中间件模式请覆盖 proto 连接参数，并使用 docker compose up -d --no-deps proto。
+# 保留属性路径环境变量列表；.env 的 ADMIN_PASSWORD 仅用于首次创建管理员。
+services:
+    elasticsearch:
+        image: elasticsearch:8.19.19
+        container_name: elasticsearch
+        environment:
+            - discovery.type=single-node
+            - xpack.security.enabled=false
+            - bootstrap.memory_lock=true
+            - ES_JAVA_OPTS=-Xms1g -Xmx1g
+            - TZ=Asia/Shanghai
+        volumes:
+            - ./data/elasticsearch:/usr/share/elasticsearch/data
+        ports:
+            - "127.0.0.1:19200:9200"
+        ulimits:
+            memlock:
+                soft: -1
+                hard: -1
+        healthcheck:
+            test: ["CMD-SHELL", "curl --fail --silent 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+            interval: 10s
+            timeout: 10s
+            retries: 30
+            start_period: 30s
+        restart: unless-stopped
+        logging:
+            driver: json-file
+            options:
+                max-size: 1g
+    redis:
+        image: redis:8-alpine
+        container_name: redis
+        ports:
+            - "127.0.0.1:16379:6379"
+        volumes:
+            - "./data/redis:/data"
+        command: ["sh", "-c", 'exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"']
+        healthcheck:
+            test: ["CMD-SHELL", 'REDISCLI_AUTH="$$REDIS_PASSWORD" redis-cli ping | grep -q PONG']
+            interval: 5s
+            timeout: 3s
+            retries: 20
+        restart: unless-stopped
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "1g"
+        environment:
+            - TZ=Asia/Shanghai
+            - "REDIS_PASSWORD=${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}"
+    postgres:
+        image: postgres:18-alpine
+        container_name: proto_postgres
+        restart: unless-stopped
+        ports:
+            - "127.0.0.1:15432:5432"
+        volumes:
+            - "./data/postgres:/var/lib/postgresql"
+        healthcheck:
+            test: ["CMD-SHELL", "pg_isready -U postgres -d proto"]
+            interval: 5s
+            timeout: 3s
+            retries: 20
+        environment:
+            POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+            POSTGRES_DB: proto #数据库默认名称
+            TZ: Asia/Shanghai
+    proto:
+        image: ${PROTO_IMAGE:-proto-bridge:local}
+        build:
+            context: ./bootstrap
+        container_name: proto-bridge
+        ports:
+            - 8845:8845 # API端口
+        restart: unless-stopped
+        logging:
+            driver: "json-file"
+            options:
+                max-size: "3g"
+        volumes:
+            - "./data:/application/data"
+            - "./data/gcLog:/application/data/gcLog"
+            - "./data/dumpFile:/application/data/dumpFile"
+        depends_on:
+            postgres:
+                condition: service_healthy
+            redis:
+                condition: service_healthy
+            elasticsearch:
+                condition: service_healthy
+        environment:
+            - "TZ=Asia/Shanghai" # 时区配置
+            - "spring.jackson.time-zone=Asia/Shanghai" # JSON 日期时区配置
+            - "server.port=8845" # 服务端口配置
+            - "JAVA_OPTS=-Xms1G -Xmx1G \
+        -XX:+UseG1GC \
+        -XX:InitiatingHeapOccupancyPercent=60 \
+        -XX:G1ReservePercent=30 \
+        -Xlog:gc*:file=/application/data/gcLog/gc.log:time,uptime,tags \
+        -XX:+HeapDumpOnOutOfMemoryError \
+        -XX:HeapDumpPath=/application/data/dumpFile/dump.hprof \
+        -Xss512k \
+        --add-exports=java.desktop/sun.font=ALL-UNNAMED \
+        --add-opens java.base/java.lang=ALL-UNNAMED \
+        --add-opens java.base/java.util=ALL-UNNAMED \
+        --add-opens java.base/java.util.concurrent=ALL-UNNAMED \
+        --add-opens java.base/java.io=ALL-UNNAMED \
+        --add-opens java.base/java.net=ALL-UNNAMED \
+        --add-opens java.base/java.text=ALL-UNNAMED \
+        --add-opens java.base/java.math=ALL-UNNAMED \
+        --add-opens java.scripting/javax.script=ALL-UNNAMED \
+        -XX:+EnableDynamicAgentLoading"
+            - "spring.application.name=proto-bridge" # 应用名称配置
+            - "easyorm.default-schema=public" # 默认 schema，与 R2DBC 连接保持一致 # 数据库配置开始
+            - "easyorm.dialect=postgres" # 数据库方言配置
+            - "easyorm.auto-ddl=true" # 根据实体元数据创建缺失表、字段和索引配置
+            - "spring.r2dbc.url=r2dbc:postgresql://postgres:5432/proto" #数据库连接地址配置
+            - "spring.r2dbc.username=postgres" # 数据库用户名配置
+            - "spring.r2dbc.password=${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}" # 数据库密码配置
+            - "spring.r2dbc.pool.max-size=256" #数据库连接数
+            - "spring.http.codecs.max-in-memory-size=300MB" # WebFlux HTTP 编解码内存缓冲上限
+            - "proto.logging.elasticsearch.enabled=true" # 启用 ES 日志存储
+            - "spring.elasticsearch.uris=http://elasticsearch:9200"
+            - "spring.elasticsearch.username=" # ES 用户名；无认证时留空
+            - "spring.elasticsearch.password=" # ES 密码；无认证时留空
+            - "proto.logging.elasticsearch.api-key=" # ES API key；使用时优先于用户名密码
+            - "proto.logging.elasticsearch.ca-certificate=" # ES CA 证书的容器内路径；无自签证书时留空
+            - "spring.reactor.debug-agent.enabled=false"  #关闭Spring Reactor的debug-agent
+            - "proto.redis.enabled=true" # 启用 Redis 会话与登录临时数据
+            - "spring.data.redis.host=redis" # Redis配置开始
+            - "spring.data.redis.port=6379" # Redis 端口
+            - "spring.data.redis.database=0" # Redis 数据库
+            - "hsweb.cache.type=redis" # 使用同栈 Redis 保存权限缓存
+            - "spring.data.redis.username=" # Redis ACL 用户名；默认用户留空 # Redis 密码
+            - "spring.data.redis.password=${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env}" # Redis 密码
+            - "spring.data.redis.ssl.enabled=false" # 是否启用 Redis TLS
+            - "hsweb.authorize.token.default.timeout=86400000" # 令牌空闲超时，单位毫秒
+            - "hsweb.user-token.max-token-expires=1d" # Redis 令牌期限上限
+            - "logging.pattern.dateformat=yyyy-MM-dd'T'HH:mm:ss.SSSXXX,Asia/Shanghai" # 控制台日期格式与时区
+            - "logging.level.root=info" # 根日志级别
+            - "logging.level.io.r2dbc=warn" # warn 日志级别配置开始
+            - "logging.level.org.springframework.data=warn" # Spring Data 日志级别
+            - "logging.level.org.springframework=warn" # Spring 框架日志级别
+            - "logging.level.com.gaiys.proto=warn" # Proto 项目日志级别
+            - "logging.level.org.hswebframework=warn" # HSWeb 框架日志级别
+            - "logging.level.org.springframework.r2dbc=warn" # Spring R2DBC 日志级别
+            - "logging.level.org.hswebframework.ezorm=warn" # EZORM SQL 日志级别
+            - "logging.level.io.lettuce.core=warn" # Redis 客户端日志级别
+            - "logging.level.org.elasticsearch.client=warn" # ES REST 客户端日志级别
+            - "logging.level.co.elastic.clients=warn" # ES Java 客户端日志级别
+            - "logging.threshold.console=TRACE" # 控制台输出阈值
+            - "logging.threshold.file=INFO" # JSON 文件输出阈值
+            - "logging.file.name=./data/logs/$${spring.application.name}_$${server.port}.log" # $$ 保留 Spring 占位符，文件名跟随应用名和端口
+            - "proto.logging.system-enabled=true" # 启用系统日志采集
+            - "proto.logging.access-enabled=true" # 启用访问日志采集
+            - "proto.logging.system-min-level=INFO" # 系统日志采集最低级别
+            - "hsweb.cors.enable=true" # 启用 CORS
+            - "hsweb.cors.configs[0].path=/**" # CORS 配置开始
+            - "hsweb.cors.configs[0].allow-credentials=false" # 是否允许凭证
+            - "hsweb.cors.configs[0].allowed-headers=*" # 允许的请求头
+            - "hsweb.cors.configs[0].exposed-headers=X-Request-ID" # 公开的响应头
+            - "hsweb.cors.configs[0].max-age=1800" # 预检请求缓存时间
+            - "hsweb.cors.configs[0].allowed-origins=*" # 允许的源
+            - "hsweb.cors.configs[0].allowed-methods[0]=GET" # 允许的 HTTP 方法
+            - "hsweb.cors.configs[0].allowed-methods[1]=POST" # 允许的 HTTP 方法
+            - "hsweb.cors.configs[0].allowed-methods[2]=PUT" # 允许的 HTTP 方法
+            - "hsweb.cors.configs[0].allowed-methods[3]=PATCH" # 允许的 HTTP 方法
+            - "hsweb.cors.configs[0].allowed-methods[4]=DELETE" # 允许的 HTTP 方法
+            - "hsweb.cors.configs[0].allowed-methods[5]=OPTIONS" # 允许的 HTTP 方法
+            - "captcha.enabled=true" # 启用验证码
+            - "proto.security.login-encryption-enabled=true" # 启用登录密码 RSA 加密
+            - "prototype-hub.storage.root=./data/protohub" # 原型持久化目录
+            - "hsweb.file.upload.static-file-path=./data/system-files" # 系统图片持久化目录
+            - "spring.webflux.multipart.file-storage-directory=./data/proto-upload" # 临时上传目录
+            - "proto.admin.username=admin" # 初始管理员用户名
+            - "proto.admin.password=${ADMIN_PASSWORD:-}" # 首次创建管理员时填写，已有管理员不会被覆盖
+            - "proto.front.title=Proto Bridge" # 登录页系统标题
+            - "proto.front.logo=" # Logo URL；留空使用前端默认样式
+            - "proto.front.ico=" # 浏览器图标 URL；留空使用前端默认图标
+            - "proto.front.background=" # 登录背景图 URL；留空使用前端默认背景
+            - "proto.front.header-theme=light" # 顶栏主题
+            - "proto.front.show-record-number=false" # 是否显示备案信息
+            - "proto.front.record-number=" # ICP 备案号
+            - "proto.front.police-record-number=" # 公安备案号
+            - "proto.front.copyright=" # 版权信息

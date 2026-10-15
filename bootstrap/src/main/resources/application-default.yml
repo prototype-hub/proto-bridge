@@ -1,0 +1,136 @@
+# 常用部署变量：连接信息、日志级别、存储位置和登录/展示开关。
+# 实际值填写 config/application-local.yml；环境变量可以覆盖。
+# 固定超时、队列、限额等默认值写在 application.yml，按实际属性路径覆盖。
+
+# 服务
+# 服务器端口
+SERVER_PORT: '8080'
+# 日期时区
+APP_TIME_ZONE: 'Asia/Shanghai'
+
+# 数据库连接与结构同步
+# PostgreSQL 主机地址
+DB_HOST: 'localhost'
+# PostgreSQL 端口
+DB_PORT: '5432'
+# 数据库名
+DB_DATABASE: 'proto'
+# R2DBC 与 EasyORM 共用的 schema
+DB_SCHEMA: 'public'
+# 数据库用户名
+DB_USERNAME: 'proto'
+# 数据库密码（必须填写实际值）
+DB_PASSWORD: ''
+# R2DBC URL：默认自动由 DB_HOST/DB_PORT/DB_DATABASE 组合；也可填写完整地址及参数
+DATABASE_R2DBC_URL: 'r2dbc:postgresql://${DB_HOST}:${DB_PORT}/${DB_DATABASE}'
+# 兼容 DATABASE_USER 环境变量；通常修改 DB_USERNAME 即可
+DATABASE_USER: '${DB_USERNAME}'
+# 兼容 DATABASE_PASSWORD 环境变量；通常修改 DB_PASSWORD 即可
+DATABASE_PASSWORD: '${DB_PASSWORD}'
+# 连接池最大连接数
+DATABASE_POOL_MAX: '20'
+
+# Redis 连接与缓存开关
+# 是否启用 Redis
+REDIS_ENABLED: 'false'
+# 缓存类型
+HSWEB_CACHE_TYPE: 'caffeine'
+# Redis 主机地址
+REDIS_HOST: 'localhost'
+# Redis 端口号
+REDIS_PORT: '6379'
+# Redis 数据库编号
+REDIS_DATABASE: '2'
+# Redis 用户名
+REDIS_USERNAME: ''
+# Redis 密码
+REDIS_PASSWORD: ''
+# 是否启用 Redis SSL
+REDIS_SSL: 'false'
+
+# Elasticsearch 连接与日志开关
+# 是否启用 Elasticsearch
+ES_ENABLED: 'false'
+# Elasticsearch URI
+ES_URIS: 'http://localhost:9200'
+# Elasticsearch 用户名
+ES_USERNAME: ''
+# Elasticsearch 密码
+ES_PASSWORD: ''
+# API 密钥
+ES_API_KEY: ''
+# CA 证书
+ES_CA_CERTIFICATE: ''
+
+# 日志级别、输出与文件位置
+# 根日志级别
+LOG_LEVEL_ROOT: 'INFO'
+# 应用日志级别
+LOG_LEVEL_APP: 'INFO'
+# HsWeb 框架日志级别
+LOG_LEVEL_HSWEB: 'WARN'
+# Spring 框架日志级别
+LOG_LEVEL_SPRING: 'WARN'
+# R2DBC SQL 日志级别
+LOG_LEVEL_SQL: 'WARN'
+# Lettuce Redis 日志级别
+LOG_LEVEL_REDIS: 'WARN'
+# Elasticsearch 客户端日志级别
+LOG_LEVEL_ES: 'WARN'
+# 控制台输出阈值（TRACE/DEBUG/INFO/WARN/ERROR/OFF）
+LOG_CONSOLE_THRESHOLD: 'TRACE'
+# 文件输出阈值（TRACE/DEBUG/INFO/WARN/ERROR/OFF）
+LOG_FILE_THRESHOLD: 'INFO'
+# JSON 日志文件路径；默认用应用名和端口区分进程
+LOG_FILE: './data/logs/${spring.application.name}_${server.port}.log'
+# 系统日志是否启用
+SYSTEM_LOG_ENABLED: 'true'
+# 访问日志是否启用
+ACCESS_LOG_ENABLED: 'true'
+# 系统日志最小级别
+SYSTEM_LOG_MIN_LEVEL: 'INFO'
+
+# 文件存储位置
+# 存储根目录
+PROTOTYPE_HUB_STORAGE_ROOT: './data/protoHub'
+# 系统管理图片存储目录
+SYSTEM_FILE_STORAGE_ROOT: './data/system-files'
+# 文件存储目录
+UPLOAD_TEMP: './data/proto-upload'
+
+# 登录、跨域与初始管理员
+# 是否启用验证码
+CAPTCHA_ENABLED: 'false'
+# 登录加密是否启用
+LOGIN_ENCRYPTION_ENABLED: 'true'
+# 是否启用 CORS
+CORS_ENABLED: 'false'
+# 允许的源
+CORS_ALLOWED_ORIGINS: 'http://localhost:5173'
+# 管理员用户名
+ADMIN_USERNAME: 'admin'
+# 初始管理员密码（首次启动必须填写）
+ADMIN_USER_PASSWORD: ''
+# 兼容 ADMIN_PASSWORD 环境变量；通常修改 ADMIN_USER_PASSWORD 即可
+ADMIN_PASSWORD: '${ADMIN_USER_PASSWORD}'
+
+# 登录页展示
+# 系统标题
+FRONT_TITLE: 'Proto Bridge'
+# Logo URL；留空使用前端默认样式
+FRONT_LOGO: ''
+# 浏览器图标 URL；留空使用前端默认图标
+FRONT_ICO: ''
+# 登录背景图 URL；留空使用前端默认背景
+FRONT_BACKGROUND: ''
+# 顶栏主题
+FRONT_HEADER_THEME: 'light'
+# 是否显示备案信息
+FRONT_SHOW_RECORD_NUMBER: 'false'
+# ICP 备案号
+FRONT_RECORD_NUMBER: ''
+# 公安备案号
+FRONT_POLICE_RECORD_NUMBER: ''
+# 版权信息
+FRONT_COPYRIGHT: ''
+

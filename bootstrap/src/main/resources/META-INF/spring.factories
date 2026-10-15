@@ -1,0 +1,3 @@
+org.springframework.boot.diagnostics.FailureAnalyzer=\
+com.gaiys.proto.analyzer.DatabaseStartupFailureAnalyzer,\
+com.gaiys.proto.analyzer.AdministratorStartupFailureAnalyzer

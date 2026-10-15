@@ -1,0 +1,34 @@
+# Local configuration and runtime data
+.env
+.env.*
+!.env.example
+/config/
+application-local.yml
+application-local.yaml
+variables.yml
+/data/
+/logs/
+/bootstrap/config/
+/bootstrap/data/
+/bootstrap/logs/
+*.log
+*.hprof
+# Tooling, dependencies, builds and private test artifacts
+.idea/
+.vscode/
+.DS_Store
+**/target/
+**/node_modules/
+**/dist/
+/coverage/
+/playwright-report/
+/test-results/
+**/__pycache__/
+*.pyc
+SOURCE_MANIFEST.json
+# Historical/internal audit evidence remains local; public docs are explicit.
+doc/*
+!doc/public/
+!doc/SOURCE_PROVENANCE.md
+!doc/DEPENDENCY_BASELINE.md
+/build-and-push-docker.sh
