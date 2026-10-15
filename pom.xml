@@ -353,7 +353,7 @@
                                         <!-- resources:resources does not remove stale legal files. -->
                                         <delete dir="${project.build.outputDirectory}/META-INF/third-party"/>
                                         <exec executable="python3" failonerror="true">
-                                            <arg value="${maven.multiModuleProjectDirectory}/scripts/collect-third-party-licenses.py"/>
+                                            <arg value="${maven.multiModuleProjectDirectory}/tools/collect-third-party-licenses.py"/>
                                             <arg value="--dependencies"/><arg value="${project.build.directory}/license-dependencies.txt"/>
                                             <arg value="--repository"/><arg value="${settings.localRepository}"/>
                                             <arg value="--output"/><arg value="${project.build.directory}/generated-license-resources/META-INF/third-party"/>

@@ -30,7 +30,8 @@
     "bootstrap/src",
     "modules",
     "components",
-    "scripts",
+    "tools",
+    "third-party",
     "doc/public"
   ],
   "exclude": [

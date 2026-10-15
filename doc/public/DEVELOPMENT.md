@@ -6,7 +6,7 @@
 
 ```bash
 ./mvnw -B -ntp clean verify
-python3 scripts/verify-identifiers.py
+python3 tools/verify-identifiers.py
 ```
 
 集成测试需要 Docker 与可用的测试中间件环境，不使用生产数据库。确需格式化时运行 `./mvnw spotless:apply` 后审阅差异。选择性回归须写明实际范围，不能把单类通过描述成全量通过。

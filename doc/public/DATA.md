@@ -21,7 +21,7 @@
 需要重新生成资源时，先导出自己有权使用的菜单 JSON，并把下面的示例路径替换为实际文件（项目不依赖根目录历史 data.json）：
 
 ```bash
-python3 scripts/generate-menu-resource.py /path/to/exported-menu.json modules/system-manager/src/main/resources/menus/default-menus.json
+python3 tools/generate-menu-resource.py /path/to/exported-menu.json modules/system-manager/src/main/resources/menus/default-menus.json
 ```
 
 生成器保留源菜单 ID、父子结构和授权规则，将旧 PrototypeHub 技术 code、组件、路由及三项权限引用规范化为当前命名。`name` 保存中文，`i18nMessages.name.{zh_CN,en_US,en}` 保存翻译，按钮沿用扁平语言映射；已有自定义名称、外部 URL 和翻译不全局替换。详见 当前 `PrototypeHub/prototype-hub` 命名约定。
@@ -29,7 +29,7 @@ python3 scripts/generate-menu-resource.py /path/to/exported-menu.json modules/sy
 ## 旧数据库副本接入
 
 1. 暂停写入，保存 `pg_dump`、schema-only 导出和同窗口文件快照，在独立数据库中恢复副本。数据库、文件路径和分享凭据不得提交 Git。
-2. 运行 `scripts/preflight-db.sql`、`scripts/snapshot-db.sql` 与文件清单核对真实表名、类型、nullable、主键、索引、重复能力密钥及 ID/关联摘要。脚本默认当前 `p_*`，核验 V15 前旧表时显式使用 `-v prototype_hub_table_prefix=protohub_`。
+2. 运行 `tools/preflight-db.sql`、`tools/snapshot-db.sql` 与文件清单核对真实表名、类型、nullable、主键、索引、重复能力密钥及 ID/关联摘要。脚本默认当前 `p_*`，核验 V15 前旧表时显式使用 `-v prototype_hub_table_prefix=protohub_`。
 3. 若存在 `proto_*`/`protohub_*` 旧表名、旧权限前缀或不兼容字段，先审核并在副本显式转换；当前应用不自动执行历史 Flyway、不建立 baseline，也不从旧表猜测或覆盖新表数据。保留既有 Flyway history 作为原系统证据。
 4. 保持 `storagePath`、`entryFile`、previewKey、share token/accessKey 与文件目录一致。系统用户密码转换独立审核；分享密码保留 BCrypt，不转换成用户密码格式。
 5. 用当前应用在副本启动，验证自动同步、注释、菜单/角色/按钮、登录及已有原型分享；比较转换前后行数、ID/关联摘要和文件清单，再安排正式窗口。
