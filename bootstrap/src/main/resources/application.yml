@@ -1,0 +1,187 @@
+server: # 服务器配置
+  port: ${SERVER_PORT} # 服务器端口
+  max-http-request-header-size: 16KB # HTTP 请求头大小上限
+  error:
+    include-message: never # 错误细节由统一异常处理器控制
+spring: # Spring 配置
+  config:
+    import:
+      - classpath:application-default.yml # 公共默认变量
+  application: # 应用配置
+    name: proto-bridge # 应用名称
+  main: # 主配置
+    web-application-type: reactive # Web 应用类型
+  jackson:
+    time-zone: ${APP_TIME_ZONE} # 日期时区
+  r2dbc: # R2DBC 配置
+    url: ${DATABASE_R2DBC_URL} # pg数据库连接地址
+    username: ${DATABASE_USER} # 数据库用户名
+    password: ${DATABASE_PASSWORD} # 数据库密码
+    properties:
+      schema: ${easyorm.default-schema} # PostgreSQL 连接使用的 schema
+    pool:
+      enabled: true # 是否启用 R2DBC 连接池
+      initial-size: 2 # 连接池初始连接数
+      max-size: ${DATABASE_POOL_MAX} # 连接池最大连接数
+      max-idle-time: 10m # 连接最大空闲时间，超时后回收
+      max-acquire-time: 5s # 获取连接的最大等待超时时间
+      max-life-time: 30m # 连接最长生命周期
+      acquire-retry: 3 # 获取连接失败重试次数
+  data: # 数据配置
+    redis: # Redis 配置
+      host: ${REDIS_HOST} # Redis 主机地址
+      port: ${REDIS_PORT} # Redis 端口号
+      database: ${REDIS_DATABASE} # Redis 数据库编号
+      username: ${REDIS_USERNAME} # Redis 用户名
+      password: ${REDIS_PASSWORD} # Redis 密码
+      connect-timeout: 2s # 连接超时时间
+      timeout: 2s # 读取超时时间
+      ssl:
+        enabled: ${REDIS_SSL} # 是否启用 Redis SSL
+  elasticsearch: # Elasticsearch 配置
+    uris: ${ES_URIS} # Elasticsearch URI
+    username: ${ES_USERNAME} # Elasticsearch 用户名
+    password: ${ES_PASSWORD} # Elasticsearch 密码
+    connection-timeout: 2s # 连接超时时间
+    socket-timeout: 3s # 套接字超时时间
+  webflux: # WebFlux 配置
+    multipart:
+      max-disk-usage-per-part: 500MB # 每部分最大磁盘使用量
+      max-parts: 8 # 最大部分数
+      file-storage-directory: ${UPLOAD_TEMP} # 文件存储目录
+  http:
+    codecs:
+      max-in-memory-size: 2MB
+easyorm: # EasyORM 配置
+  dialect: postgres # 数据库方言
+  default-schema: ${DB_SCHEMA} # 默认 schema，与 R2DBC 连接保持一致
+  auto-ddl: true # 根据实体元数据创建缺失表、字段和索引
+management: # 管理端配置
+  endpoints: # 端点配置
+    web: # Web 端点配置
+      exposure: # 暴露端点
+        include: health,info # 暴露的端点
+  endpoint: # 端点配置
+    health: # 健康检查端点
+      probes: # 探针配置
+        enabled: true # 是否启用探针
+      show-details: never # 是否显示详细信息
+prototype-hub: # PrototypeHub 配置
+  storage: # 存储配置
+    root: ${PROTOTYPE_HUB_STORAGE_ROOT} # 存储根目录
+    max-upload-size-mb: 500 # 最大上传大小 MB
+    max-extracted-size-mb: 2048 # 最大解压大小 MB
+    max-zip-files: 20000 # 最大 ZIP 文件数
+    max-entry-search-depth: 6 # 最大条目搜索深度
+    max-html-size-mb: 20 # 最大 HTML 大小 MB
+    inspector-path: /api/prototype-hub/public/inspector.js # 检查器路径
+logging: # 日志配置
+  config: classpath:logback-spring.xml
+  pattern:
+    dateformat: "yyyy-MM-dd'T'HH:mm:ss.SSSXXX,${APP_TIME_ZONE}" # 控制台日期格式与时区
+  level:
+    root: ${LOG_LEVEL_ROOT} # 根日志级别
+    com.gaiys.proto: ${LOG_LEVEL_APP} # 应用日志级别
+    org.hswebframework: ${LOG_LEVEL_HSWEB} # HsWeb 框架日志级别
+    org.springframework: ${LOG_LEVEL_SPRING} # Spring 框架日志级别
+    org.springframework.r2dbc: ${LOG_LEVEL_SQL} # R2DBC SQL 日志级别
+    org.hswebframework.ezorm: ${LOG_LEVEL_SQL} # EZORM SQL 日志级别
+    io.lettuce.core: ${LOG_LEVEL_REDIS} # Lettuce Redis 日志级别
+    org.elasticsearch.client: ${LOG_LEVEL_ES} # Elasticsearch REST 客户端日志级别
+    co.elastic.clients: ${LOG_LEVEL_ES} # Elasticsearch Java 客户端日志级别
+  threshold:
+    console: ${LOG_CONSOLE_THRESHOLD} # 控制台输出最低级别
+    file: ${LOG_FILE_THRESHOLD} # 文件输出最低级别
+  async:
+    queue-size: 2048 # 控制台、文件分别使用独立有界队列
+    max-flush-time: 1000 # 关闭时等待队列刷新的毫秒数
+  logback:
+    rollingpolicy:
+      max-file-size: 20MB # 日志文件最大大小
+      max-history: 14 # 日志文件最大历史记录
+      total-size-cap: 1GB # 日志文件总大小上限
+  file:
+    name: ${LOG_FILE} # 日志文件名
+captcha: # 验证码配置
+  enabled: ${CAPTCHA_ENABLED} # 是否启用验证码
+  ttl: 2m # 验证码有效期
+hsweb: # HsWeb 配置
+  file:
+    upload:
+      static-file-path: ${SYSTEM_FILE_STORAGE_ROOT} # Logo/背景/图标独立存储目录（上传限 5 MiB）
+  cache: # 缓存配置
+    type: ${HSWEB_CACHE_TYPE} # 缓存类型
+    redis: # Redis 缓存配置
+      bean-name: hswebRedisOperations
+      local-cache-type: caffeine
+    caffeine: # Caffeine 缓存配置
+      maximum-size: 10000 # 缓存最大容量
+      expire-after-write: 10m # 缓存写入后过期时间
+      expire-after-access: 1m # 缓存访问后过期时间
+  user-token: # 用户令牌配置
+    allopatric-login-mode: allow # 允许异地登录模式
+    max-token-expires: 30m # 最大令牌过期时间
+  cors: # 跨域资源共享配置
+    enable: ${CORS_ENABLED} # 是否启用 CORS
+    configs:
+      - path: /**
+        allowed-origins: ${CORS_ALLOWED_ORIGINS} # 允许的源
+        allowed-methods: [GET, POST, PUT, PATCH, DELETE, OPTIONS] # 允许的方法
+        allowed-headers: [Content-Type, Authorization, X-Access-Token, X-Request-ID] # 允许的头
+        exposed-headers: [X-Request-ID] # 暴露的头
+        allow-credentials: false # 是否允许凭证
+        max-age: 1800 # 最大年龄
+  webflux: # WebFlux 配置
+    response-wrapper:
+      excludes:
+        - org.springdoc.
+  authorize: # 授权配置
+    auto-parse: true
+    token: # 令牌配置
+      default:
+        timeout: 1800000 # 令牌空闲超时时间
+        header-name: X-Access-Token
+  web: # Web 配置
+    mappings:
+      authorize: authorize
+proto: # Proto 配置
+  front: # 登录页公开展示配置；仅这些字段通过 /system/config/front 返回
+    title: ${FRONT_TITLE} # 系统标题
+    logo: ${FRONT_LOGO} # Logo URL
+    ico: ${FRONT_ICO} # 浏览器图标 URL
+    background: ${FRONT_BACKGROUND} # 登录背景图 URL
+    header-theme: ${FRONT_HEADER_THEME} # 顶栏主题
+    show-record-number: ${FRONT_SHOW_RECORD_NUMBER} # 是否显示备案信息
+    record-number: ${FRONT_RECORD_NUMBER} # ICP 备案号
+    police-record-number: ${FRONT_POLICE_RECORD_NUMBER} # 公安备案号
+    copyright: ${FRONT_COPYRIGHT} # 版权信息
+  redis:
+    enabled: ${REDIS_ENABLED} # 是否启用 Redis
+  security: # 安全配置
+    authentication-requests-per-minute: 100 # 认证请求每分钟限制
+    login-encryption-enabled: ${LOGIN_ENCRYPTION_ENABLED} # 登录加密是否启用
+  logging: # 日志配置
+    system-enabled: ${SYSTEM_LOG_ENABLED} # 系统日志是否启用
+    access-enabled: ${ACCESS_LOG_ENABLED} # 访问日志是否启用
+    system-min-level: ${SYSTEM_LOG_MIN_LEVEL} # 系统日志最小级别
+    local-capacity: 10000 # 本地日志容量
+    local-write-queue-capacity: 2048 # 本地日志写队列容量
+    local-retention: 1d # 本地日志保留时间
+    elasticsearch: # Elasticsearch 配置
+      enabled: ${ES_ENABLED} # 是否启用 Elasticsearch
+      data-stream: proto-bridge-logs # 日志数据流
+      ilm-policy: proto-bridge-logs-retention # ILM 策略
+      retention-days: 30 # 日志保留天数
+      replicas: 0 # 复制份数
+      api-key: ${ES_API_KEY} # API 密钥
+      ca-certificate: ${ES_CA_CERTIFICATE} # CA 证书
+      manage-template: true # 是否管理模板
+      batch-size: 100 # 批量大小
+      queue-capacity: 2048 # 队列容量
+      flush-interval: 1s # 刷新间隔
+      max-retries: 3 # 最大重试次数
+      retry-backoff: 200ms # 重试退避时间
+      request-timeout: 3s # 请求超时时间
+  admin: # 管理员配置
+    username: ${ADMIN_USERNAME} # 管理员用户名
+    password: ${ADMIN_PASSWORD} # 管理员密码

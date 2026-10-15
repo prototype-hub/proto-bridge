@@ -1,0 +1,7 @@
+# Root context is intentionally restricted; ./bootstrap has its own context policy.
+**
+!bootstrap/
+!bootstrap/Dockerfile
+!bootstrap/docker-entrypoint.sh
+!bootstrap/target/
+!bootstrap/target/bootstrap-1.0.0.jar

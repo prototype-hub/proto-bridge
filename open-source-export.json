@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "project": "prototype-hub-backend",
+  "files": [
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    ".gitignore",
+    ".dockerignore",
+    ".gitattributes",
+    ".env.example",
+    "open-source-export.json",
+    "pom.xml",
+    "mvnw",
+    "mvnw.cmd",
+    "lombok.config",
+    "docker-compose.yml",
+    "doc/SOURCE_PROVENANCE.md",
+    "doc/DEPENDENCY_BASELINE.md",
+    "bootstrap/Dockerfile",
+    "bootstrap/docker-entrypoint.sh",
+    "bootstrap/pom.xml",
+    "bootstrap/.dockerignore",
+    ".mvn/maven.config"
+  ],
+  "directories": [
+    ".mvn",
+    "bootstrap/src",
+    "modules",
+    "components",
+    "scripts",
+    "doc/public"
+  ],
+  "exclude": [
+    "**/.DS_Store",
+    "**/__pycache__/**"
+  ],
+  "sourceExtensions": [
+    ".java",
+    ".xml",
+    ".properties",
+    ".yml",
+    ".yaml",
+    ".json",
+    ".js",
+    ".ts",
+    ".vue",
+    ".css",
+    ".svg",
+    ".html",
+    ".md",
+    ".txt",
+    ".py",
+    ".sh",
+    ".sql",
+    ".example",
+    ".factories",
+    ".imports"
+  ]
+}

@@ -1,0 +1,1245 @@
+[
+  {
+    "id": "131a644480a0c3253a08103fedfe3280",
+    "name": "原型管理",
+    "code": "prototype-hub",
+    "url": "/prototype-hub",
+    "icon": "DeploymentUnitOutlined",
+    "sortIndex": 1,
+    "describe": "",
+    "assetType": null,
+    "indirectMenus": [],
+    "options": {
+      "show": true,
+      "meta": {
+        "componentCode": ""
+      }
+    },
+    "i18nMessages": {
+      "name": {
+        "zh_CN": "原型管理",
+        "en_US": "Prototype Management",
+        "en": "Prototype Management"
+      }
+    },
+    "owner": "proto",
+    "enabled": true,
+    "accessSupport": "unsupported",
+    "componentCode": "prototype-hub",
+    "permissions": [],
+    "buttons": [],
+    "children": [
+      {
+        "id": "protohub",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "原型项目",
+        "code": "prototype-hub/Project",
+        "url": "/prototype-hub",
+        "icon": null,
+        "sortIndex": 1,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "原型项目",
+            "en_US": "Prototype Projects",
+            "en": "Prototype Projects"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/Project",
+        "permissions": [
+          {
+            "permission": "prototype-hub-project",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "prototype-hub-project",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "prototype-hub-version",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "prototype-hub-share",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "prototype-hub-project",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "prototype-hub-version",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "prototype-hub-share",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "prototype-hub-project",
+                "actions": [
+                  "delete"
+                ]
+              },
+              {
+                "permission": "prototype-hub-version",
+                "actions": [
+                  "delete"
+                ]
+              },
+              {
+                "permission": "prototype-hub-share",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "id": "615414e79a20b30ea5e0babd4e2ef756",
+    "name": "系统管理",
+    "code": "system",
+    "url": "/system",
+    "icon": "SettingOutlined",
+    "sortIndex": 2,
+    "describe": "",
+    "assetType": null,
+    "indirectMenus": [],
+    "options": {
+      "show": true,
+      "meta": {
+        "componentCode": ""
+      }
+    },
+    "i18nMessages": {
+      "name": {
+        "zh_CN": "系统管理",
+        "en_US": "System Management",
+        "en": "System Management"
+      }
+    },
+    "owner": "proto",
+    "enabled": true,
+    "accessSupport": "unsupported",
+    "componentCode": "system",
+    "permissions": [],
+    "buttons": [],
+    "children": [
+      {
+        "id": "system-basis",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "基础配置",
+        "code": "system/Basis",
+        "url": "/system/basis",
+        "icon": null,
+        "sortIndex": 1,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "基础配置",
+            "en_US": "Basic Configuration",
+            "en": "Basic Configuration"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Basis",
+        "permissions": [
+          {
+            "permission": "system-config",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "file",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "system-config",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-user",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "用户管理",
+        "code": "system/User",
+        "url": "/system/user",
+        "icon": null,
+        "sortIndex": 2,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "用户管理",
+            "en_US": "User Management",
+            "en": "User Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/User",
+        "permissions": [
+          {
+            "permission": "user",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "user",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "user",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "user",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "action",
+            "name": "操作",
+            "permissions": [
+              {
+                "permission": "user",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "操作",
+              "en_US": "Actions",
+              "en": "Actions"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-org",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "组织管理",
+        "code": "system/Department",
+        "url": "/system/department",
+        "icon": null,
+        "sortIndex": 3,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "组织管理",
+            "en_US": "Organization Management",
+            "en": "Organization Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Department",
+        "permissions": [
+          {
+            "permission": "organization",
+            "actions": [
+              "query"
+            ]
+          },
+          {
+            "permission": "user",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "organization",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "organization",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "organization",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "bind",
+            "name": "绑定/解绑成员",
+            "permissions": [
+              {
+                "permission": "organization",
+                "actions": [
+                  "query",
+                  "save"
+                ]
+              },
+              {
+                "permission": "user",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "绑定/解绑成员",
+              "en_US": "Bind/Unbind Members",
+              "en": "Bind/Unbind Members"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-role",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "角色管理",
+        "code": "system/Role",
+        "url": "/system/role",
+        "icon": null,
+        "sortIndex": 4,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "角色管理",
+            "en_US": "Role Management",
+            "en": "Role Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Role",
+        "permissions": [
+          {
+            "permission": "role",
+            "actions": [
+              "query"
+            ]
+          },
+          {
+            "permission": "menu",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "role",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "menu",
+                "actions": [
+                  "query",
+                  "grant"
+                ]
+              },
+              {
+                "permission": "role",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "role",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "groupUpdate",
+            "name": "保存角色分组",
+            "permissions": [
+              {
+                "permission": "role",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "保存角色分组",
+              "en_US": "Save Role Group",
+              "en": "Save Role Group"
+            }
+          },
+          {
+            "id": "groupDelete",
+            "name": "删除角色分组",
+            "permissions": [
+              {
+                "permission": "role",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除角色分组",
+              "en_US": "Delete Role Group",
+              "en": "Delete Role Group"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-menu",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "菜单管理",
+        "code": "system/Menu",
+        "url": "/system/menu",
+        "icon": null,
+        "sortIndex": 5,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "菜单管理",
+            "en_US": "Menu Management",
+            "en": "Menu Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Menu",
+        "permissions": [
+          {
+            "permission": "menu",
+            "actions": [
+              "query"
+            ]
+          },
+          {
+            "permission": "permission",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "file",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "menu",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "file",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "menu",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "menu",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "grant",
+            "name": "授权",
+            "permissions": [
+              {
+                "permission": "menu",
+                "actions": [
+                  "grant"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "授权",
+              "en_US": "Grant",
+              "en": "Grant"
+            }
+          },
+          {
+            "id": "import",
+            "name": "导入",
+            "permissions": [
+              {
+                "permission": "menu",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导入",
+              "en_US": "Import",
+              "en": "Import"
+            }
+          },
+          {
+            "id": "export",
+            "name": "导出",
+            "permissions": [
+              {
+                "permission": "menu",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导出",
+              "en_US": "Export",
+              "en": "Export"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-permission",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "权限管理",
+        "code": "system/Permission",
+        "url": "/system/permission",
+        "icon": null,
+        "sortIndex": 6,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "权限管理",
+            "en_US": "Permission Management",
+            "en": "Permission Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Permission",
+        "permissions": [
+          {
+            "permission": "permission",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "permission",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "permission",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "permission",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "import",
+            "name": "导入",
+            "permissions": [
+              {
+                "permission": "permission",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导入",
+              "en_US": "Import",
+              "en": "Import"
+            }
+          },
+          {
+            "id": "export",
+            "name": "导出",
+            "permissions": [
+              {
+                "permission": "permission",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导出",
+              "en_US": "Export",
+              "en": "Export"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-dictionary",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "数据字典",
+        "code": "system/Dictionary",
+        "url": "/system/dictionary",
+        "icon": null,
+        "sortIndex": 7,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "数据字典",
+            "en_US": "Data Dictionary",
+            "en": "Data Dictionary"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Dictionary",
+        "permissions": [
+          {
+            "permission": "dictionary",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "dictionary",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "dictionary",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "dictionary",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "import",
+            "name": "导入",
+            "permissions": [
+              {
+                "permission": "dictionary",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导入",
+              "en_US": "Import",
+              "en": "Import"
+            }
+          },
+          {
+            "id": "down",
+            "name": "下载",
+            "permissions": [
+              {
+                "permission": "dictionary",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "下载",
+              "en_US": "Download",
+              "en": "Download"
+            }
+          }
+        ]
+      },
+      {
+        "id": "system-position",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "职位管理",
+        "code": "system/Positions",
+        "url": "/system/positions",
+        "icon": null,
+        "sortIndex": 8,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "职位管理",
+            "en_US": "Position Management",
+            "en": "Position Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Positions",
+        "permissions": [
+          {
+            "permission": "position",
+            "actions": [
+              "query"
+            ]
+          },
+          {
+            "permission": "organization",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "新增",
+            "permissions": [
+              {
+                "permission": "position",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "新增",
+              "en_US": "Add",
+              "en": "Add"
+            }
+          },
+          {
+            "id": "update",
+            "name": "编辑",
+            "permissions": [
+              {
+                "permission": "position",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "编辑",
+              "en_US": "Edit",
+              "en": "Edit"
+            }
+          },
+          {
+            "id": "delete",
+            "name": "删除",
+            "permissions": [
+              {
+                "permission": "position",
+                "actions": [
+                  "delete"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "删除",
+              "en_US": "Delete",
+              "en": "Delete"
+            }
+          },
+          {
+            "id": "bind",
+            "name": "绑定/解绑成员",
+            "permissions": [
+              {
+                "permission": "position",
+                "actions": [
+                  "save"
+                ]
+              },
+              {
+                "permission": "organization",
+                "actions": [
+                  "query",
+                  "save"
+                ]
+              },
+              {
+                "permission": "user",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "绑定/解绑成员",
+              "en_US": "Bind/Unbind Members",
+              "en": "Bind/Unbind Members"
+            }
+          }
+        ]
+      },
+      {
+        "id": "ef25fdb5d2af0a56ee43dfb2e6f5a983",
+        "parentId": "615414e79a20b30ea5e0babd4e2ef756",
+        "name": "日志管理",
+        "code": "system/Log",
+        "url": "/system/Log",
+        "icon": "ReadOutlined",
+        "sortIndex": 9,
+        "describe": "",
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true,
+          "meta": {
+            "componentCode": ""
+          }
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "日志管理",
+            "en_US": "Log Management",
+            "en": "Log Management"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "system/Log",
+        "permissions": [],
+        "buttons": [],
+        "children": [
+          {
+            "id": "system-access-log",
+            "parentId": "ef25fdb5d2af0a56ee43dfb2e6f5a983",
+            "name": "访问日志",
+            "code": "system/Log/Access",
+            "url": "/system/log/access",
+            "icon": null,
+            "sortIndex": 1,
+            "describe": null,
+            "assetType": null,
+            "indirectMenus": [],
+            "options": {
+              "show": true
+            },
+            "i18nMessages": {
+              "name": {
+                "zh_CN": "访问日志",
+                "en_US": "Access Logs",
+                "en": "Access Logs"
+              }
+            },
+            "owner": "proto",
+            "enabled": true,
+            "accessSupport": "unsupported",
+            "componentCode": "system/Log/Access",
+            "permissions": [
+              {
+                "permission": "access-logger",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "buttons": []
+          },
+          {
+            "id": "system-logs",
+            "parentId": "ef25fdb5d2af0a56ee43dfb2e6f5a983",
+            "name": "系统日志",
+            "code": "system/Log/System",
+            "url": "/system/log/system",
+            "icon": null,
+            "sortIndex": 2,
+            "describe": null,
+            "assetType": null,
+            "indirectMenus": [],
+            "options": {
+              "show": true
+            },
+            "i18nMessages": {
+              "name": {
+                "zh_CN": "系统日志",
+                "en_US": "System Logs",
+                "en": "System Logs"
+              }
+            },
+            "owner": "proto",
+            "enabled": true,
+            "accessSupport": "unsupported",
+            "componentCode": "system/Log/System",
+            "permissions": [
+              {
+                "permission": "system-logger",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "buttons": [
+              {
+                "id": "update",
+                "name": "调整日志级别",
+                "permissions": [
+                  {
+                    "permission": "system-logger",
+                    "actions": [
+                      "save"
+                    ]
+                  }
+                ],
+                "i18nMessages": {
+                  "zh_CN": "调整日志级别",
+                  "en_US": "Update Log Level",
+                  "en": "Update Log Level"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+]

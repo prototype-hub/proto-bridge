@@ -1,0 +1,12 @@
+# Docker uses bootstrap as its context; keep source, tests and local files outside it.
+**
+!Dockerfile
+!docker-entrypoint.sh
+!target/
+!target/bootstrap-*.jar
+!target/bootstrap-1.0.0.jar.license-sha256
+# Exclude Maven backup/test/classifier archives.
+target/*.jar.original
+target/*-sources.jar
+target/*-javadoc.jar
+target/*-tests.jar
