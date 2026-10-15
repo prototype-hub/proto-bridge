@@ -145,7 +145,7 @@
                                 <configuration>
                                     <target>
                                         <exec executable="python3" failonerror="true">
-                                            <arg value="${maven.multiModuleProjectDirectory}/scripts/verify-distribution.py"/>
+                                            <arg value="${maven.multiModuleProjectDirectory}/tools/verify-distribution.py"/>
                                         </exec>
                                     </target>
                                 </configuration>

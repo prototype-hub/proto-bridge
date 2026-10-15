@@ -11,9 +11,9 @@
 在仓库根目录执行：
 
 ```bash
-python3 scripts/export-source.py
+python3 tools/export-source.py
 # 或指定一个不存在、位于源目录外的新目录：
-python3 scripts/export-source.py --output /tmp/proto-source-review
+python3 tools/export-source.py --output /tmp/proto-source-review
 ```
 
 导出只选取 `open-source-export.json` 明确允许的源码、配置与公共文档，不依赖 `.git`。它拒绝符号链接、源目录内部/祖先输出位置及覆盖已有目录；不复制 `.env`、本地配置、运行数据、依赖/构建产物、IDE 文件、内部审计证据、截图或测试追踪。`SOURCE_MANIFEST.json` 记录每个文件的 SHA256 和大小，并记录有限敏感模式扫描的范围。
@@ -26,14 +26,14 @@ python3 scripts/export-source.py --output /tmp/proto-source-review
 
 ```bash
 ./mvnw -B -ntp clean verify -Prelease-audit
-python3 scripts/verify-distribution.py
+python3 tools/verify-distribution.py
 ```
 
-release-audit 按实际运行依赖生成 `META-INF/third-party/THIRD-PARTY.txt`、`inventory.json`、`licenses/` 与 `artifacts/`，并打入发行包；许可文本来自本地工件及 `scripts/license-texts/`、`scripts/license-notices/` 中已固定来源与 SHA 的上游原文，缺失时门禁失败。发行检查成功后生成绑定最终 JAR SHA 的 sidecar；Docker 构建要求它与 JAR 匹配，避免陈旧许可清单混入镜像，该摘要绑定不是数字签名。容器在 `/application/legal` 暴露相应材料。复核清单中的适用声明、多许可选择与分发义务，不以 SPDX 名称或“生成成功”替代人工审查。`collectionComplete=true` 仅指收集完成，清单仍保留 `complianceApproved=false` 与逐组件待复核项。
+release-audit 按实际运行依赖生成 `META-INF/third-party/THIRD-PARTY.txt`、`inventory.json`、`licenses/` 与 `artifacts/`，并打入发行包；许可文本来自本地工件及 `third-party/license-texts/`、`third-party/license-notices/` 中已固定来源与 SHA 的上游原文，缺失时门禁失败。发行检查成功后生成绑定最终 JAR SHA 的 sidecar；Docker 构建要求它与 JAR 匹配，避免陈旧许可清单混入镜像，该摘要绑定不是数字签名。容器在 `/application/legal` 暴露相应材料。复核清单中的适用声明、多许可选择与分发义务，不以 SPDX 名称或“生成成功”替代人工审查。`collectionComplete=true` 仅指收集完成，清单仍保留 `complianceApproved=false` 与逐组件待复核项。
 
 项目的源码公开、JAR、Docker 镜像与整套离线中间件包分别审核；第三方/基础镜像/操作系统包未必都采用 Apache。特别是 Redis 8、Elasticsearch 官方默认发行物的条款应按版本与实际分发模式核对，不推断网络调用会自动改变本应用许可证。
 
-完整手动检查入口是 `bash scripts/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
+完整手动检查入口是 `bash tools/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
 
 ## 手动发布门禁
 

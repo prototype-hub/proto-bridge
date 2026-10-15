@@ -1,5 +1,5 @@
 -- New-install baseline from frozen entity contracts; NOT a reverse export of production DDL.
--- Existing databases must pass scripts/preflight-db.sql before explicit Flyway baseline adoption.
+-- Existing databases must pass tools/preflight-db.sql before explicit Flyway baseline adoption.
 CREATE TABLE protohub_project (
  id varchar(64) PRIMARY KEY, name varchar(255) NOT NULL, description varchar(2000), cover varchar(1024),
  creator_id varchar(64) NOT NULL, create_time bigint NOT NULL, modifier_id varchar(64) NOT NULL, modify_time bigint NOT NULL);

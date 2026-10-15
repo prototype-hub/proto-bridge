@@ -147,7 +147,8 @@ flowchart LR
 | `modules/prototype-hub-manager/` | 项目、版本、分享、ZIP 与文件生命周期 |
 | `modules/system-manager/` | 系统管理、hsweb 适配、个人资料及初始化 |
 | `components/logging-component/` | 日志采集、存储、脱敏与日志级别管理 |
-| `scripts/` | 巡检、菜单资源生成、校验与维护 |
+| `tools/` | 巡检、菜单资源生成、发行校验工具及测试夹具 |
+| `third-party/` | 固定来源与摘要的第三方许可证、声明及元数据 |
 | `doc/` | 接口、数据库、运维、规范和验证说明 |
 | `config/`、`data/` | 本地配置与运行数据，不属于源码发布内容 |
 
@@ -295,7 +296,7 @@ pnpm dev
 
 ```bash
 ./mvnw -B -ntp clean verify -Prelease-audit
-python3 scripts/verify-distribution.py
+python3 tools/verify-distribution.py
 docker build -t proto-bridge:1.0.0 ./bootstrap
 ```
 
@@ -531,6 +532,6 @@ curl --fail https://proto.example.com/api/actuator/health/readiness
 
 ## 许可证与致谢
 
-本项目有权授予的原创贡献采用 [Apache License 2.0](LICENSE)，并提供 [NOTICE](NOTICE)。允许依条款商业使用、修改和闭源分发，但须保留适用版权、许可证及 NOTICE、标明修改并遵守专利条款；不授予商标权。源码与依赖来源、发行说明见[来源文档](doc/SOURCE_PROVENANCE.md)；第三方组件遵循各自许可证，发行包的依赖清单与声明由 `release-audit` 生成。请保留适用的许可证与版权声明，配套前端采用相同许可证但保留独立发行与第三方声明。公开源码使用 `python3 scripts/export-source.py`，见[公开发布指南](doc/public/RELEASE.md)和[贡献说明](CONTRIBUTING.md)。
+本项目有权授予的原创贡献采用 [Apache License 2.0](LICENSE)，并提供 [NOTICE](NOTICE)。允许依条款商业使用、修改和闭源分发，但须保留适用版权、许可证及 NOTICE、标明修改并遵守专利条款；不授予商标权。源码与依赖来源、发行说明见[来源文档](doc/SOURCE_PROVENANCE.md)；第三方组件遵循各自许可证，发行包的依赖清单与声明由 `release-audit` 生成。请保留适用的许可证与版权声明，配套前端采用相同许可证但保留独立发行与第三方声明。公开源码使用 `python3 tools/export-source.py`，见[公开发布指南](doc/public/RELEASE.md)和[贡献说明](CONTRIBUTING.md)。
 
 感谢 hsweb、EasyORM、Spring、Project Reactor、Vue、Apache Commons Compress、PostgreSQL、Redis、Elasticsearch、Nginx 等开源项目提供的基础能力。组件版本与来源可在[依赖矩阵](doc/DEPENDENCY_BASELINE.md)中核对。

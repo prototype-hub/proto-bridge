@@ -8,5 +8,5 @@
 *.jar binary
 
 # Upstream legal text hashes require byte-for-byte preservation.
-scripts/license-texts/** -text
-scripts/license-notices/** -text
+third-party/license-texts/** -text
+third-party/license-notices/** -text

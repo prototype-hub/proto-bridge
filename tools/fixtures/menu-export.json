@@ -1,0 +1,123 @@
+[
+  {
+    "id": "prototype-root",
+    "name": "原型管理",
+    "code": "prototype-hub",
+    "url": "/prototype-hub",
+    "options": {
+      "show": true
+    },
+    "status": 1,
+    "permissions": [],
+    "buttons": []
+  },
+  {
+    "id": "system-root",
+    "name": "系统管理",
+    "code": "system",
+    "url": "/system",
+    "options": {
+      "show": true
+    },
+    "status": 1,
+    "permissions": [],
+    "buttons": [],
+    "children": [
+      {
+        "id": "system-basis",
+        "name": "基础配置",
+        "code": "system/Basis",
+        "url": "/system/basis",
+        "options": {
+          "show": true
+        },
+        "status": 1,
+        "permissions": [],
+        "buttons": [
+          {
+            "id": "update",
+            "name": "Edit",
+            "permissions": [
+              {
+                "permission": "system_config",
+                "actions": [
+                  "save"
+                ]
+              }
+            ]
+          }
+        ],
+        "parentId": "system-root"
+      },
+      {
+        "id": "system-user",
+        "name": "用户管理",
+        "code": "system/User",
+        "url": "/system/user",
+        "options": {
+          "show": true
+        },
+        "status": 1,
+        "permissions": [],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "Add",
+            "permissions": []
+          },
+          {
+            "id": "update",
+            "name": "Edit",
+            "permissions": []
+          }
+        ],
+        "parentId": "system-root"
+      },
+      {
+        "id": "system-org",
+        "name": "组织管理",
+        "code": "system/Department",
+        "url": "/system/department",
+        "options": {
+          "show": true
+        },
+        "status": 1,
+        "permissions": [],
+        "buttons": [
+          {
+            "id": "bind",
+            "name": "Bind/Unbind Members",
+            "permissions": [
+              {
+                "permission": "organization",
+                "actions": [
+                  "bind-user"
+                ]
+              }
+            ]
+          }
+        ],
+        "parentId": "system-root"
+      },
+      {
+        "id": "system-dictionary",
+        "name": "数据字典",
+        "code": "system/Dictionary",
+        "url": "/system/dictionary",
+        "options": {
+          "show": true
+        },
+        "status": 1,
+        "permissions": [],
+        "buttons": [
+          {
+            "id": "add",
+            "name": "Add",
+            "permissions": []
+          }
+        ],
+        "parentId": "system-root"
+      }
+    ]
+  }
+]
