@@ -21,6 +21,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 import java.util.UUID;
+import org.hswebframework.web.authorization.token.UserTokenManager;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -85,6 +86,7 @@ class IdentityApiContractIntegrationTest {
     @Autowired ObjectMapper mapper;
     @Autowired DatabaseClient database;
     @Autowired ApplicationContext context;
+    @Autowired UserTokenManager tokens;
     String admin;
 
     @BeforeEach
@@ -130,6 +132,87 @@ class IdentityApiContractIntegrationTest {
                         .asText();
         assertFalse(token.isBlank());
         return token;
+    }
+
+    JsonNode loginWithExpires(String username, String password, long expires) {
+        return call(
+                "POST",
+                "/authorize/login",
+                null,
+                Map.of("username", username, "password", password, "expires", expires),
+                200);
+    }
+
+    @Test
+    void explicitLoginExpirationsKeepOrdinaryIdlePolicyAndPermanentSessions() {
+        JsonNode ordinary = loginWithExpires("admin", PASSWORD, 3600000);
+        assertEquals(3600000, ordinary.path("expires").asLong());
+        String ordinaryToken = ordinary.path("token").asText();
+        JsonNode remembered = loginWithExpires("admin", PASSWORD, -1);
+        String permanentToken = remembered.path("token").asText();
+        assertEquals(-1, remembered.path("expires").asLong());
+        assertEquals(-1, tokens.getByToken(permanentToken).block().getMaxInactiveInterval());
+        JsonNode shortLived = loginWithExpires("admin", PASSWORD, 100);
+        assertEquals(100, shortLived.path("expires").asLong());
+        org.awaitility.Awaitility.await()
+                .pollDelay(Duration.ofMillis(150))
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(
+                        () ->
+                                call(
+                                        "GET",
+                                        "/user/detail",
+                                        shortLived.path("token").asText(),
+                                        null,
+                                        401));
+        call("GET", "/user/detail", permanentToken, null, 200);
+        call("GET", "/user/detail", ordinaryToken, null, 200);
+        assertTrue(call("POST", "/user-token/reset", permanentToken, null, 200).asBoolean());
+        call("GET", "/user/detail", permanentToken, null, 401);
+        call("GET", "/user/detail", ordinaryToken, null, 200);
+    }
+
+    @Test
+    void permanentSessionsStillRevokeForPasswordDisableAndAdministratorSignOut() {
+        for (String reason : List.of("password", "disabled", "administrator")) {
+            Actor owner = actor("Permanent " + reason, Map.of());
+            String permanentToken =
+                    loginWithExpires(owner.username(), PASSWORD, -1).path("token").asText();
+            call("GET", "/user/detail", permanentToken, null, 200);
+            switch (reason) {
+                case "password" ->
+                        assertTrue(
+                                call(
+                                                "PUT",
+                                                "/user/passwd",
+                                                permanentToken,
+                                                Map.of(
+                                                        "oldPassword",
+                                                        PASSWORD,
+                                                        "newPassword",
+                                                        UUID.randomUUID().toString()),
+                                                200)
+                                        .asBoolean());
+                case "disabled" -> call("PUT", "/user/" + owner.id() + "/0", admin, null, 200);
+                case "administrator" ->
+                        client.delete()
+                                .uri("/user-token/token/" + permanentToken)
+                                .header("X-Access-Token", admin)
+                                .exchange()
+                                .expectStatus()
+                                .is2xxSuccessful()
+                                .expectBody()
+                                .consumeWith(response -> {});
+                default -> fail("Unknown lifecycle scenario");
+            }
+            call("GET", "/user/detail", permanentToken, null, 401);
+            call(
+                    "GET",
+                    "/user/detail",
+                    owner.token(),
+                    null,
+                    reason.equals("administrator") ? 200 : 401);
+        }
     }
 
     record Actor(String id, String username, String token) {}
@@ -331,7 +414,9 @@ class IdentityApiContractIntegrationTest {
                                         "pageSize",
                                         200,
                                         "terms",
-                                        List.of(term("id", "in", scope), term("type", "eq", value))),
+                                        List.of(
+                                                term("id", "in", scope),
+                                                term("type", "eq", value))),
                                 200,
                                 language)
                         .path("data");

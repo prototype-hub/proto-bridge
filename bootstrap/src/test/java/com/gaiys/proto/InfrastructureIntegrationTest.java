@@ -7,6 +7,8 @@ import static org.mockito.Mockito.when;
 import co.elastic.clients.elasticsearch.ElasticsearchAsyncClient;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.gaiys.proto.logging.store.LogStore;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.Base64;
 import java.util.Map;
@@ -116,6 +118,10 @@ class InfrastructureIntegrationTest {
     }
 
     Map<String, String> credentials() throws Exception {
+        return credentials("admin", PASSWORD);
+    }
+
+    Map<String, String> credentials(String username, String password) throws Exception {
         var config = result(web.get().uri("/authorize/login/configs").exchange()).path("encrypt");
         assertTrue(config.path("enabled").asBoolean());
         var key =
@@ -131,12 +137,12 @@ class InfrastructureIntegrationTest {
         assertTrue(captcha.path("base64").asText().startsWith("data:image/png;base64,"));
         return Map.of(
                 "username",
-                "admin",
+                username,
                 "password",
                 Base64.getEncoder()
                         .encodeToString(
                                 cipher.doFinal(
-                                        PASSWORD.getBytes(
+                                        password.getBytes(
                                                 java.nio.charset.StandardCharsets.UTF_8))),
                 "encryptId",
                 config.path("id").asText(),
@@ -150,6 +156,176 @@ class InfrastructureIntegrationTest {
         return result(web.post().uri("/authorize/login").bodyValue(credentials()).exchange())
                 .path("token")
                 .asText();
+    }
+
+    JsonNode loginWithExpires(String username, String password, long expires) throws Exception {
+        Map<String, Object> parameters =
+                new java.util.LinkedHashMap<>(credentials(username, password));
+        parameters.put("expires", expires);
+        return result(web.post().uri("/authorize/login").bodyValue(parameters).exchange());
+    }
+
+    long redisTokenTtl(String token) {
+        // 原始 PTTL 保留 -1（无过期）与 -2（键不存在），不经 Duration 的哨兵值转换。
+        ByteBuffer key = ByteBuffer.wrap(("user-token:" + token).getBytes(StandardCharsets.UTF_8));
+        Long ttl =
+                operations
+                        .execute(connection -> connection.keyCommands().pTtl(key))
+                        .single()
+                        .block();
+        assertNotNull(ttl);
+        return ttl;
+    }
+
+    @Test
+    @Order(1)
+    void rememberedRedisLoginKeepsPermanentTtlThroughTouchesAndCacheReloads() throws Exception {
+        JsonNode ordinary = loginWithExpires("admin", PASSWORD, 3600000);
+        assertEquals(1800000, ordinary.path("expires").asLong());
+        long ordinaryTtl = redisTokenTtl(ordinary.path("token").asText());
+        assertTrue(ordinaryTtl > 0);
+        assertTrue(ordinaryTtl <= Duration.ofMinutes(30).toMillis());
+
+        JsonNode remembered = loginWithExpires("admin", PASSWORD, -1);
+        String token = remembered.path("token").asText();
+        assertEquals(-1, remembered.path("expires").asLong());
+        assertEquals(-1, tokens.getByToken(token).block().getMaxInactiveInterval());
+        assertEquals(-1, redisTokenTtl(token));
+
+        var cache =
+                com.github.benmanes.caffeine.cache.Caffeine.newBuilder()
+                        .maximumSize(10000)
+                        .expireAfterAccess(Duration.ofMinutes(1))
+                        .<String, org.hswebframework.web.authorization.token.redis.SimpleUserToken>
+                                build();
+        var second =
+                new org.hswebframework.web.authorization.token.redis.RedisUserTokenManager(
+                        operations);
+        second.setLocalCache(cache.asMap());
+        assertEquals(
+                tokens.getByToken(token).block().getUserId(),
+                second.getByToken(token).block().getUserId());
+        assertNotNull(cache.getIfPresent(token));
+        cache.invalidateAll();
+        cache.cleanUp();
+        assertNull(cache.getIfPresent(token));
+        assertEquals(-1, second.getByToken(token).block().getMaxInactiveInterval());
+        assertNotNull(cache.getIfPresent(token));
+
+        tokens.touch(token).block();
+        second.touch(token).block();
+        result(web.get().uri("/user/detail").header("X-Access-Token", token).exchange());
+        tokens.checkExpiredToken().block();
+        assertEquals(-1, redisTokenTtl(token));
+
+        JsonNode shortLived = loginWithExpires("admin", PASSWORD, 100);
+        assertEquals(100, shortLived.path("expires").asLong());
+        org.awaitility.Awaitility.await()
+                .pollDelay(Duration.ofMillis(150))
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(
+                        () ->
+                                web.get()
+                                        .uri("/user/detail")
+                                        .header("X-Access-Token", shortLived.path("token").asText())
+                                        .exchange()
+                                        .expectStatus()
+                                        .isUnauthorized()
+                                        .expectBody()
+                                        .consumeWith(response -> {}));
+        result(web.get().uri("/user/detail").header("X-Access-Token", token).exchange());
+        assertEquals(-1, redisTokenTtl(token));
+        assertTrue(
+                result(
+                                web.post()
+                                        .uri("/user-token/reset")
+                                        .header("X-Access-Token", token)
+                                        .exchange())
+                        .asBoolean());
+        org.awaitility.Awaitility.await()
+                .atMost(Duration.ofSeconds(5))
+                .untilAsserted(() -> assertFalse(second.tokenIsLoggedIn(token).block()));
+        web.get()
+                .uri("/user/detail")
+                .header("X-Access-Token", token)
+                .exchange()
+                .expectStatus()
+                .isUnauthorized()
+                .expectBody()
+                .consumeWith(response -> {});
+    }
+
+    @Test
+    @Order(1)
+    void permanentRedisSessionsStillRevokeForPasswordDisableAndAdministratorSignOut()
+            throws Exception {
+        String admin = login();
+        for (String reason : java.util.List.of("password", "disabled", "administrator")) {
+            String username = "remember-" + UUID.randomUUID().toString().replace("-", "");
+            String id =
+                    result(
+                                    web.post()
+                                            .uri("/user/detail/_create")
+                                            .header("X-Access-Token", admin)
+                                            .bodyValue(
+                                                    Map.of(
+                                                            "user",
+                                                            Map.of(
+                                                                    "username", username,
+                                                                    "name", "Remember " + reason,
+                                                                    "password", PASSWORD),
+                                                            "roleIdList",
+                                                            java.util.List.of("MEMBER")))
+                                            .exchange())
+                            .path("id")
+                            .asText();
+            String token = loginWithExpires(username, PASSWORD, -1).path("token").asText();
+            result(web.get().uri("/user/detail").header("X-Access-Token", token).exchange());
+            switch (reason) {
+                case "password" ->
+                        assertTrue(
+                                result(
+                                                web.put()
+                                                        .uri("/user/passwd")
+                                                        .header("X-Access-Token", token)
+                                                        .bodyValue(
+                                                                Map.of(
+                                                                        "oldPassword",
+                                                                        PASSWORD,
+                                                                        "newPassword",
+                                                                        UUID.randomUUID()
+                                                                                .toString()))
+                                                        .exchange())
+                                        .asBoolean());
+                case "disabled" ->
+                        result(
+                                web.put()
+                                        .uri("/user/" + id + "/0")
+                                        .header("X-Access-Token", admin)
+                                        .exchange());
+                case "administrator" ->
+                        web.delete()
+                                .uri("/user-token/token/" + token)
+                                .header("X-Access-Token", admin)
+                                .exchange()
+                                .expectStatus()
+                                .is2xxSuccessful()
+                                .expectBody()
+                                .consumeWith(response -> {});
+                default -> fail("Unknown lifecycle scenario");
+            }
+            org.awaitility.Awaitility.await()
+                    .atMost(Duration.ofSeconds(5))
+                    .untilAsserted(() -> assertFalse(tokens.tokenIsLoggedIn(token).block()));
+            web.get()
+                    .uri("/user/detail")
+                    .header("X-Access-Token", token)
+                    .exchange()
+                    .expectStatus()
+                    .isUnauthorized()
+                    .expectBody()
+                    .consumeWith(response -> {});
+        }
     }
 
     @Test
