@@ -12,6 +12,7 @@ import static com.gaiys.proto.system.service.support.ManagementSupport.typed;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.system.entity.PositionEntity;
 import com.gaiys.proto.system.entity.UserDetailEntity;
+import com.gaiys.proto.system.enums.UserType;
 import com.gaiys.proto.system.web.request.UserProfileRequest;
 import java.util.Collection;
 import java.util.LinkedHashMap;
@@ -353,7 +354,7 @@ public class SystemManagementService {
         if (creating) {
             user.setPassword(text(account, "password"));
             user.setStatus((byte) 1);
-            user.setType("normal");
+            user.setType(UserType.normal.getValue());
         } else if (account.containsKey("password") && !text(account, "password").isBlank())
             return Mono.error(invalid());
         if (user.getName().isBlank()
@@ -629,11 +630,7 @@ public class SystemManagementService {
         row.put("name", user.getName());
         row.put("username", user.getUsername());
         row.put("status", user.getStatus());
-        row.put(
-                "type",
-                Map.of(
-                        "id", Objects.toString(user.getType(), "normal"),
-                        "text", Objects.toString(user.getType(), "normal")));
+        row.put("type", UserType.fromPersisted(user.getType()));
         if (detail != null) {
             row.put("telephone", detail.getTelephone());
             row.put("email", detail.getEmail());

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gaiys.proto.system.web.UserProfileController;
 import com.gaiys.proto.system.web.handler.ApiExceptionHandler;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.lang.annotation.Annotation;
@@ -93,8 +94,14 @@ class IdentityApiContractIntegrationTest {
     }
 
     JsonNode call(String method, String path, String token, Object body, int status) {
+        return call(method, path, token, body, status, null);
+    }
+
+    JsonNode call(
+            String method, String path, String token, Object body, int status, String language) {
         var request = client.method(HttpMethod.valueOf(method)).uri(path);
         if (token != null) request.header("X-Access-Token", token);
+        if (language != null) request.header("Accept-Language", language);
         if (body != null) {
             request.contentType(
                     body instanceof String ? MediaType.TEXT_PLAIN : MediaType.APPLICATION_JSON);
@@ -189,6 +196,148 @@ class IdentityApiContractIntegrationTest {
         Set<String> result = new TreeSet<>();
         rows.forEach(row -> result.add(row.path("id").asText()));
         return result;
+    }
+
+    @Test
+    void userTypesUseChineseEnumObjectsAcrossOptionsListDetailAndSelfProfile() {
+        Actor normal = actor("中文类型", Map.of("type", Map.of("value", "admin")));
+        JsonNode currentAdmin = call("GET", "/user/detail", admin, null, 200, "zh-CN");
+        String adminId = currentAdmin.path("id").asText();
+        assertType(currentAdmin.path("type"), "admin", "管理员");
+        assertType(
+                call("GET", "/user/detail/" + adminId, admin, null, 200, "zh-CN").path("type"),
+                "admin",
+                "管理员");
+        assertType(
+                call("GET", "/user/detail/" + normal.id(), admin, null, 200, "zh-CN").path("type"),
+                "normal",
+                "普通用户");
+        assertType(
+                call("GET", "/user/detail", normal.token(), null, 200, "zh-CN").path("type"),
+                "normal",
+                "普通用户");
+
+        JsonNode types = call("GET", "/user/detail/types", admin, null, 200, "zh-CN");
+        assertEquals(2, types.size());
+        assertType(types.get(0), "normal", "普通用户");
+        assertType(types.get(1), "admin", "管理员");
+        assertFilteredType(List.of(normal.id(), adminId), "normal", normal.id(), "普通用户", "zh-CN");
+        assertFilteredType(List.of(normal.id(), adminId), "admin", adminId, "管理员", "zh-CN");
+        assertType(
+                mapper.valueToTree(new UserProfileController.Type("normal", "普通用户")),
+                "normal",
+                "普通用户");
+        assertEquals(
+                "normal",
+                database.sql("SELECT type FROM s_user WHERE id=:id")
+                        .bind("id", normal.id())
+                        .map((row, metadata) -> row.get("type", String.class))
+                        .one()
+                        .block());
+    }
+
+    @Test
+    void userTypesResolveEnglishFromActualRequestContextWithoutLeakingToChineseRequests() {
+        Actor normal = actor("Localized type", Map.of());
+        JsonNode types = call("GET", "/user/detail/types", admin, null, 200, "en-US");
+        assertType(types.get(0), "normal", "Normal User");
+        assertType(types.get(1), "admin", "Administrator");
+        JsonNode currentAdmin = call("GET", "/user/detail", admin, null, 200, "en-US");
+        String adminId = currentAdmin.path("id").asText();
+        assertType(currentAdmin.path("type"), "admin", "Administrator");
+        assertType(
+                call("GET", "/user/detail/" + adminId, admin, null, 200, "en-US").path("type"),
+                "admin",
+                "Administrator");
+        assertType(
+                call("GET", "/user/detail/" + normal.id(), admin, null, 200, "en-US").path("type"),
+                "normal",
+                "Normal User");
+        assertType(
+                call("GET", "/user/detail", normal.token(), null, 200, "en-US").path("type"),
+                "normal",
+                "Normal User");
+        assertFilteredType(
+                List.of(normal.id(), adminId), "normal", normal.id(), "Normal User", "en-US");
+        assertFilteredType(
+                List.of(normal.id(), adminId), "admin", adminId, "Administrator", "en-US");
+        assertType(
+                call("GET", "/user/detail", normal.token(), null, 200, "zh-CN").path("type"),
+                "normal",
+                "普通用户");
+    }
+
+    @Test
+    void unknownAndNullPersistedUserTypesRemainReadableWithoutRewritingStorage() {
+        Actor legacy = actor("历史类型", Map.of());
+        String unknown = "legacy-service";
+        database.sql("UPDATE s_user SET type=:type WHERE id=:id")
+                .bind("type", unknown)
+                .bind("id", legacy.id())
+                .fetch()
+                .rowsUpdated()
+                .block();
+        assertType(
+                call("GET", "/user/detail/" + legacy.id(), admin, null, 200, "zh-CN").path("type"),
+                unknown,
+                unknown);
+        assertType(
+                call("GET", "/user/detail", legacy.token(), null, 200, "en-US").path("type"),
+                unknown,
+                unknown);
+        assertFilteredType(List.of(legacy.id()), unknown, legacy.id(), unknown, "zh-CN");
+        assertEquals(
+                unknown,
+                database.sql("SELECT type FROM s_user WHERE id=:id")
+                        .bind("id", legacy.id())
+                        .map((row, metadata) -> row.get("type", String.class))
+                        .one()
+                        .block());
+
+        database.sql("UPDATE s_user SET type=NULL WHERE id=:id")
+                .bind("id", legacy.id())
+                .fetch()
+                .rowsUpdated()
+                .block();
+        assertType(
+                call("GET", "/user/detail/" + legacy.id(), admin, null, 200, "zh-CN").path("type"),
+                "normal",
+                "普通用户");
+        assertType(
+                call("GET", "/user/detail", legacy.token(), null, 200, "zh-CN").path("type"),
+                "normal",
+                "普通用户");
+        assertEquals(
+                1L,
+                database.sql("SELECT count(*) AS total FROM s_user WHERE id=:id AND type IS NULL")
+                        .bind("id", legacy.id())
+                        .map((row, metadata) -> row.get("total", Long.class))
+                        .one()
+                        .block());
+    }
+
+    private void assertType(JsonNode type, String value, String text) {
+        assertEquals(mapper.valueToTree(Map.of("id", value, "value", value, "text", text)), type);
+    }
+
+    private void assertFilteredType(
+            List<String> scope, String value, String id, String text, String language) {
+        JsonNode rows =
+                call(
+                                "POST",
+                                "/user/detail/_query",
+                                admin,
+                                Map.of(
+                                        "pageSize",
+                                        200,
+                                        "terms",
+                                        List.of(term("id", "in", scope), term("type", "eq", value))),
+                                200,
+                                language)
+                        .path("data");
+        assertEquals(1, rows.size());
+        assertEquals(id, rows.get(0).path("id").asText());
+        assertType(rows.get(0).path("type"), value, text);
     }
 
     @Test

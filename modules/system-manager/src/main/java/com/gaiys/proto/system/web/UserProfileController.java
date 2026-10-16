@@ -45,7 +45,13 @@ public class UserProfileController {
     @Schema(name = "UserProfileType", description = "用户类型展示信息")
     public record Type(
             @Schema(description = "用户类型标识") String id,
-            @Schema(description = "用户类型显示文本") String text) {}
+            @Schema(description = "用户类型显示文本") String text) {
+        /** 保留原构造器与 id 字段，同时提供标准枚举值。 */
+        @Schema(description = "用户类型枚举值，与 id 一致")
+        public String getValue() {
+            return id;
+        }
+    }
 
     /** 用户基本资料的公开 Java 视图；当前接口使用兼容字段映射返回详情。 */
     @Schema(name = "UserProfile", description = "用户基本资料")
