@@ -120,7 +120,7 @@ hsweb: # HsWeb 配置
       expire-after-access: 1m # 缓存访问后过期时间
   user-token: # 用户令牌配置
     allopatric-login-mode: allow # 允许异地登录模式
-    max-token-expires: 30m # 最大令牌过期时间
+    max-token-expires: 30m # 普通令牌空闲期限上限；记住登录 expires=-1 不限时
   cors: # 跨域资源共享配置
     enable: ${CORS_ENABLED} # 是否启用 CORS
     configs:
