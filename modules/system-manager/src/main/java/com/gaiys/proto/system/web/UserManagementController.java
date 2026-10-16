@@ -1,5 +1,6 @@
 package com.gaiys.proto.system.web;
 
+import com.gaiys.proto.system.enums.UserType;
 import com.gaiys.proto.system.service.SystemManagementService;
 import com.gaiys.proto.system.service.support.ManagementSupport;
 import io.swagger.v3.oas.annotations.Operation;
@@ -85,8 +86,8 @@ public class UserManagementController {
     @Operation(summary = "查询用户类型")
     @GetMapping("/detail/types")
     @QueryAction
-    public Mono<List<Map<String, String>>> types() {
-        return Mono.just(List.of(Map.of("id", "normal", "text", "normal")));
+    public Mono<List<UserType>> types() {
+        return Mono.just(List.of(UserType.values()));
     }
 
     @Operation(summary = "替换用户维度绑定")

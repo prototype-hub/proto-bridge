@@ -1,5 +1,6 @@
 package com.gaiys.proto.system.configuration.initializer;
 
+import com.gaiys.proto.system.enums.UserType;
 import java.time.Duration;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
@@ -57,7 +58,7 @@ public class AdministratorInitializer implements ApplicationRunner {
                                     user.setName("管理员");
                                     user.setPassword(password);
                                     user.setStatus((byte) 1);
-                                    user.setType("admin");
+                                    user.setType(UserType.admin.getValue());
                                     return users.addUser(user)
                                             .flatMap(created -> bindAdministrator(created));
                                 }))
