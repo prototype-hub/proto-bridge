@@ -1,6 +1,8 @@
 # 依赖基线与核验
 
-版本入口为根 `pom.xml` 的 BOM、dependencyManagement 和 Enforcer 约束；实际完整依赖以当前构建生成清单为准，不以历史审计数字代替。主要基线为 Java 21、Spring Boot 3.5.16、Spring Framework 6.2.19、hsweb 5.0.1 与响应式 PostgreSQL。升级应保持框架家族版本一致，并验证实际启动和接口边界。
+版本入口为根 `pom.xml` 的 BOM、dependencyManagement 和 Enforcer 约束；实际完整依赖以当前构建生成清单为准，不以历史审计数字代替。主要基线为 Java 21、Spring Boot 3.5.16、Spring Framework 6.2.19、hsweb 5.0.2/EasyORM 4.2.2 与响应式 PostgreSQL。升级应保持框架家族版本一致，并验证实际启动和接口边界。
+
+Log4j 通过 2.25.5 BOM 同步 API/bridge，OpenTelemetry 通过 1.62.0 BOM 同步 API/context，Commons Lang 显式使用 3.18.0。本仓导入 Boot BOM 而非继承 Boot parent，独立定义属性不能覆盖已经导入的 BOM；需要覆盖的家族 BOM 放在 Boot BOM 之前，最终核对实际依赖树。hsweb 文件服务保留官方 SPI，由自有品牌图片存储实现接入，不通过移除依赖掩盖漏洞。兼容 patch 升级不代表 Spring、容器或所有第三方告警已清零；Spring 7 涉及 Boot/hsweb 协同迁移，不强制跨大版本覆盖。
 
 hsweb/EasyORM 通过公开 Maven 依赖复用。仅使用公开 API 与扩展点，不复制私有模块或通过反射、Unsafe/字节码绕过可见性。Fastjson 1.x 兼容路径保持 SafeMode，升级框架时需验证整个序列化契约。
 

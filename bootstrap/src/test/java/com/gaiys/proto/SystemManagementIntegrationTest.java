@@ -1363,6 +1363,129 @@ class SystemManagementIntegrationTest {
     }
 
     @Test
+    void fileEndpointsUseOnlyTheApplicationStorageAndController() {
+        // 保留 hsweb SPI，但其缺省存储和控制器不得绕过本平台的图片及权限边界。
+        var storage =
+                context.getBeansOfType(
+                        org.hswebframework.web.file.service.FileStorageService.class);
+        assertEquals(1, storage.size());
+        assertInstanceOf(
+                com.gaiys.proto.system.service.BrandingFileStorageService.class,
+                storage.values().iterator().next());
+        assertTrue(
+                context.getBeansOfType(
+                                org.hswebframework.web.file.service.LocalFileStorageService.class)
+                        .isEmpty());
+        assertInstanceOf(
+                com.gaiys.proto.system.web.BrandingFileController.class,
+                context.getBean("reactiveFileController"));
+        assertTrue(
+                context.getBeansOfType(org.hswebframework.web.file.web.ReactiveFileController.class)
+                        .isEmpty());
+    }
+
+    @Test
+    void hswebFilenameResolutionKeepsUntrustedSuffixPathsInsideTheConfiguredStorage() {
+        var properties = new org.hswebframework.web.file.FileUploadProperties();
+        properties.setStaticFilePath(FILES.toString());
+        // 上游旧实现会解析原始路径或将目录段当作扩展名；两种官方命名策略均须限制写入根。
+        for (boolean originalName : List.of(false, true)) {
+            properties.setUseOriginalFileName(originalName);
+            for (String filename :
+                    List.of(
+                            "avatar.png/../../../../outside-no-extension",
+                            "avatar.png\\..\\..\\..\\..\\outside-no-extension",
+                            "avatar.png／..／..／..／..／outside-no-extension")) {
+                var info = properties.createStaticSavePath(filename);
+                Path resolved = Path.of(info.getSavePath()).toAbsolutePath().normalize();
+                assertTrue(resolved.startsWith(FILES));
+                Path relative = FILES.relativize(resolved);
+                assertTrue(relative.getName(0).toString().matches("[0-9]{8}"));
+                assertEquals(originalName ? 3 : 2, relative.getNameCount());
+            }
+        }
+    }
+
+    @Test
+    void uploadedOriginalFilenamesCannotSelectStoragePathsOrOverwriteExistingFiles()
+            throws Exception {
+        byte[] png = pngImage();
+        Path sentinel = Files.createTempFile(FILES, "filename-boundary-", ".png");
+        Path traversalSentinel = Files.createTempFile(FILES, "suffix-traversal-", "");
+        byte[] original =
+                "existing-file-must-survive".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        Files.write(sentinel, original);
+        Files.write(traversalSentinel, original);
+        try {
+            // 只攻击测试目录内的哨兵；外部输入只允许决定受校验的扩展名，不能决定存储路径。
+            List<String> filenames =
+                    List.of(
+                            "../" + sentinel.getFileName(),
+                            sentinel.toAbsolutePath().toString(),
+                            "C:\\uploads\\..\\" + sentinel.getFileName(),
+                            "folder／..／avatar.png");
+            for (String endpoint : List.of("/file/upload", "/file/static", "/user/me/avatar")) {
+                for (String filename : filenames) {
+                    Set<Path> before;
+                    try (var paths = Files.walk(FILES)) {
+                        before =
+                                paths.filter(Files::isRegularFile)
+                                        .collect(java.util.stream.Collectors.toSet());
+                    }
+                    JsonNode uploaded = uploadImage(endpoint, admin, filename, png, 200);
+                    String url =
+                            uploaded.isTextual()
+                                    ? uploaded.asText()
+                                    : uploaded.path("url").asText();
+                    assertTrue(url.matches("/api/file/static/[0-9]{8}/[a-f0-9-]{36}\\.png"));
+                    Path saved = FILES.resolve(url.substring("/api/file/static/".length()));
+                    Set<Path> created;
+                    try (var paths = Files.walk(FILES)) {
+                        created =
+                                paths.filter(Files::isRegularFile)
+                                        .collect(java.util.stream.Collectors.toSet());
+                    }
+                    created.removeAll(before);
+                    assertEquals(Set.of(saved), created);
+                    assertArrayEquals(png, Files.readAllBytes(saved));
+                    assertArrayEquals(original, Files.readAllBytes(sentinel));
+                    client.get()
+                            .uri(url)
+                            .exchange()
+                            .expectStatus()
+                            .isOk()
+                            .expectHeader()
+                            .valueEquals("X-Content-Type-Options", "nosniff")
+                            .expectBody()
+                            .consumeWith(
+                                    response -> assertArrayEquals(png, response.getResponseBody()));
+                }
+                long stored;
+                try (var paths = Files.walk(FILES)) {
+                    stored = paths.filter(Files::isRegularFile).count();
+                }
+                for (String filename :
+                        List.of(
+                                "avatar.png/",
+                                "avatar.png\\",
+                                "avatar．png",
+                                "avatar.png/../../" + traversalSentinel.getFileName(),
+                                "avatar.png\\..\\..\\" + traversalSentinel.getFileName())) {
+                    uploadImage(endpoint, admin, filename, png, 400);
+                }
+                try (var paths = Files.walk(FILES)) {
+                    assertEquals(stored, paths.filter(Files::isRegularFile).count());
+                }
+                assertArrayEquals(original, Files.readAllBytes(sentinel));
+                assertArrayEquals(original, Files.readAllBytes(traversalSentinel));
+            }
+        } finally {
+            Files.deleteIfExists(sentinel);
+            Files.deleteIfExists(traversalSentinel);
+        }
+    }
+
+    @Test
     void brandingUploadIsAuthorizedReadableAndRejectsActiveContent() {
         byte[] png =
                 Base64.getDecoder()

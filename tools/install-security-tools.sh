@@ -3,6 +3,9 @@ set -euo pipefail
 out=${1:?Usage: install-security-tools.sh ABSOLUTE_OUTPUT_DIRECTORY}
 [[ "$out" == /* ]] || { echo "Absolute output directory required" >&2; exit 2; }
 mkdir -p "$out"
+tools_dir=$(cd "$(dirname "$0")" && pwd)
+gitleaks_version=$(python3 "$tools_dir/security_tools.py" --version gitleaks)
+trivy_version=$(python3 "$tools_dir/security_tools.py" --version trivy)
 case "$(uname -s)/$(uname -m)" in
  Linux/x86_64) platform=Linux; arch=64bit; gitleaks_platform=linux_x64;;
  Darwin/x86_64) platform=macOS; arch=64bit; gitleaks_platform=darwin_x64;;
@@ -21,6 +24,6 @@ if len(matches)!=1 or hashlib.sha256(archive.read_bytes()).hexdigest()!=matches[
 HASH
  tar -xzf "$out/$archive" -C "$out"
 }
-fetch https://github.com/gitleaks/gitleaks/releases/download/v8.30.1 "gitleaks_8.30.1_${gitleaks_platform}.tar.gz" gitleaks_8.30.1_checksums.txt
-fetch https://github.com/aquasecurity/trivy/releases/download/v0.75.0 "trivy_0.75.0_${platform}-${arch}.tar.gz" trivy_0.75.0_checksums.txt
+fetch "https://github.com/gitleaks/gitleaks/releases/download/v${gitleaks_version}" "gitleaks_${gitleaks_version}_${gitleaks_platform}.tar.gz" "gitleaks_${gitleaks_version}_checksums.txt"
+fetch "https://github.com/aquasecurity/trivy/releases/download/v${trivy_version}" "trivy_${trivy_version}_${platform}-${arch}.tar.gz" "trivy_${trivy_version}_checksums.txt"
 printf 'Tools installed in %s; add this directory to PATH.\n' "$out"
