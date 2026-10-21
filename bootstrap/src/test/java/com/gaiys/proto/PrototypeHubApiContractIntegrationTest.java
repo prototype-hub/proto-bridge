@@ -1,5 +1,6 @@
 package com.gaiys.proto;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -7,6 +8,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.prototypehub.configuration.properties.PrototypeHubStorageProperties;
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
@@ -14,20 +16,27 @@ import com.gaiys.proto.prototypehub.service.FileCleanupService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
+import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
+import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.Base64;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveInputStream;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -36,6 +45,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.MessageSource;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
@@ -93,6 +103,7 @@ class PrototypeHubApiContractIntegrationTest {
     @Autowired WebTestClient client;
     @Autowired PrototypeHubStorageProperties storageProperties;
     @Autowired MessageSource messages;
+    @Autowired ObjectMapper mapper;
     @Autowired PrototypeVersionService versions;
     @Autowired PrototypeShareService shares;
     @Autowired FileCleanupService cleanup;
@@ -214,6 +225,128 @@ class PrototypeHubApiContractIntegrationTest {
                         .body(BodyInserters.fromMultipartData(body.build()))
                         .exchange(),
                 status);
+    }
+
+    @Test
+    void browserFolderArchivePreservesResourcesOnCreateReplayAndReplacement() throws Exception {
+        JsonNode fixture;
+        try (var input =
+                new ClassPathResource("prototype-hub/folder-upload.json").getInputStream()) {
+            fixture = mapper.readTree(input);
+        }
+        byte[] archive = Base64.getDecoder().decode(fixture.path("zipBase64").asText());
+        assertEquals(
+                fixture.path("archiveSha256").asText(),
+                HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(archive)));
+        // 固定生产 Worker 打包器输出；流式 data descriptor 和中文 UTF-8 标记是跨端兼容边界。
+        try (var zip = new ZipArchiveInputStream(new ByteArrayInputStream(archive))) {
+            ZipArchiveEntry entry;
+            int count = 0;
+            while ((entry = zip.getNextEntry()) != null) {
+                assertTrue(entry.getGeneralPurposeBit().usesDataDescriptor());
+                if (entry.getName().chars().anyMatch(value -> value > 127))
+                    assertTrue(entry.getGeneralPurposeBit().usesUTF8ForNames());
+                zip.transferTo(OutputStream.nullOutputStream());
+                count++;
+            }
+            assertEquals(fixture.path("entries").size(), count);
+        }
+
+        String project = project();
+        String create = "/prototype-hub/projects/" + project + "/versions";
+        String key = UUID.randomUUID().toString();
+        JsonNode created = folderArchiveUpload(HttpMethod.POST, create, archive, key);
+        String version = created.path("id").asText();
+        assertEquals("ready", created.path("status").asText());
+        assertEquals("index.html", created.path("entryFile").asText());
+        assertFolderResources(fixture, created);
+        assertEquals(
+                version,
+                folderArchiveUpload(HttpMethod.POST, create, archive, key).path("id").asText());
+        JsonNode replaced =
+                folderArchiveUpload(
+                        HttpMethod.PUT, "/prototype-hub/versions/" + version, archive, null);
+        assertEquals(version, replaced.path("id").asText());
+        assertFolderResources(fixture, replaced);
+        assertEquals(
+                1,
+                call(
+                                HttpMethod.GET,
+                                "/prototype-hub/versions/_usage?projectId=" + project,
+                                admin,
+                                null,
+                                200)
+                        .path("result")
+                        .path("versions")
+                        .path("used")
+                        .asInt());
+    }
+
+    /** 浏览器目录与普通 ZIP 共用现 multipart 字段，不引入专用上传端点。 */
+    JsonNode folderArchiveUpload(HttpMethod method, String path, byte[] archive, String key) {
+        var body = new MultipartBodyBuilder();
+        body.part("versionName", "Folder export");
+        body.part("description", "Synthetic HTML directory");
+        body.part("file", new ByteArrayResource(archive)).filename("folder-export.zip");
+        var request = client.method(method).uri(path).header("X-Access-Token", admin);
+        if (key != null) request.header("Idempotency-Key", key);
+        return response(
+                        request.contentType(MediaType.MULTIPART_FORM_DATA)
+                                .body(BodyInserters.fromMultipartData(body.build()))
+                                .exchange(),
+                        200)
+                .path("result");
+    }
+
+    /** 从公开运行态入口读回所有文件；HTML 仅允许既有 Inspector 注入这一已知差异。 */
+    void assertFolderResources(JsonNode fixture, JsonNode version) throws Exception {
+        String base = version.path("runtimeBaseUrl").asText();
+        for (JsonNode entry : fixture.path("entries")) {
+            String path = entry.path("path").asText();
+            byte[] original = Base64.getDecoder().decode(entry.path("base64").asText());
+            assertEquals(
+                    entry.path("sha256").asText(),
+                    HexFormat.of()
+                            .formatHex(MessageDigest.getInstance("SHA-256").digest(original)));
+            URI encoded = URI.create(new URI(null, null, base + "/" + path, null).toASCIIString());
+            URI resource = URI.create("http://localhost:" + port).resolve(encoded);
+            byte[] actual =
+                    client.get()
+                            .uri(resource)
+                            .header("Origin", "null")
+                            .exchange()
+                            .expectStatus()
+                            .isOk()
+                            .expectHeader()
+                            .valueEquals(
+                                    "Content-Security-Policy", "sandbox allow-scripts allow-forms")
+                            .expectHeader()
+                            .doesNotExist("Access-Control-Allow-Credentials")
+                            .expectBody()
+                            .returnResult()
+                            .getResponseBody();
+            if (path.endsWith(".html")) {
+                assertNotNull(actual);
+                String html = new String(actual, StandardCharsets.UTF_8);
+                String injected =
+                        "<script data-prototype-hub-inspector src=\""
+                                + storageProperties.getInspectorPath()
+                                + "\"></script>";
+                assertTrue(html.contains(injected));
+                assertEquals(
+                        new String(original, StandardCharsets.UTF_8), html.replace(injected, ""));
+            } else {
+                // WebTestClient represents a successful zero-length body as null.
+                assertArrayEquals(original, actual == null ? new byte[0] : actual, path);
+            }
+        }
+        var stored =
+                versions.requireById(version.path("id").asText()).block(Duration.ofSeconds(10));
+        assertNotNull(stored);
+        try (var paths = Files.walk(FILES.resolve(stored.getStoragePath()))) {
+            assertEquals(
+                    fixture.path("entries").size(), paths.filter(Files::isRegularFile).count());
+        }
     }
 
     @Test
