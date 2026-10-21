@@ -10,6 +10,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -70,6 +71,12 @@ class SystemIntegrationTest {
     @Autowired WebTestClient client;
     @Autowired com.gaiys.proto.prototypehub.service.PrototypeVersionService versions;
     @Autowired com.gaiys.proto.prototypehub.service.PrototypeShareService shares;
+
+    @BeforeEach
+    void isolatePrototypeData() {
+        PrototypeHubTestData.clear(database);
+    }
+
     static final java.nio.file.Path FILES = temporaryStorage();
 
     static java.nio.file.Path temporaryStorage() {

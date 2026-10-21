@@ -3,26 +3,98 @@ package com.gaiys.proto.prototypehub.service;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
+import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
+import com.gaiys.proto.prototypehub.web.response.ProjectUsageResponse;
 import java.util.UUID;
+import lombok.AllArgsConstructor;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
+/**
+ * 管理共享工作区的项目与实际用量。
+ *
+ * <p>创建时在安装行锁内校验容量并持久化回执；删除约束和文件清理由删除服务协调。
+ */
 @Service
+@AllArgsConstructor
 public class PrototypeProjectService
         extends GenericReactiveCrudService<PrototypeProjectEntity, String> {
+    private final PrototypeInstallationService installations;
+    private final PrototypeCreationReceiptService receipts;
+    private final TransactionalOperator transactions;
+
     public Mono<PrototypeProjectEntity> requireById(String id) {
         return findById(id)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")));
     }
 
     public Mono<PrototypeProjectEntity> create(ProjectRequest input, String actor) {
-        PrototypeProjectEntity project = new PrototypeProjectEntity();
-        project.setId(UUID.randomUUID().toString().replace("-", ""));
-        project.setCreatorId(actor);
-        project.setCreateTime(System.currentTimeMillis());
-        apply(project, input, actor);
-        return insert(project).thenReturn(project);
+        return create(input, actor, null);
+    }
+
+    /** 安装行锁覆盖回执、实际用量和插入，不同副本争抢最后一个名额也只会成功一次。 */
+    public Mono<PrototypeProjectEntity> create(ProjectRequest input, String actor, String key) {
+        return Mono.defer(
+                () -> {
+                    var request =
+                            receipts.request(
+                                    actor,
+                                    "create-project",
+                                    "",
+                                    key,
+                                    input.name().trim(),
+                                    input.description(),
+                                    input.cover());
+                    return installations
+                            .lock()
+                            .then(receipts.replay(request, this::findById))
+                            .switchIfEmpty(
+                                    Mono.defer(() -> createWithinCapacity(input, actor, request)))
+                            .as(transactions::transactional);
+                });
+    }
+
+    /** 用量只读真实数据；超过上限的既有库仍可启动、查看、修改和删除。 */
+    public Mono<ProjectUsageResponse> usage() {
+        return installations
+                .current()
+                .flatMap(
+                        installation ->
+                                createQuery()
+                                        .count()
+                                        .map(
+                                                used ->
+                                                        new ProjectUsageResponse(
+                                                                installation.getInstallationId(),
+                                                                CapacityUsage.from(
+                                                                        used.longValue()))));
+    }
+
+    private Mono<PrototypeProjectEntity> createWithinCapacity(
+            ProjectRequest input, String actor, PrototypeCreationReceiptService.Request request) {
+        return createQuery()
+                .count()
+                .flatMap(
+                        used -> {
+                            if (used.longValue() >= CapacityUsage.LIMIT) {
+                                return Mono.error(
+                                        new PrototypeHubException(
+                                                "error.prototype-hub.project_limit_reached",
+                                                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED",
+                                                409,
+                                                CapacityUsage.LIMIT));
+                            }
+                            PrototypeProjectEntity project = new PrototypeProjectEntity();
+                            project.setId(UUID.randomUUID().toString().replace("-", ""));
+                            project.setCreatorId(actor);
+                            project.setCreateTime(System.currentTimeMillis());
+                            apply(project, input, actor);
+                            return insert(project)
+                                    .then(receipts.record(request, project.getId()))
+                                    .thenReturn(project);
+                        });
     }
 
     public Mono<PrototypeProjectEntity> update(String id, ProjectRequest input, String actor) {

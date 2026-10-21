@@ -137,11 +137,16 @@ class EasyormSchemaIntegrationTest {
                         "p_version",
                         "p_share",
                         "p_file_cleanup",
+                        "p_creation_receipt",
                         "s_organization",
                         "s_position",
                         "s_dictionary",
                         "s_dictionary_item"))
             assertEquals("0", scalar("SELECT count(*)::text FROM " + table), table);
+        assertEquals("1", scalar("SELECT count(*)::text FROM p_installation"));
+        for (String table : List.of("p_installation", "p_creation_receipt"))
+            assertFalse(
+                    scalar("SELECT obj_description('public." + table + "'::regclass)").isBlank());
     }
 
     @Test

@@ -6,6 +6,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
+import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import java.util.List;
@@ -22,6 +23,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
@@ -55,6 +57,14 @@ public class PrototypeVersionController {
                 .map(VersionResponse::from);
     }
 
+    /** 版本容量沿用版本查询权限；项目存在性由服务校验，不放宽为项目查询权限。 */
+    @GetMapping("/versions/_usage")
+    @QueryAction
+    @Operation(summary = "查询项目版本容量")
+    public Mono<VersionUsageResponse> usage(@RequestParam String projectId) {
+        return versions.usage(projectId);
+    }
+
     @GetMapping("/versions/{id}")
     @QueryAction
     @Operation(summary = "查询原型版本详情")
@@ -76,7 +86,8 @@ public class PrototypeVersionController {
             @PathVariable String projectId,
             @RequestPart String versionName,
             @RequestPart(required = false) String description,
-            @RequestPart FilePart file) {
+            @RequestPart FilePart file,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
         return Authentication.currentReactive()
                 .flatMap(
                         auth ->
@@ -85,7 +96,8 @@ public class PrototypeVersionController {
                                         versionName,
                                         description,
                                         file,
-                                        auth.getUser().getId()))
+                                        auth.getUser().getId(),
+                                        key))
                 .map(VersionResponse::from);
     }
 
