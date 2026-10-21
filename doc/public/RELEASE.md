@@ -33,9 +33,13 @@ release-audit 按实际运行依赖生成 `META-INF/third-party/THIRD-PARTY.txt`
 
 项目的源码公开、JAR、Docker 镜像与整套离线中间件包分别审核；第三方/基础镜像/操作系统包未必都采用 Apache。特别是 Redis 8、Elasticsearch 官方默认发行物的条款应按版本与实际分发模式核对，不推断网络调用会自动改变本应用许可证。
 
-完整手动检查入口是 `bash tools/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它执行工具安全测试、完整 Maven 发行审计、发行包法律字节与覆盖率检查，并扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。设置 `PROTO_RUNTIME_PLAYWRIGHT_DIR` 可额外执行真实 Playwright CLI 生命周期探针，未设置时明确跳过；这些探针不替代实际平台业务演练。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
+完整手动检查入口是 `bash tools/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它在 Maven 构建前检查 Trivy/Gitleaks 的实际 CLI 版本，再执行工具安全测试、完整 Maven 发行审计、发行包法律字节与覆盖率检查，并扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。版本由 `tools/security_tools.py` 统一定义，安装入口为 `bash tools/install-security-tools.sh /absolute/private/tool-directory`，仍须按提示加入 PATH；版本匹配不代替安装归档的官方 checksum 校验。设置 `PROTO_RUNTIME_PLAYWRIGHT_DIR` 可额外执行真实 Playwright CLI 生命周期探针，未设置时明确跳过；这些探针不替代实际平台业务演练。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
 
-漏洞扫描遵循固定 Trivy 版本的[官方默认数据库仓库顺序](https://github.com/aquasecurity/trivy/blob/v0.75.0/pkg/db/db.go)，包括官方 GCR mirror 与 GHCR，不将其限定为单一仓库；数据库 schema、更新时间与 OCI 摘要仍由 Trivy 正常校验，不跳过更新。每次扫描前撤销旧 JSON 报告，下载或扫描失败不得复用先前成功结果；报告与实际使用的数据库元数据一起留在本地验收材料中。
+漏洞扫描入口为 `bash tools/check-dependency-vulnerabilities.sh`，遵循固定 Trivy 版本的[官方默认数据库仓库顺序](https://github.com/aquasecurity/trivy/blob/v0.75.0/pkg/db/db.go)，包括官方 GCR mirror 与 GHCR，不将其限定为单一仓库；数据库 schema、更新时间与 OCI 摘要仍由 Trivy 正常校验，不跳过更新。扫描使用自有空配置，不读取本地 `.trivyignore`，剥离继承的 `TRIVY_*` 策略环境，避免 `IGNORE_UNFIXED`、`SKIP_DB_UPDATE` 等无意放宽；`TRIVY_CACHE_DIR` 单独作为缓存位置传入，普通代理与 CA 环境仍保留。门槛维持 HIGH/CRITICAL，不将“存在未修复版本”当作忽略依据。
+
+扫描先取得 `target` 内的独占锁，再撤销旧结果；另一扫描占用时直接失败，不清除对方正在生成的结果。它使用私有 SBOM 快照和临时输出，拒绝空/损坏/身份不符的报告、扫描中变化的输入和符号链接。仅完整扫描才发布 `target/vulnerabilities.json`，最后发布 `target/vulnerabilities-receipt.json`；两文件均为 `0600`。收据绑定 SBOM/报告 SHA-256、工具版本、时间、HIGH/CRITICAL 数量及扫描后观察到的本地数据库元数据。使用结果时须同时核对这两个摘要；该本地收据不是签名，也不证明其他 JAR 或镜像已通过。删除/修改 SBOM 或报告后须重扫，旧结果不能沿用。
+
+零命中返回 0、收据 `status=passed`；完整扫描发现高危返回 1、收据 `status=failed` 并保留有效 JSON，便于处置；下载、运行或报告校验失败返回非零且不发布最终报告/收据。手动检查可先运行 `python3 tools/test_security_gates.py` 验证错误工具、部分输出、并发和中断边界；这些隔离 fake CLI 测试不代表真实漏洞库或依赖扫描通过。
 
 ## 干净源码与运行验证
 

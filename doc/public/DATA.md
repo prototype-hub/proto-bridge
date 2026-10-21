@@ -2,7 +2,7 @@
 
 ## 当前启动职责
 
-运行时使用 hsweb 5.0.1 的 EasyORM/R2DBC。`@EnableEasyormRepository("com.gaiys.proto.**.entity")` 注册本地实体，官方系统模块注册自己的实体；`easyorm.auto-ddl=true` 根据元数据同步缺失表、字段和索引。仅移除 `resources/db` 并不会禁用 EasyORM；此前不能自动建表，是因为应用明确配置了 `auto-ddl: false`。当前生产 resources 不再保存建表 SQL，Flyway、PostgreSQL JDBC 和 spring-jdbc 仅在测试依赖中保留。
+运行时使用 hsweb 5.0.2、EasyORM 4.2.2/R2DBC。`@EnableEasyormRepository("com.gaiys.proto.**.entity")` 注册本地实体，官方系统模块注册自己的实体；`easyorm.auto-ddl=true` 根据元数据同步缺失表、字段和索引。仅移除 `resources/db` 并不会禁用 EasyORM；此前不能自动建表，是因为应用明确配置了 `auto-ddl: false`。当前生产 resources 不再保存建表 SQL，Flyway、PostgreSQL JDBC 和 spring-jdbc 仅在测试依赖中保留。
 
 连接只配置 R2DBC：`DATABASE_R2DBC_URL` 或 `DB_HOST/DB_PORT/DB_DATABASE`、`DB_USERNAME/DB_PASSWORD`。`DB_SCHEMA` 同时用于 R2DBC 与 `easyorm.default-schema`；Compose 沿用 `- "easyorm.auto-ddl=true"` 等实际属性路径。无需 `DATABASE_JDBC_URL`、`FLYWAY_ENABLED` 或 `spring.flyway.*`。数据库和 `DB_SCHEMA` 指定的 schema 须事先存在（默认 `public` 已存在）；EasyORM 创建表，不创建数据库或 schema。数据库账号需能访问目标 schema，并具有创建缺失结构、索引及修改描述的权限。`DATABASE_USER/DATABASE_PASSWORD` 是 application.yml 使用的兼容变量，默认分别引用 `DB_USERNAME/DB_PASSWORD`。
 

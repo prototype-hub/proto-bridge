@@ -13,6 +13,9 @@ for argument in "$@"; do
     *) echo "Supported flag: --update-snapshots" >&2; exit 2 ;;
   esac
 done
+# Reject unavailable or incompatible scanners before an expensive Maven build.
+# Preflight also revokes a previous run's report; it does not scan dependencies.
+python3 tools/check-dependency-vulnerabilities.py --preflight
 python3 tools/verify-identifiers.py
 python3 tools/test_generate_menu_resource.py
 python3 tools/test_collect_third_party_licenses.py
@@ -21,10 +24,11 @@ python3 tools/test_export_source.py
 # boundaries. Optional real Playwright lifecycle probes require the documented
 # PROTO_RUNTIME_PLAYWRIGHT_DIR installation; unittest reports those skips.
 python3 tools/test_verify_runtime.py
+python3 tools/test_security_gates.py
 ./mvnw -B -ntp "$@" clean verify -Prelease-audit
 python3 tools/verify-distribution.py
 python3 tools/check-coverage.py
-command -v gitleaks >/dev/null || { echo "Install pinned gitleaks using tools/install-security-tools.sh" >&2; exit 2; }
+python3 tools/security_tools.py --check gitleaks
 # Scan exactly the proposed public source, retaining local secrets and runtime data
 # in the working tree. The export script also rejects broken public documentation links.
 audit_temp=$(mktemp -d "${TMPDIR:-/tmp}/proto-public-check.XXXXXX")
