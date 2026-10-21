@@ -33,7 +33,23 @@ release-audit 按实际运行依赖生成 `META-INF/third-party/THIRD-PARTY.txt`
 
 项目的源码公开、JAR、Docker 镜像与整套离线中间件包分别审核；第三方/基础镜像/操作系统包未必都采用 Apache。特别是 Redis 8、Elasticsearch 官方默认发行物的条款应按版本与实际分发模式核对，不推断网络调用会自动改变本应用许可证。
 
-完整手动检查入口是 `bash tools/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
+完整手动检查入口是 `bash tools/verify-open-source.sh`，需要 JDK 21、Python 3、Docker、固定版本安全工具及可访问的审计数据源；可传 `-U`，不接受离线参数，因为 CycloneDX 的许可证解析需要在线资源。它执行工具安全测试、完整 Maven 发行审计、发行包法律字节与覆盖率检查，并扫描拟公开的导出目录，有 Git 时另扫历史；无 Git 时不会声称覆盖历史。设置 `PROTO_RUNTIME_PLAYWRIGHT_DIR` 可额外执行真实 Playwright CLI 生命周期探针，未设置时明确跳过；这些探针不替代实际平台业务演练。工具/漏洞库不可用必须记录为未验收，不能用跳过标记当通过。
+
+漏洞扫描遵循固定 Trivy 版本的[官方默认数据库仓库顺序](https://github.com/aquasecurity/trivy/blob/v0.75.0/pkg/db/db.go)，包括官方 GCR mirror 与 GHCR，不将其限定为单一仓库；数据库 schema、更新时间与 OCI 摘要仍由 Trivy 正常校验，不跳过更新。每次扫描前撤销旧 JSON 报告，下载或扫描失败不得复用先前成功结果；报告与实际使用的数据库元数据一起留在本地验收材料中。
+
+## 干净源码与运行验证
+
+在新导出的源码目录安装依赖并构建，避免复用工作区中的 `target`、本地配置或运行数据。后端使用 Maven Wrapper 和 JDK 21；配套前端按其锁文件安装后执行生产构建。导出清单验证源码范围，构建和运行检查分别验证产物，两者不能互相替代。
+
+完成后端构建后执行：
+
+```bash
+python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --report /tmp/proto-runtime-report.json
+# 同时验证已经完成生产构建的配套前端：
+python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --frontend-dir /path/to/proto-bridge-ui --report /tmp/proto-runtime-ui-report.json
+```
+
+工具仅创建和销毁自身隔离资源，覆盖独立 JAR 运行、重启、双进程容量竞争、联合恢复及可选真实浏览器流程。报告与实际 JAR 和原创 HTML 样本摘要绑定，不能据此推断其他产物、数据库版本或真实 Axure 包也已通过。浏览器环境、原型样本、反向代理、镜像、许可证与当前漏洞库检查仍按实际发行范围分别验收；运行验证不替代 `release-audit`。
 
 ## 手动发布门禁
 
