@@ -17,6 +17,10 @@ python3 tools/verify-identifiers.py
 python3 tools/test_generate_menu_resource.py
 python3 tools/test_collect_third_party_licenses.py
 python3 tools/test_export_source.py
+# Always exercise the packaged-runtime verifier's ownership, cleanup and report
+# boundaries. Optional real Playwright lifecycle probes require the documented
+# PROTO_RUNTIME_PLAYWRIGHT_DIR installation; unittest reports those skips.
+python3 tools/test_verify_runtime.py
 ./mvnw -B -ntp "$@" clean verify -Prelease-audit
 python3 tools/verify-distribution.py
 python3 tools/check-coverage.py
