@@ -35,6 +35,7 @@ class PrototypeHubRequestBoundaryTest {
         var cleanup = mock(FileCleanupService.class);
         var database = mock(DatabaseClient.class);
         var receipts = mock(PrototypeCreationReceiptService.class);
+        var access = mock(PrototypeProjectAccessService.class);
         var file = mock(FilePart.class);
         var upload =
                 new PrototypeUploadService(
@@ -46,7 +47,8 @@ class PrototypeHubRequestBoundaryTest {
                         transaction,
                         cleanup,
                         database,
-                        receipts);
+                        receipts,
+                        access);
         Mono<PrototypeVersionEntity> result =
                 replace
                         ? upload.update("version", "Release", "a".repeat(2001), file)
@@ -70,6 +72,7 @@ class PrototypeHubRequestBoundaryTest {
                 cleanup,
                 database,
                 receipts,
+                access,
                 file);
     }
 
@@ -87,9 +90,13 @@ class PrototypeHubRequestBoundaryTest {
         var version = new PrototypeVersionEntity();
         version.setId("version");
         version.setProjectId("project");
-        when(versions.requireById("version")).thenReturn(Mono.just(version));
+        var access = mock(PrototypeProjectAccessService.class);
+        when(access.requireVersion("version", PrototypeProjectAccessService.Action.SHARE))
+                .thenReturn(Mono.just(version));
         try (var work = new FileWork()) {
-            var shares = new PrototypeShareService(projects, versions, work, database, transaction);
+            var shares =
+                    new PrototypeShareService(
+                            projects, versions, work, database, transaction, access);
             StepVerifier.create(
                             shares.createShare(
                                     "version",

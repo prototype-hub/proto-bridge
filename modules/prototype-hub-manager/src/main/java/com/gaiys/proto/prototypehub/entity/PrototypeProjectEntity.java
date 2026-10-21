@@ -26,6 +26,15 @@ public class PrototypeProjectEntity extends GenericEntity<String> {
     @Schema(description = "原型项目封面地址")
     private String cover;
 
+    @Column(name = "owner_id", length = 64)
+    @Schema(description = "项目所有者用户标识，历史未认领项目为空")
+    private String ownerId;
+
+    @com.fasterxml.jackson.annotation.JsonIgnore
+    @Column(name = "access_epoch", length = 64)
+    @Schema(description = "项目成员授权代次，成员变更后使既有内部预览凭证失效")
+    private String accessEpoch;
+
     @Column(name = "creator_id", length = 64, nullable = false)
     @Schema(description = "项目创建者用户标识")
     private String creatorId;

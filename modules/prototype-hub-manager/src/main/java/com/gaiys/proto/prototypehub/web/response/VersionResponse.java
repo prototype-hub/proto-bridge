@@ -1,10 +1,9 @@
 package com.gaiys.proto.prototypehub.web.response;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
-import com.gaiys.proto.prototypehub.web.urls.PrototypeUrls;
 import io.swagger.v3.oas.annotations.media.Schema;
 
-/** 原型版本管理响应视图，通过版本预览密钥构造运行文件和入口预览地址。 */
+/** 原型版本管理视图；内部预览须单独获取短期会话，查询结果不再携带永久能力。 */
 @Schema(description = "原型版本响应信息")
 public record VersionResponse(
         @Schema(description = "原型版本标识") String id,
@@ -15,10 +14,9 @@ public record VersionResponse(
         @Schema(description = "原型版本状态") String status,
         @Schema(description = "版本创建者用户标识") String createdBy,
         @Schema(description = "版本创建时间（Unix 毫秒）") Long createdAt,
-        @Schema(description = "运行文件基础地址") String runtimeBaseUrl,
-        @Schema(description = "原型预览地址") String previewUrl) {
+        @Schema(description = "已停用的永久运行地址，固定为空；请获取短期预览会话") String runtimeBaseUrl,
+        @Schema(description = "已停用的永久预览地址，固定为空；请获取短期预览会话") String previewUrl) {
     public static VersionResponse from(PrototypeVersionEntity v) {
-        String base = "/api/prototype-hub/runtime/" + v.getId() + "/" + v.getPreviewKey();
         return new VersionResponse(
                 v.getId(),
                 v.getProjectId(),
@@ -28,7 +26,7 @@ public record VersionResponse(
                 v.getStatus(),
                 v.getCreatorId(),
                 v.getCreateTime(),
-                base,
-                PrototypeUrls.preview(base, v.getEntryFile()));
+                null,
+                null);
     }
 }

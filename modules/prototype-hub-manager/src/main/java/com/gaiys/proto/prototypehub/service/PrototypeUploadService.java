@@ -43,6 +43,7 @@ public class PrototypeUploadService {
     private final FileCleanupService cleanup;
     private final DatabaseClient database;
     private final PrototypeCreationReceiptService receipts;
+    private final PrototypeProjectAccessService access;
 
     public Mono<PrototypeVersionEntity> upload(
             String project, String name, String description, FilePart file, String actor) {
@@ -72,7 +73,19 @@ public class PrototypeUploadService {
                     UploadAttempt attempt = new UploadAttempt();
                     // 带键请求的回执可能指向已删除资源，须在读取完整指纹后统一返回幂等冲突。
                     Mono<Void> existingProject =
-                            request == null ? projects.requireById(project).then() : Mono.empty();
+                            request == null
+                                    ? access.requireProject(
+                                                    project,
+                                                    PrototypeProjectAccessService.Action.EDIT)
+                                            .then()
+                                    : projects.findById(project)
+                                            .flatMap(
+                                                    found ->
+                                                            access.requireProject(
+                                                                    project,
+                                                                    PrototypeProjectAccessService
+                                                                            .Action.EDIT))
+                                            .then();
                     return existingProject.then(
                             Mono.usingWhen(
                                     storage.prepareUpload(project, id),
@@ -99,7 +112,7 @@ public class PrototypeUploadService {
         return Mono.defer(
                 () -> {
                     validate(name, description, file);
-                    return versions.requireById(id)
+                    return access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT)
                             .flatMap(
                                     old -> updateExistingVersion(id, old, name, description, file));
                 });
@@ -183,7 +196,17 @@ public class PrototypeUploadService {
                         .one()
                         .map(lock -> true)
                         .defaultIfEmpty(false)
-                        .flatMap(exists -> replayOrCreateVersion(exists, version, request));
+                        .flatMap(
+                                exists ->
+                                        exists
+                                                ? access.requireProject(
+                                                                project,
+                                                                PrototypeProjectAccessService.Action
+                                                                        .EDIT)
+                                                        .then(
+                                                                replayOrCreateVersion(
+                                                                        true, version, request))
+                                                : replayOrCreateVersion(false, version, request));
         return inUploadTransaction(attempt, creation, result -> id.equals(result.getId()));
     }
 
@@ -191,7 +214,16 @@ public class PrototypeUploadService {
             boolean projectExists,
             PrototypeVersionEntity version,
             PrototypeCreationReceiptService.Request request) {
-        return receipts.replay(request, versions::findById)
+        return receipts.replay(
+                        request,
+                        id ->
+                                versions.findById(id)
+                                        .flatMap(
+                                                versionFound ->
+                                                        access.requireVersion(
+                                                                id,
+                                                                PrototypeProjectAccessService.Action
+                                                                        .EDIT)))
                 .switchIfEmpty(
                         Mono.defer(() -> insertWithinCapacity(projectExists, version, request)));
     }
@@ -245,12 +277,26 @@ public class PrototypeUploadService {
             UploadAttempt attempt) {
         // 版本切换与旧目录清理任务原子提交，文件归属由事务最终完成状态决定。
         Mono<Tuple2<PrototypeVersionEntity, FileCleanupEntity>> replacementResult =
-                versions.replace(
-                                old,
-                                name,
-                                description,
-                                storage.relativeSitePath(old.getProjectId(), replacement),
-                                entry)
+                access.lockProject(old.getProjectId())
+                        .then(
+                                database.sql("select id from p_version where id=:id for update")
+                                        .bind("id", id)
+                                        .fetch()
+                                        .one()
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "version"))))
+                        // 上传接收期间可能被撤员；实际切换目录之前，在项目锁内重新检查当前授权。
+                        .then(access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT))
+                        .then(
+                                versions.replace(
+                                        old,
+                                        name,
+                                        description,
+                                        storage.relativeSitePath(old.getProjectId(), replacement),
+                                        entry))
                         .flatMap(
                                 updated ->
                                         cleanup.enqueue(

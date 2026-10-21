@@ -1,6 +1,9 @@
 package com.gaiys.proto.prototypehub.web;
 
+import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
@@ -42,30 +45,28 @@ import reactor.core.publisher.Mono;
 public class PrototypeProjectController {
     private final PrototypeProjectService projects;
     private final PrototypeDeletionService deletion;
+    private final PrototypeProjectAccessService access;
 
     @GetMapping
     @QueryAction
     @Operation(summary = "查询原型项目列表")
     public Flux<ProjectResponse> list() {
-        return projects.createQuery()
-                .fetch()
-                .sort((a, b) -> Long.compare(b.getCreateTime(), a.getCreateTime()))
-                .map(ProjectResponse::from);
+        return access.readableProjects();
     }
 
-    /** 沿用项目查询权限，统计当前共享工作区，不新增菜单权限或按创建者缩小统计。 */
+    /** 沿用项目查询权限，统计整个安装实例，不新增菜单权限或按创建者缩小统计。 */
     @GetMapping("/_usage")
     @QueryAction
     @Operation(summary = "查询部署身份及项目容量")
     public Mono<ProjectUsageResponse> usage() {
-        return projects.usage();
+        return access.current().then(projects.usage());
     }
 
     @GetMapping("/{id}")
     @QueryAction
     @Operation(summary = "查询原型项目详情")
     public Mono<ProjectResponse> detail(@PathVariable String id) {
-        return projects.requireById(id).map(ProjectResponse::from);
+        return access.requireProject(id, Action.READ).flatMap(access::response);
     }
 
     @PostMapping
@@ -74,9 +75,10 @@ public class PrototypeProjectController {
     public Mono<ProjectResponse> create(
             @Valid @RequestBody ProjectRequest input,
             @RequestHeader(value = "Idempotency-Key", required = false) String key) {
-        return Authentication.currentReactive()
-                .flatMap(auth -> projects.create(input, auth.getUser().getId(), key))
-                .map(ProjectResponse::from);
+        return access.current()
+                .flatMap(actor -> projects.create(input, actor.userId(), key))
+                .flatMap(project -> access.requireProject(project.getId(), Action.READ))
+                .flatMap(access::response);
     }
 
     @PutMapping("/{id}")
@@ -86,7 +88,8 @@ public class PrototypeProjectController {
             @PathVariable String id, @Valid @RequestBody ProjectRequest input) {
         return Authentication.currentReactive()
                 .flatMap(auth -> projects.update(id, input, auth.getUser().getId()))
-                .map(ProjectResponse::from);
+                .flatMap(project -> access.requireProject(project.getId(), Action.READ))
+                .flatMap(access::response);
     }
 
     @DeleteMapping("/{id}")
@@ -96,6 +99,26 @@ public class PrototypeProjectController {
             description = "仅当项目下不存在版本时删除；存在版本时须先删除全部版本",
             responses = @ApiResponse(responseCode = "409", description = "项目下仍存在版本"))
     public Mono<ProjectResponse> delete(@PathVariable String id) {
-        return deletion.deleteProject(id).map(ProjectResponse::from);
+        return access.current()
+                .flatMap(
+                        actor ->
+                                deletion.deleteProject(id)
+                                        .flatMap(
+                                                project ->
+                                                        access.claimRequired(project)
+                                                                .map(
+                                                                        pending ->
+                                                                                ProjectResponse
+                                                                                        .from(
+                                                                                                project,
+                                                                                                actor
+                                                                                                                .administrator()
+                                                                                                        ? ProjectRole
+                                                                                                                .admin
+                                                                                                                .name()
+                                                                                                        : ProjectRole
+                                                                                                                .owner
+                                                                                                                .name(),
+                                                                                                pending))));
     }
 }

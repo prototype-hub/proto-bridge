@@ -8,3 +8,5 @@
 \set prototype_hub_version_table :prototype_hub_table_prefix 'version'
 \set prototype_hub_share_table :prototype_hub_table_prefix 'share'
 \set prototype_hub_cleanup_table :prototype_hub_table_prefix 'file_cleanup'
+\set prototype_hub_member_table :prototype_hub_table_prefix 'project_member'
+\set prototype_hub_preview_session_table :prototype_hub_table_prefix 'preview_session'

@@ -1,10 +1,14 @@
 package com.gaiys.proto.prototypehub.web;
 
 import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
+import com.gaiys.proto.prototypehub.service.PrototypePreviewSessionService;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
+import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -47,12 +51,14 @@ public class PrototypeVersionController {
     private final PrototypeUploadService upload;
     private final PrototypeDeletionService deletion;
     private final PrototypeStorageService storage;
+    private final PrototypeProjectAccessService access;
+    private final PrototypePreviewSessionService previews;
 
     @GetMapping("/versions")
     @QueryAction
     @Operation(summary = "查询原型版本列表")
     public Flux<VersionResponse> list(@RequestParam(required = false) String projectId) {
-        return versions.findAll(projectId)
+        return access.readableVersions(projectId)
                 .sort((a, b) -> Long.compare(b.getCreateTime(), a.getCreateTime()))
                 .map(VersionResponse::from);
     }
@@ -62,21 +68,28 @@ public class PrototypeVersionController {
     @QueryAction
     @Operation(summary = "查询项目版本容量")
     public Mono<VersionUsageResponse> usage(@RequestParam String projectId) {
-        return versions.usage(projectId);
+        return access.requireProject(projectId, Action.READ).then(versions.usage(projectId));
     }
 
     @GetMapping("/versions/{id}")
     @QueryAction
     @Operation(summary = "查询原型版本详情")
     public Mono<VersionResponse> detail(@PathVariable String id) {
-        return versions.requireById(id).map(VersionResponse::from);
+        return access.requireVersion(id, Action.READ).map(VersionResponse::from);
     }
 
     @GetMapping("/versions/{id}/pages")
     @QueryAction
     @Operation(summary = "查询原型版本页面目录")
     public Mono<List<PrototypePageInfo>> pages(@PathVariable String id) {
-        return versions.requireById(id).flatMap(storage::listPages);
+        return access.requireVersion(id, Action.READ).flatMap(storage::listPages);
+    }
+
+    @PostMapping("/versions/{id}/preview-session")
+    @QueryAction
+    @Operation(summary = "获取五分钟内部预览会话", description = "只授予当前文件和项目授权代次，成员变更或版本替换后失效")
+    public Mono<PreviewSessionResponse> previewSession(@PathVariable String id) {
+        return previews.create(id);
     }
 
     @PostMapping(value = "/projects/{projectId}/versions", consumes = "multipart/form-data")

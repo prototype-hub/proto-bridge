@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.web.urls;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
@@ -24,7 +25,7 @@ class PrototypeUrlsTest {
                 "index;v.html|index%3Bv.html",
                 "dir;v/index.html|dir%3Bv/index.html"
             })
-    void versionResponseEncodesThePreviewOnceAndPreservesTheStoredEntry(
+    void previewEncodesOnceWhileVersionResponseDoesNotDiscloseTheLegacyKey(
             String entry, String encodedEntry) {
         var version = new PrototypeVersionEntity();
         version.setId("version-id");
@@ -32,22 +33,20 @@ class PrototypeUrlsTest {
         version.setPreviewKey("preview-key");
         version.setEntryFile(entry);
         var response = VersionResponse.from(version);
-        String base = "/api/prototype-hub/runtime/version-id/preview-key";
+        String base = "/api/prototype-hub/runtime/version-id/short-session-token";
+        String previewUrl = PrototypeUrls.preview(base, entry);
         assertEquals(entry, response.entryFile());
-        assertEquals(base, response.runtimeBaseUrl());
-        assertEquals(base + "/" + encodedEntry, response.previewUrl());
+        assertNull(response.runtimeBaseUrl());
+        assertNull(response.previewUrl());
+        assertEquals(base + "/" + encodedEntry, previewUrl);
         assertEquals(
                 entry,
-                UriUtils.decode(
-                        response.previewUrl().substring(base.length() + 1),
-                        StandardCharsets.UTF_8));
+                UriUtils.decode(previewUrl.substring(base.length() + 1), StandardCharsets.UTF_8));
         var pattern =
                 PathPatternParser.defaultInstance.parse(
                         "/prototype-hub/runtime/{versionId}/{previewKey}/{*resourcePath}");
         // 对照真实控制器路径规则，模拟已有/api过滤器后的路由，而不只验证字符串编码。
-        var match =
-                pattern.matchAndExtract(
-                        PathContainer.parsePath(response.previewUrl().substring(4)));
+        var match = pattern.matchAndExtract(PathContainer.parsePath(previewUrl.substring(4)));
         assertNotNull(match);
         assertEquals("/" + entry, match.getUriVariables().get("resourcePath"));
     }
