@@ -34,6 +34,7 @@ class PrototypeHubRequestBoundaryTest {
         var transaction = mock(TransactionalOperator.class);
         var cleanup = mock(FileCleanupService.class);
         var database = mock(DatabaseClient.class);
+        var receipts = mock(PrototypeCreationReceiptService.class);
         var file = mock(FilePart.class);
         var upload =
                 new PrototypeUploadService(
@@ -44,7 +45,8 @@ class PrototypeHubRequestBoundaryTest {
                         work,
                         transaction,
                         cleanup,
-                        database);
+                        database,
+                        receipts);
         Mono<PrototypeVersionEntity> result =
                 replace
                         ? upload.update("version", "Release", "a".repeat(2001), file)
@@ -59,7 +61,16 @@ class PrototypeHubRequestBoundaryTest {
                         })
                 .verify(Duration.ofSeconds(5));
         verifyNoInteractions(
-                projects, versions, storage, extractor, work, transaction, cleanup, database, file);
+                projects,
+                versions,
+                storage,
+                extractor,
+                work,
+                transaction,
+                cleanup,
+                database,
+                receipts,
+                file);
     }
 
     static Stream<String> oversizedPasswords() {

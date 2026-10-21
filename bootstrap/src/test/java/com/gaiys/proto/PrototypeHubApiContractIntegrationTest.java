@@ -39,6 +39,7 @@ import org.springframework.core.io.ByteArrayResource;
 import org.springframework.http.HttpMethod;
 import org.springframework.http.MediaType;
 import org.springframework.http.client.MultipartBodyBuilder;
+import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
@@ -95,11 +96,13 @@ class PrototypeHubApiContractIntegrationTest {
     @Autowired PrototypeVersionService versions;
     @Autowired PrototypeShareService shares;
     @Autowired FileCleanupService cleanup;
+    @Autowired DatabaseClient database;
     @LocalServerPort int port;
     String admin;
 
     @BeforeEach
     void authenticate() {
+        PrototypeHubTestData.clear(database);
         client = client.mutate().responseTimeout(Duration.ofSeconds(30)).build();
         admin =
                 call(

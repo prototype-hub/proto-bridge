@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
+import com.gaiys.proto.prototypehub.web.response.ProjectUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -21,6 +22,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
@@ -51,6 +53,14 @@ public class PrototypeProjectController {
                 .map(ProjectResponse::from);
     }
 
+    /** 沿用项目查询权限，统计当前共享工作区，不新增菜单权限或按创建者缩小统计。 */
+    @GetMapping("/_usage")
+    @QueryAction
+    @Operation(summary = "查询部署身份及项目容量")
+    public Mono<ProjectUsageResponse> usage() {
+        return projects.usage();
+    }
+
     @GetMapping("/{id}")
     @QueryAction
     @Operation(summary = "查询原型项目详情")
@@ -61,9 +71,11 @@ public class PrototypeProjectController {
     @PostMapping
     @SaveAction
     @Operation(summary = "创建原型项目")
-    public Mono<ProjectResponse> create(@Valid @RequestBody ProjectRequest input) {
+    public Mono<ProjectResponse> create(
+            @Valid @RequestBody ProjectRequest input,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
         return Authentication.currentReactive()
-                .flatMap(auth -> projects.create(input, auth.getUser().getId()))
+                .flatMap(auth -> projects.create(input, auth.getUser().getId(), key))
                 .map(ProjectResponse::from);
     }
 
