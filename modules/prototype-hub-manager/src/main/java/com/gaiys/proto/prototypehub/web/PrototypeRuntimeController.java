@@ -1,9 +1,7 @@
 package com.gaiys.proto.prototypehub.web;
 
-import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
-import com.gaiys.proto.prototypehub.service.PrototypeShareService;
+import com.gaiys.proto.prototypehub.service.PrototypePreviewSessionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
-import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.AllArgsConstructor;
@@ -18,33 +16,26 @@ import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
 
 /**
- * 通过版本预览密钥提供原型运行文件。
+ * 通过短期内部预览会话提供原型运行文件。
  *
- * <p>该入口允许匿名请求，由预览密钥校验授予文件访问，文件路径边界由存储服务维护。
+ * <p>该入口允许匿名请求，由短期会话及当前用户项目授权共同授予文件访问，文件路径边界由存储服务维护。
  */
 @RestController
 @Tag(name = "原型预览访问")
 @AllArgsConstructor
 @RequestMapping("/prototype-hub/runtime")
 public class PrototypeRuntimeController {
-    private final PrototypeVersionService versions;
+    private final PrototypePreviewSessionService previews;
     private final PrototypeStorageService storage;
 
     @GetMapping("/{versionId}/{previewKey}/{*resourcePath}")
     @Authorize(ignore = true)
-    @Operation(summary = "通过版本预览密钥读取原型运行文件")
+    @Operation(summary = "通过短期内部预览会话读取原型运行文件")
     public Mono<ResponseEntity<Resource>> resource(
             @PathVariable String versionId,
             @PathVariable String previewKey,
             @PathVariable String resourcePath) {
-        return versions.requireById(versionId)
-                .filter(v -> PrototypeShareService.matches(v.getPreviewKey(), previewKey))
-                .switchIfEmpty(
-                        Mono.error(
-                                () ->
-                                        PrototypeHubException.forbidden(
-                                                "error.prototype-hub.preview_access_denied",
-                                                "PROTOTYPE_HUB_PREVIEW_ACCESS_DENIED")))
+        return previews.require(versionId, previewKey)
                 .flatMap(v -> storage.resolveResource(v, resourcePath))
                 .map(PrototypeRuntimeController::response);
     }

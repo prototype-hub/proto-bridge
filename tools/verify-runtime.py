@@ -32,7 +32,7 @@ import zlib
 
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
-TABLES = ('p_installation', 'p_project', 'p_version', 'p_share',
+TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_share',
           'p_creation_receipt', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
@@ -197,7 +197,9 @@ class RuntimeCheck:
         self.password = secrets.token_urlsafe(30)
         self.database_password = secrets.token_urlsafe(30)
         self.share_password = secrets.token_urlsafe(20)
-        self.secrets_seen.update((self.password, self.database_password, self.share_password))
+        self.member_password = secrets.token_urlsafe(30)
+        self.secrets_seen.update((self.password, self.database_password, self.share_password,
+                                  self.member_password))
         self.username = 'runtime-admin'
         self.database_port = None
         self.stage = 'initialization'
@@ -350,8 +352,40 @@ class RuntimeCheck:
                                       'durationSeconds': round(time.monotonic() - started, 2)})
         print(name + ': passed', flush=True)
 
+    def create_project_member(self, api, project):
+        username = 'runtime-viewer-' + uuid.uuid4().hex
+        user = api.request('POST', '/api/user/detail/_create',
+                           {'name': 'Runtime project viewer', 'username': username,
+                            'password': self.member_password})
+        user_id = user['id']
+        api.request('POST', '/api/role/MEMBER/users/_bind', [user_id])
+        api.request('PUT', '/api/prototype-hub/projects/' + project['id'] + '/members/' + user_id,
+                    {'role': 'viewer'})
+        return {'id': user_id, 'username': username}
+
+    def verify_project_member(self, api, member, project, version, expected_preview):
+        viewer = Api(api.origin, self.secrets_seen)
+        viewer.login(member['username'], self.member_password)
+        visible = viewer.request('GET', '/api/prototype-hub/projects')
+        require(len(visible) == 1 and visible[0]['id'] == project['id'] and
+                visible[0].get('role') == 'viewer', 'Restored project member scope differs')
+        require(not visible[0].get('capabilities', {}).get('edit', True),
+                'Restored viewer unexpectedly received editing capability')
+        require(self.preview(viewer, version) == expected_preview,
+                'Project member could not read the same bounded preview')
+
     def preview(self, api, version):
-        # Capability access must work without the administrator's platform token.
+        # Internal members exchange their platform identity for a limited capability first.
+        # Public-share responses already carry their independent external authorization.
+        if version.get('id'):
+            require(not version.get('previewUrl') and not version.get('runtimeBaseUrl'),
+                    'Version management response disclosed a permanent preview capability')
+            version = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
+                                  '/preview-session')
+            now = int(time.time() * 1000)
+            require(now < version.get('expiresAt', 0) <= now + 300000,
+                    'Internal preview expiry is not bounded to five minutes')
+        # Every HTML, nested page and asset read below must work without a platform token.
         api = Api(api.origin, self.secrets_seen)
         body, headers = api.request('GET', version['previewUrl'], raw=True)
         require(b'Runtime fixture home' in body, 'Preview entry content missing')
@@ -435,7 +469,9 @@ class RuntimeCheck:
                     'New database does not have default project capacity')
             project = api.project('Runtime restore project', project_key)
             version = api.upload(project['id'], zip_path, version_key)
+            member = self.create_project_member(api, project)
             preview_hashes = self.preview(api, version)
+            self.verify_project_member(api, member, project, version, preview_hashes)
             share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] + '/shares',
                                 {'password': self.share_password,
                                  'expiresAt': int(time.time() * 1000) + 3600000})
@@ -455,6 +491,7 @@ class RuntimeCheck:
             require(api.upload(project['id'], zip_path, version_key)['id'] == version['id'],
                     'Version receipt did not survive restart')
             require(self.preview(api, version) == preview_hashes, 'Preview bytes changed on restart')
+            self.verify_project_member(api, member, project, version, preview_hashes)
             self.verify_share(api, share, preview_hashes)
         with self.phase('two-process-final-project-slot'):
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
@@ -528,8 +565,27 @@ class RuntimeCheck:
                     'Project receipt did not survive restore')
             require(restored.upload(project['id'], zip_path, version_key)['id'] == version['id'],
                     'Version receipt did not survive restore')
+            authorization_before = self.database_manifest('runtime_restored')
+            for table in ('p_project', 'p_project_member'):
+                require(authorization_before[table] == before_database[table],
+                        'Startup or replay changed restored project authorization')
             require(self.preview(restored, version) == preview_hashes, 'Restored preview differs')
             self.verify_share(restored, share, preview_hashes)
+            self.verify_project_member(restored, member, project, version, preview_hashes)
+            authorization_after = self.database_manifest('runtime_restored')
+            for table in ('p_project', 'p_project_member'):
+                require(authorization_after[table] == before_database[table],
+                        'Issuing a preview changed restored project authorization')
+            # The dump included the exact short-lived rows. A new preview is an expected
+            # session-table mutation, never permission to omit stable ownership tables.
+            require(authorization_after['p_preview_session']['count'] <=
+                    authorization_before['p_preview_session']['count'] + 2,
+                    'Internal preview issued an unbounded number of sessions')
+            self.report['restoredProjectAuthorization'] = {
+                'tableHashesVerified': ['p_project', 'p_project_member'],
+                'shortSessionsIncludedInDump': True,
+                'nonEmptyMemberScopeReadVerified': True,
+                'newPreviewSessionsBounded': True}
             require(storage_manifest(restored_storage) == before_files,
                     'Replay or startup changed restored file ownership')
             require(storage_manifest(restored_system_storage) == before_system_files,

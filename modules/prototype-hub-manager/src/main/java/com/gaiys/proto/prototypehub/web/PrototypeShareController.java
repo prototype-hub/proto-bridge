@@ -1,7 +1,7 @@
 package com.gaiys.proto.prototypehub.web;
 
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
-import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.ShareResponse;
@@ -38,14 +38,15 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/prototype-hub")
 public class PrototypeShareController {
     private final PrototypeShareService shares;
-    private final PrototypeVersionService versions;
+    private final PrototypeProjectAccessService access;
 
     @GetMapping("/versions/{versionId}/shares")
     @QueryAction
     @Operation(summary = "查询原型版本分享列表")
     public Flux<ShareResponse> list(@PathVariable String versionId) {
-        return versions.requireById(versionId)
+        return access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE)
                 .thenMany(shares.findByVersionId(versionId))
+                .concatMap(share -> access.correlatedVersion(share).thenReturn(share))
                 .map(ShareResponse::from);
     }
 
@@ -59,7 +60,7 @@ public class PrototypeShareController {
                 .map(ShareResponse::from);
     }
 
-    /** 沿用分享查询权限与共享工作区边界；校验已知密码，不读取或返回明文密码。 */
+    /** 沿用分享查询权限与项目分享管理范围；校验已知密码，不读取或返回明文密码。 */
     @PostMapping("/shares/{id}/verify-password")
     @QueryAction
     @Operation(summary = "校验管理侧原型分享密码", description = "仅返回是否匹配，不授予访问密钥，支持过期或禁用分享")
@@ -72,8 +73,6 @@ public class PrototypeShareController {
     @DeleteAction
     @Operation(summary = "删除原型分享链接")
     public Mono<ShareResponse> delete(@PathVariable String id) {
-        return shares.findById(id)
-                .flatMap(share -> shares.deleteById(id).thenReturn(share))
-                .map(ShareResponse::from);
+        return shares.deleteShare(id).map(ShareResponse::from);
     }
 }

@@ -300,7 +300,9 @@ class PrototypeHubApiContractIntegrationTest {
 
     /** 从公开运行态入口读回所有文件；HTML 仅允许既有 Inspector 注入这一已知差异。 */
     void assertFolderResources(JsonNode fixture, JsonNode version) throws Exception {
-        String base = version.path("runtimeBaseUrl").asText();
+        assertTrue(version.path("runtimeBaseUrl").isNull());
+        assertTrue(version.path("previewUrl").isNull());
+        String base = previewSession(version.path("id").asText()).path("runtimeBaseUrl").asText();
         for (JsonNode entry : fixture.path("entries")) {
             String path = entry.path("path").asText();
             byte[] original = Base64.getDecoder().decode(entry.path("base64").asText());
@@ -522,7 +524,19 @@ class PrototypeHubApiContractIntegrationTest {
         }
     }
 
+    JsonNode previewSession(String version) {
+        return call(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/preview-session",
+                        admin,
+                        null,
+                        200)
+                .path("result");
+    }
+
     void assertPreview(String entry, JsonNode info) {
+        // 管理接口不发匿名长期能力；公开分享响应已经授予独立外部能力。
+        if (info.hasNonNull("id")) info = previewSession(info.path("id").asText());
         String base = info.path("runtimeBaseUrl").asText();
         URI preview = URI.create(info.path("previewUrl").asText());
         assertFalse(preview.isAbsolute());
@@ -798,11 +812,12 @@ class PrototypeHubApiContractIntegrationTest {
     }
 
     @Test
-    void managementPasswordCheckUsesShareQueryPermissionAndSharedWorkspace() throws IOException {
+    void managementPasswordCheckUsesShareQueryPermissionAndProjectScope() throws IOException {
+        String project = project();
         String version =
                 upload(
                                 HttpMethod.POST,
-                                "/prototype-hub/projects/" + project() + "/versions",
+                                "/prototype-hub/projects/" + project + "/versions",
                                 null,
                                 "index.html",
                                 200)
@@ -823,10 +838,16 @@ class PrototypeHubApiContractIntegrationTest {
         String reader = "share-reader-" + UUID.randomUUID();
         String readerId = createPasswordCheckUser(reader);
         call(HttpMethod.POST, "/role/MEMBER/users/_bind", admin, List.of(readerId), 200);
+        call(
+                HttpMethod.PUT,
+                "/prototype-hub/projects/" + project + "/members/" + readerId,
+                admin,
+                Map.of("role", "editor"),
+                200);
         String readToken = passwordCheckUserToken(reader);
         assertPasswordCheck(id, readToken, Map.of("password", "known"), true);
         assertPasswordCheck(id, readToken, Map.of("password", "wrong"), false);
-        // MEMBER 只有查询权限，校验不需要 save，但仍不能创建分享。
+        // 项目 editor 仍只有 MEMBER 的通用查询动作；校验不需要 save，创建分享仍被拒绝。
         call(
                 HttpMethod.POST,
                 "/prototype-hub/versions/" + version + "/shares",

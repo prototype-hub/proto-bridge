@@ -34,6 +34,7 @@ public class PrototypeShareService
     private final FileWork work;
     private final DatabaseClient database;
     private final TransactionalOperator transactions;
+    private final PrototypeProjectAccessService access;
 
     public Flux<PrototypeShareEntity> findByVersionId(String id) {
         return createQuery().where(PrototypeShareEntity::getVersionId, id).fetch();
@@ -53,8 +54,7 @@ public class PrototypeShareService
      * <p>分享启停和有效期不影响已登录用户确认密码；沿用既存 BCrypt 验证，不裁剪空格或限制旧密码字节数。
      */
     public Mono<Boolean> verifyPassword(String id, String password) {
-        return findById(id)
-                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("share")))
+        return access.requireShare(id, PrototypeProjectAccessService.Action.SHARE)
                 .flatMap(
                         share -> {
                             if (share.getPasswordHash() == null) return Mono.just(true);
@@ -66,7 +66,7 @@ public class PrototypeShareService
 
     public Mono<PrototypeShareEntity> createShare(
             String versionId, ShareCreateRequest input, String actor) {
-        return versions.requireById(versionId)
+        return access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE)
                 .flatMap(version -> work.call(() -> buildShare(version, versionId, input, actor)))
                 .flatMap(share -> persistShare(versionId, share));
     }
@@ -117,6 +117,7 @@ public class PrototypeShareService
                                 .one()
                                 .switchIfEmpty(
                                         Mono.error(() -> PrototypeHubException.missing("version"))))
+                .then(access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE))
                 .then(insert(share))
                 .thenReturn(share)
                 .as(transactions::transactional);
@@ -141,6 +142,7 @@ public class PrototypeShareService
 
     public Mono<PrototypeShareEntity> requireAccess(String token, String key) {
         return requireActive(token)
+                .flatMap(share -> access.correlatedVersion(share).thenReturn(share))
                 .filter(s -> matches(s.getAccessKey(), key))
                 .switchIfEmpty(
                         Mono.error(
@@ -152,6 +154,7 @@ public class PrototypeShareService
 
     public Mono<PublicShareResponse> getPublicInfo(String token, String password) {
         return requireActive(token)
+                .flatMap(share -> access.correlatedVersion(share).thenReturn(share))
                 .flatMap(
                         share -> {
                             if (share.getPasswordHash() == null) return info(share, true);
@@ -172,9 +175,7 @@ public class PrototypeShareService
     }
 
     private Mono<PublicShareResponse> info(PrototypeShareEntity share, boolean grant) {
-        return Mono.zip(
-                        projects.requireById(share.getProjectId()),
-                        versions.requireById(share.getVersionId()))
+        return Mono.zip(projects.requireById(share.getProjectId()), access.correlatedVersion(share))
                 .map(
                         pair -> {
                             String key = grant ? share.getAccessKey() : null;
@@ -199,6 +200,21 @@ public class PrototypeShareService
                                                     base, pair.getT2().getEntryFile())
                                             : null);
                         });
+    }
+
+    public Mono<PrototypeShareEntity> deleteShare(String id) {
+        return findById(id)
+                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("share")))
+                .flatMap(
+                        found ->
+                                access.lockProject(found.getProjectId())
+                                        .then(
+                                                access.requireShare(
+                                                        id,
+                                                        PrototypeProjectAccessService.Action
+                                                                .SHARE)))
+                .flatMap(share -> deleteById(id).thenReturn(share))
+                .as(transactions::transactional);
     }
 
     public static boolean matches(String expected, String actual) {

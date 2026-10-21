@@ -4,3 +4,23 @@
 SELECT 'projects', count(*), md5(coalesce(string_agg(id, ',' ORDER BY id),'')) FROM :"prototype_hub_project_table";
 SELECT 'versions', count(*), md5(coalesce(string_agg(id||':'||project_id, ',' ORDER BY id),'')) FROM :"prototype_hub_version_table";
 SELECT 'shares', count(*), md5(coalesce(string_agg(id||':'||project_id||':'||version_id, ',' ORDER BY id),'')) FROM :"prototype_hub_share_table";
+
+-- Compare stable ownership separately from expected short-session issuance/pruning.
+-- Only hashes/counts are emitted; never print capability tokens or the full private rows.
+SELECT count(*)=2 AS prototype_hub_has_ownership FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_project_table'
+ AND column_name IN ('owner_id','access_epoch') \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_member_table')) IS NOT NULL AS prototype_hub_has_members,
+       to_regclass(format('%I.%I',current_schema(),:'prototype_hub_preview_session_table')) IS NOT NULL AS prototype_hub_has_preview_sessions \gset
+\if :prototype_hub_has_ownership
+SELECT 'project_authorization',count(*),md5(coalesce(jsonb_agg(jsonb_build_array(id,owner_id,access_epoch) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_project_table";
+\endif
+\if :prototype_hub_has_members
+SELECT 'project_members',count(*),md5(coalesce(jsonb_agg(to_jsonb(m) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_member_table" m;
+\endif
+\if :prototype_hub_has_preview_sessions
+SELECT 'short_preview_sessions',count(*),md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_preview_session_table" s;
+\endif

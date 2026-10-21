@@ -13,7 +13,7 @@ import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
 /**
- * 管理共享工作区的项目与实际用量。
+ * 管理项目元信息及部署的实际用量。
  *
  * <p>创建时在安装行锁内校验容量并持久化回执；删除约束和文件清理由删除服务协调。
  */
@@ -24,6 +24,7 @@ public class PrototypeProjectService
     private final PrototypeInstallationService installations;
     private final PrototypeCreationReceiptService receipts;
     private final TransactionalOperator transactions;
+    private final PrototypeProjectAccessService access;
 
     public Mono<PrototypeProjectEntity> requireById(String id) {
         return findById(id)
@@ -47,9 +48,22 @@ public class PrototypeProjectService
                                     input.name().trim(),
                                     input.description(),
                                     input.cover());
-                    return installations
-                            .lock()
-                            .then(receipts.replay(request, this::findById))
+                    return access.lockActiveUsers(actor)
+                            .then(installations.lock())
+                            .then(
+                                    receipts.replay(
+                                            request,
+                                            id ->
+                                                    findById(id)
+                                                            .flatMap(
+                                                                    project ->
+                                                                            access.requireProject(
+                                                                                            id,
+                                                                                            PrototypeProjectAccessService
+                                                                                                    .Action
+                                                                                                    .EDIT)
+                                                                                    .thenReturn(
+                                                                                            project))))
                             .switchIfEmpty(
                                     Mono.defer(() -> createWithinCapacity(input, actor, request)))
                             .as(transactions::transactional);
@@ -89,6 +103,8 @@ public class PrototypeProjectService
                             PrototypeProjectEntity project = new PrototypeProjectEntity();
                             project.setId(UUID.randomUUID().toString().replace("-", ""));
                             project.setCreatorId(actor);
+                            project.setOwnerId(actor);
+                            project.setAccessEpoch(UUID.randomUUID().toString());
                             project.setCreateTime(System.currentTimeMillis());
                             apply(project, input, actor);
                             return insert(project)
@@ -98,12 +114,15 @@ public class PrototypeProjectService
     }
 
     public Mono<PrototypeProjectEntity> update(String id, ProjectRequest input, String actor) {
-        return requireById(id)
+        return access.lockProject(id)
+                .then(access.requireProject(id, PrototypeProjectAccessService.Action.EDIT))
+                .map(PrototypeProjectAccessService.Grant::project)
                 .flatMap(
                         project -> {
                             apply(project, input, actor);
                             return updateById(id, project).thenReturn(project);
-                        });
+                        })
+                .as(transactions::transactional);
     }
 
     private static void apply(PrototypeProjectEntity project, ProjectRequest input, String actor) {

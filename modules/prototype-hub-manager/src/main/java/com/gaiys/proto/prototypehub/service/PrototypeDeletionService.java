@@ -19,17 +19,39 @@ public class PrototypeDeletionService {
     private final FileCleanupService cleanup;
     private final TransactionalOperator transactions;
     private final DatabaseClient database;
+    private final PrototypeProjectAccessService access;
 
     public Mono<PrototypeVersionEntity> deleteVersion(String id) {
         SafePaths.id(id);
-        return database.sql("select id from p_version where id=:id for update")
-                .bind("id", id)
-                .fetch()
-                .one()
-                .flatMap(lock -> versions.findById(id))
+        return versions.requireById(id)
+                .flatMap(
+                        found ->
+                                access.lockProject(found.getProjectId())
+                                        .then(
+                                                database.sql(
+                                                                "select id from p_version where id=:id for update")
+                                                        .bind("id", id)
+                                                        .fetch()
+                                                        .one()
+                                                        .switchIfEmpty(
+                                                                Mono.error(
+                                                                        () ->
+                                                                                PrototypeHubException
+                                                                                        .missing(
+                                                                                                "version"))))
+                                        .then(
+                                                access.requireVersion(
+                                                        id,
+                                                        PrototypeProjectAccessService.Action.EDIT)))
                 .flatMap(
                         version ->
                                 shares.deleteByVersionId(id)
+                                        .then(
+                                                database.sql(
+                                                                "delete from p_preview_session where version_id=:id")
+                                                        .bind("id", id)
+                                                        .fetch()
+                                                        .rowsUpdated())
                                         .then(versions.deleteById(id))
                                         .then(
                                                 cleanup.enqueue(
@@ -46,15 +68,25 @@ public class PrototypeDeletionService {
 
     public Mono<PrototypeProjectEntity> deleteProject(String id) {
         SafePaths.id(id);
-        return database.sql("select id from p_project where id=:id for update")
-                .bind("id", id)
-                .fetch()
-                .one()
-                .flatMap(lock -> projects.findById(id))
+        return access.lockProject(id)
+                .then(access.requireProject(id, PrototypeProjectAccessService.Action.DELETE))
+                .map(PrototypeProjectAccessService.Grant::project)
                 .flatMap(
                         project ->
                                 rejectProjectWithVersions(id)
                                         .then(shares.deleteByProjectId(id))
+                                        .then(
+                                                database.sql(
+                                                                "delete from p_preview_session where project_id=:id")
+                                                        .bind("id", id)
+                                                        .fetch()
+                                                        .rowsUpdated())
+                                        .then(
+                                                database.sql(
+                                                                "delete from p_project_member where project_id=:id")
+                                                        .bind("id", id)
+                                                        .fetch()
+                                                        .rowsUpdated())
                                         .then(projects.deleteById(id))
                                         .then(cleanup.enqueue(id, null, null))
                                         .map(

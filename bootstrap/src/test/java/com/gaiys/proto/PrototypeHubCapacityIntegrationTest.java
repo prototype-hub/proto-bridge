@@ -23,6 +23,7 @@ import com.gaiys.proto.prototypehub.service.FileCleanupService;
 import com.gaiys.proto.prototypehub.service.PrototypeCreationReceiptService;
 import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
@@ -46,6 +47,10 @@ import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 import org.hswebframework.web.api.crud.entity.TransactionManagers;
+import org.hswebframework.web.authorization.token.ParsedToken;
+import org.hswebframework.web.authorization.token.SimpleParsedToken;
+import org.hswebframework.web.system.authorization.api.entity.UserEntity;
+import org.hswebframework.web.system.authorization.api.service.reactive.ReactiveUserService;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -92,7 +97,8 @@ import reactor.test.StepVerifier;
 @Testcontainers
 class PrototypeHubCapacityIntegrationTest {
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
-    private static final String ACTOR = "capacity-test-user";
+    private String actor;
+    private String otherActor;
     private static final String PASSWORD = UUID.randomUUID().toString();
     private static final Path FILES = temporaryStorage();
 
@@ -117,6 +123,8 @@ class PrototypeHubCapacityIntegrationTest {
     }
 
     @Autowired PrototypeProjectService projects;
+    @Autowired PrototypeProjectAccessService access;
+    @Autowired ReactiveUserService users;
     @Autowired PrototypeVersionService versions;
     @Autowired PrototypeUploadService uploads;
     @Autowired PrototypeDeletionService deletion;
@@ -154,6 +162,13 @@ class PrototypeHubCapacityIntegrationTest {
                         .path("token")
                         .asText();
         assertFalse(admin.isBlank());
+        actor = users.findByUsername("admin").block(TIMEOUT).getId();
+        var second = new UserEntity();
+        second.setUsername("capacity-other-" + UUID.randomUUID());
+        second.setName("Capacity second actor");
+        second.setPassword(PASSWORD);
+        second.setStatus((byte) 1);
+        otherActor = users.addUser(second).block(TIMEOUT).getId();
     }
 
     @AfterAll
@@ -188,7 +203,8 @@ class PrototypeHubCapacityIntegrationTest {
         assertNotSame(projects, replica);
         var requests = new ArrayList<Mono<PrototypeProjectEntity>>();
         for (int i = 0; i < 8; i++) {
-            requests.add((i % 2 == 0 ? projects : replica).create(input("race-" + i), ACTOR));
+            requests.add(
+                    asAdmin((i % 2 == 0 ? projects : replica).create(input("race-" + i), actor)));
         }
         assertLastSlot(concurrent(requests), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
         assertEquals(5, count("p_project"));
@@ -207,8 +223,9 @@ class PrototypeHubCapacityIntegrationTest {
         var requests = new ArrayList<Mono<PrototypeVersionEntity>>();
         for (int i = 0; i < 8; i++) {
             requests.add(
-                    (i % 2 == 0 ? uploads : replica)
-                            .upload(project, "race-" + i, null, file(zip), ACTOR));
+                    asAdmin(
+                            (i % 2 == 0 ? uploads : replica)
+                                    .upload(project, "race-" + i, null, file(zip), actor)));
         }
         assertLastSlot(concurrent(requests), "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
         assertEquals(5, count("p_version"));
@@ -224,26 +241,31 @@ class PrototypeHubCapacityIntegrationTest {
         var results =
                 concurrent(
                         List.of(
-                                projects.create(input(" project "), ACTOR, "same-key"),
-                                replica.create(input("project"), ACTOR, "same-key")));
+                                asAdmin(projects.create(input(" project "), actor, "same-key")),
+                                asAdmin(replica.create(input("project"), actor, "same-key"))));
         assertTrue(results.stream().allMatch(Signal::isOnNext));
         String id = results.getFirst().get().getId();
         assertEquals(id, results.getLast().get().getId());
         assertEquals(5, count("p_project"));
         assertEquals(1, count("p_creation_receipt"));
         assertEquals(
-                id, projects.create(input("project"), ACTOR, "same-key").block(TIMEOUT).getId());
+                id,
+                asAdmin(projects.create(input("project"), actor, "same-key"))
+                        .block(TIMEOUT)
+                        .getId());
         expectCode(
-                projects.create(input("different"), ACTOR, "same-key"),
+                asAdmin(projects.create(input("different"), actor, "same-key")),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
-        deletion.deleteProject(id).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(id)).block(TIMEOUT);
         expectCode(
-                projects.create(input("project"), ACTOR, "same-key"),
+                asAdmin(projects.create(input("project"), actor, "same-key")),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
         assertEquals(4, count("p_project"));
         assertNotEquals(
                 id,
-                projects.create(input("project"), "other-user", "same-key").block(TIMEOUT).getId());
+                asAdmin(projects.create(input("project"), otherActor, "same-key"))
+                        .block(TIMEOUT)
+                        .getId());
         assertEquals(5, count("p_project"));
     }
 
@@ -258,8 +280,14 @@ class PrototypeHubCapacityIntegrationTest {
                 concurrent(
                         List.of(
                                 upload(project, "release", zip, "same-key"),
-                                replica.upload(
-                                        project, "release", null, file(zip), ACTOR, "same-key")));
+                                asAdmin(
+                                        replica.upload(
+                                                project,
+                                                "release",
+                                                null,
+                                                file(zip),
+                                                actor,
+                                                "same-key"))));
         assertTrue(results.stream().allMatch(Signal::isOnNext));
         String id = results.getFirst().get().getId();
         assertEquals(id, results.getLast().get().getId());
@@ -276,7 +304,7 @@ class PrototypeHubCapacityIntegrationTest {
         assertEquals(5, count("p_version"));
         String another = project();
         assertNotEquals(id, upload(another, "release", zip, "same-key").block(TIMEOUT).getId());
-        deletion.deleteVersion(id).block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(id)).block(TIMEOUT);
         expectCode(
                 upload(project, "release", zip, "same-key"), "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
         assertEquals(4, directoryCount(project));
@@ -288,8 +316,8 @@ class PrototypeHubCapacityIntegrationTest {
         String project = project();
         byte[] zip = zip("original");
         var original = upload(project, "release", zip, "deleted-project-key").block(TIMEOUT);
-        deletion.deleteVersion(original.getId()).block(TIMEOUT);
-        deletion.deleteProject(project).block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(original.getId())).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(project)).block(TIMEOUT);
         expectCode(
                 upload(project, "release", zip, "deleted-project-key"),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
@@ -305,7 +333,7 @@ class PrototypeHubCapacityIntegrationTest {
         byte[] zip = zip("original");
         rejectMutation("p_creation_receipt", "insert");
         try {
-            StepVerifier.create(projects.create(input("rollback"), ACTOR, "project-retry"))
+            StepVerifier.create(asAdmin(projects.create(input("rollback"), actor, "project-retry")))
                     .expectError()
                     .verify(TIMEOUT);
             StepVerifier.create(upload(project, "rollback", zip, "version-retry"))
@@ -318,7 +346,7 @@ class PrototypeHubCapacityIntegrationTest {
         } finally {
             allowMutation("p_creation_receipt");
         }
-        projects.create(input("rollback"), ACTOR, "project-retry").block(TIMEOUT);
+        asAdmin(projects.create(input("rollback"), actor, "project-retry")).block(TIMEOUT);
         upload(project, "rollback", zip, "version-retry").block(TIMEOUT);
         assertEquals(2, count("p_project"));
         assertEquals(1, count("p_version"));
@@ -332,23 +360,26 @@ class PrototypeHubCapacityIntegrationTest {
         String empty = rows.getLast().getId();
         rejectMutation("p_project", "delete");
         try {
-            StepVerifier.create(deletion.deleteProject(empty)).expectError().verify(TIMEOUT);
+            StepVerifier.create(asAdmin(deletion.deleteProject(empty)))
+                    .expectError()
+                    .verify(TIMEOUT);
             assertEquals(5, count("p_project"));
             expectCode(
-                    projects.create(input("denied"), ACTOR), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+                    asAdmin(projects.create(input("denied"), actor)),
+                    "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
         } finally {
             allowMutation("p_project");
         }
-        deletion.deleteProject(empty).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(empty)).block(TIMEOUT);
         assertTrue(projects.usage().block(TIMEOUT).projects().canCreate());
-        projects.create(input("reclaimed"), ACTOR).block(TIMEOUT);
+        asAdmin(projects.create(input("reclaimed"), actor)).block(TIMEOUT);
         String project = rows.getFirst().getId();
         byte[] zip = zip("original");
         PrototypeVersionEntity version = null;
         for (int i = 0; i < 5; i++) version = upload(project, "v" + i, zip, null).block(TIMEOUT);
         rejectMutation("p_version", "delete");
         try {
-            StepVerifier.create(deletion.deleteVersion(version.getId()))
+            StepVerifier.create(asAdmin(deletion.deleteVersion(version.getId())))
                     .expectError()
                     .verify(TIMEOUT);
             expectCode(upload(project, "denied", zip, null), "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
@@ -356,7 +387,7 @@ class PrototypeHubCapacityIntegrationTest {
         } finally {
             allowMutation("p_version");
         }
-        deletion.deleteVersion(version.getId()).block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(version.getId())).block(TIMEOUT);
         assertEquals(4, versions.usage(project).block(TIMEOUT).versions().used());
         upload(project, "reclaimed", zip, null).block(TIMEOUT);
         assertEquals(5, count("p_version"));
@@ -381,13 +412,15 @@ class PrototypeHubCapacityIntegrationTest {
         assertTrue(projectUsage.overLimit());
         assertFalse(projectUsage.canCreate());
         assertTrue(versions.usage(project).block(TIMEOUT).versions().overLimit());
-        expectCode(projects.create(input("denied"), ACTOR), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        expectCode(
+                asAdmin(projects.create(input("denied"), actor)),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
         expectCode(
                 upload(project, "denied", zip("denied"), null),
                 "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
         var old = oldVersions.getFirst();
         var replaced =
-                uploads.update(old.getId(), "replacement", null, file(zip("replacement")))
+                asAdmin(uploads.update(old.getId(), "replacement", null, file(zip("replacement"))))
                         .block(TIMEOUT);
         assertEquals(old.getId(), replaced.getId());
         assertEquals(old.getPreviewKey(), replaced.getPreviewKey());
@@ -399,15 +432,15 @@ class PrototypeHubCapacityIntegrationTest {
         assertEquals(6, directoryCount(project));
         for (var row : rows) assertNotNull(projects.requireById(row.getId()).block(TIMEOUT));
         for (var row : oldVersions) assertNotNull(versions.requireById(row.getId()).block(TIMEOUT));
-        deletion.deleteVersion(oldVersions.getLast().getId()).block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(oldVersions.getLast().getId())).block(TIMEOUT);
         assertFalse(versions.usage(project).block(TIMEOUT).versions().canCreate());
-        deletion.deleteVersion(oldVersions.get(4).getId()).block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(oldVersions.get(4).getId())).block(TIMEOUT);
         assertTrue(versions.usage(project).block(TIMEOUT).versions().canCreate());
         upload(project, "reclaimed", zip("new"), null).block(TIMEOUT);
-        deletion.deleteProject(rows.getLast().getId()).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(rows.getLast().getId())).block(TIMEOUT);
         assertFalse(projects.usage().block(TIMEOUT).projects().canCreate());
-        deletion.deleteProject(rows.get(3).getId()).block(TIMEOUT);
-        projects.create(input("reclaimed"), ACTOR).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(rows.get(3).getId())).block(TIMEOUT);
+        asAdmin(projects.create(input("reclaimed"), actor)).block(TIMEOUT);
         assertEquals(5, count("p_project"));
     }
 
@@ -527,18 +560,24 @@ class PrototypeHubCapacityIntegrationTest {
                         TransactionalOperator.create(commit),
                         cleanup,
                         database,
-                        receipts);
+                        receipts,
+                        access);
         Mono<PrototypeVersionEntity> operation =
                 replace
-                        ? service.update(
-                                original.getId(), "committed", null, file(zip("committed")))
-                        : service.upload(
-                                project,
-                                "committed",
-                                null,
-                                file(zip("committed")),
-                                ACTOR,
-                                "commit-key");
+                        ? asAdmin(
+                                service.update(
+                                        original.getId(),
+                                        "committed",
+                                        null,
+                                        file(zip("committed"))))
+                        : asAdmin(
+                                service.upload(
+                                        project,
+                                        "committed",
+                                        null,
+                                        file(zip("committed")),
+                                        actor,
+                                        "commit-key"));
         AtomicReference<Throwable> failure = new AtomicReference<>();
         var subscription = operation.subscribe(ignored -> {}, failure::set);
         boolean deletedBeforeOutcome;
@@ -613,13 +652,25 @@ class PrototypeHubCapacityIntegrationTest {
 
     private List<PrototypeProjectEntity> createProjects(int count) {
         return Flux.range(0, count)
-                .concatMap(i -> projects.create(input("project-" + i), ACTOR))
+                .concatMap(i -> asAdmin(projects.create(input("project-" + i), actor)))
                 .collectList()
                 .block(TIMEOUT);
     }
 
     private String project() {
-        return projects.create(input("project"), ACTOR).block(TIMEOUT).getId();
+        return asAdmin(projects.create(input("project"), actor)).block(TIMEOUT).getId();
+    }
+
+    /** 复用真实登录令牌与框架 ParsedToken 扩展，不替换权限供应方或关闭生产校验。 */
+    private <T> Mono<T> asAdmin(Mono<T> operation) {
+        return operation.contextWrite(
+                context ->
+                        context.put(
+                                ParsedToken.class,
+                                SimpleParsedToken.of(
+                                        "default",
+                                        admin,
+                                        (headers, token) -> headers.set("X-Access-Token", token))));
     }
 
     private static ProjectRequest input(String name) {
@@ -628,7 +679,7 @@ class PrototypeHubCapacityIntegrationTest {
 
     private Mono<PrototypeVersionEntity> upload(
             String project, String name, byte[] zip, String key) {
-        return uploads.upload(project, name, null, file(zip), ACTOR, key);
+        return asAdmin(uploads.upload(project, name, null, file(zip), actor, key));
     }
 
     private static FilePart file(byte[] zip) {
@@ -659,7 +710,7 @@ class PrototypeHubCapacityIntegrationTest {
         version.setEntryFile("index.html");
         version.setPreviewKey(UUID.randomUUID().toString());
         version.setStatus("ready");
-        version.setCreatorId(ACTOR);
+        version.setCreatorId(actor);
         version.setCreateTime(System.currentTimeMillis());
         Path site = FILES.resolve(version.getStoragePath());
         Files.createDirectories(site);

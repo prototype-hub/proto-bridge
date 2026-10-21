@@ -135,6 +135,26 @@ public class AuditWebFilter implements WebFilter {
                 || !path.startsWith("/prototype-hub/")) return null;
         String[] parts = path.split("/");
         if (parts.length < 3) return null;
+        // 明确授权和成员管理动作，避免将短期预览签发或历史迁移误记为项目/版本创建。
+        if (parts.length == 5
+                && parts[2].equals("versions")
+                && parts[4].equals("preview-session")
+                && method.equals("POST"))
+            return new Action("preview.authorize", "version", parts[3]);
+        if (parts.length == 4
+                && parts[2].equals("projects")
+                && parts[3].equals("_ownership-migration")
+                && method.equals("POST"))
+            return new Action("project.ownership.migrate", "project", null);
+        if (parts.length == 5
+                && parts[2].equals("projects")
+                && parts[4].equals("claim")
+                && method.equals("POST")) return new Action("project.claim", "project", parts[3]);
+        if (parts.length == 6 && parts[2].equals("projects") && parts[4].equals("members"))
+            return new Action(
+                    "project.members." + (method.equals("DELETE") ? "delete" : "update"),
+                    "project",
+                    parts[3]);
         String type =
                 switch (parts[2]) {
                     case "projects" -> "project";

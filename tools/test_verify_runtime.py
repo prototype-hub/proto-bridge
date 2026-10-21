@@ -187,6 +187,50 @@ class RuntimeSafetyTest(unittest.TestCase):
             self.assertIn(b'Runtime fixture nested page', archive.read('nested/child.html'))
             self.assertIn(b'../assets/icon.svg', archive.read('nested/detail.html'))
 
+    def test_internal_preview_exchanges_identity_then_reads_every_resource_anonymously(self):
+        api = runtime.Api('http://127.0.0.1:1', set())
+        api.token = self.secret
+        version = {'id': 'version', 'previewUrl': None, 'runtimeBaseUrl': None}
+        base = '/api/prototype-hub/runtime/version/' + runtime.secrets.token_hex(32)
+        grant = {'runtimeBaseUrl': base, 'previewUrl': base + '/index.html',
+                 'expiresAt': int(runtime.time.time() * 1000) + 300000}
+        headers = {'Content-Security-Policy': 'sandbox allow-scripts allow-forms'}
+        responses = [grant, (b'Runtime fixture home', headers),
+                     (b'Runtime fixture nested page', headers),
+                     ((runtime.FIXTURE / 'assets/style.css').read_bytes(), headers)]
+        check = runtime.RuntimeCheck(self.args(), self.root)
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=responses) as request:
+            hashes = check.preview(api, version)
+        self.assertEqual({'entry', 'child', 'css'}, set(hashes))
+        self.assertEqual(4, request.call_count)
+        exchange = request.call_args_list[0]
+        self.assertEqual(self.secret, exchange.args[0].token)
+        self.assertEqual(('POST', '/api/prototype-hub/versions/version/preview-session'),
+                         exchange.args[1:])
+        for read in request.call_args_list[1:]:
+            self.assertIsNone(read.args[0].token)
+            self.assertEqual('GET', read.args[1])
+
+    def test_public_share_preview_uses_its_grant_without_member_session_exchange(self):
+        api = runtime.Api('http://127.0.0.1:1', set())
+        api.token = self.secret
+        base = '/api/prototype-hub/public/shares/external/grant/runtime'
+        grant = {'runtimeBaseUrl': base, 'previewUrl': base + '/index.html'}
+        headers = {'Content-Security-Policy': 'sandbox allow-scripts allow-forms'}
+        responses = [(b'Runtime fixture home', headers),
+                     (b'Runtime fixture nested page', headers),
+                     ((runtime.FIXTURE / 'assets/style.css').read_bytes(), headers)]
+        check = runtime.RuntimeCheck(self.args(), self.root)
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=responses) as request:
+            check.preview(api, grant)
+        self.assertEqual(3, request.call_count)
+        for read in request.call_args_list:
+            self.assertIsNone(read.args[0].token)
+            self.assertEqual('GET', read.args[1])
+            self.assertTrue(read.args[2].startswith(base))
+        self.assertIn('p_project_member', runtime.TABLES)
+        self.assertIn('p_preview_session', runtime.TABLES)
+
     def system_images(self):
         return {'userId': 'runtime-user',
                 'branding': {'url': '/api/file/static/20261021/' + str(runtime.uuid.uuid4()) + '.png',

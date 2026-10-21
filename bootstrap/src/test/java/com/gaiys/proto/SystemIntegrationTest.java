@@ -10,6 +10,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.UUID;
+import org.hswebframework.web.authorization.token.ParsedToken;
+import org.hswebframework.web.authorization.token.SimpleParsedToken;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +25,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
 
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
@@ -186,7 +189,18 @@ class SystemIntegrationTest {
                         token,
                         zip("initial"));
         String id = version.path("id").asText();
-        String runtime = version.path("previewUrl").asText().substring(4);
+        JsonNode credential =
+                client.post()
+                        .uri("/prototype-hub/versions/" + id + "/preview-session")
+                        .header("X-Access-Token", token)
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .expectBody(JsonNode.class)
+                        .returnResult()
+                        .getResponseBody()
+                        .path("result");
+        String runtime = credential.path("previewUrl").asText().substring(4);
         var original = versions.requireById(id).block(Duration.ofSeconds(10));
         String originalPath = original.getStoragePath();
         client.get()
@@ -329,8 +343,10 @@ class SystemIntegrationTest {
                         "/prototype-hub/versions/" + id,
                         token,
                         zip("replacement"));
-        org.junit.jupiter.api.Assertions.assertEquals(
-                version.path("previewUrl"), updated.path("previewUrl"));
+        assertTrue(version.path("previewUrl").isNull());
+        assertTrue(updated.path("previewUrl").isNull());
+        // 原位替换不再允许旧内部凭证读取新文件；公开分享仍按其独立授权访问当前内容。
+        client.get().uri(runtime).exchange().expectStatus().isForbidden();
         org.junit.jupiter.api.Assertions.assertFalse(
                 java.nio.file.Files.exists(FILES.resolve(originalPath)));
         client.get()
@@ -366,12 +382,13 @@ class SystemIntegrationTest {
                 .isOk()
                 .expectBody()
                 .consumeWith(result -> {});
+        // 不存在与已失去项目范围一致返回 404，重复删除不泄露历史归属。
         client.delete()
                 .uri("/prototype-hub/versions/" + id)
                 .header("X-Access-Token", token)
                 .exchange()
                 .expectStatus()
-                .isOk()
+                .isNotFound()
                 .expectBody()
                 .consumeWith(result -> {});
         client.delete()
@@ -618,6 +635,18 @@ class SystemIntegrationTest {
                 .isEqualTo("资源不存在");
     }
 
+    /** 直接服务测试沿用真实登录与框架 ParsedToken，不能绕过当前账号和项目校验。 */
+    private <T> Mono<T> asUser(String token, Mono<T> operation) {
+        return operation.contextWrite(
+                context ->
+                        context.put(
+                                ParsedToken.class,
+                                SimpleParsedToken.of(
+                                        "default",
+                                        token,
+                                        (headers, value) -> headers.set("X-Access-Token", value))));
+    }
+
     String login() {
         JsonNode response =
                 client.mutate()
@@ -852,10 +881,12 @@ class SystemIntegrationTest {
                         Flux.concat(
                                 Flux.just(buffer),
                                 Flux.error(new java.io.IOException("controlled disconnect"))));
+        String actor = users.findByUsername("admin").block(Duration.ofSeconds(10)).getId();
         reactor.test.StepVerifier.create(
-                        uploads.upload(project, "interrupted", null, file, "test-actor"))
+                        asUser(token, uploads.upload(project, "interrupted", null, file, actor)))
                 .expectError()
                 .verify(Duration.ofSeconds(10));
+        verify(file).content();
         try (var dirs = Files.list(FILES.resolve("projects/" + project + "/versions"))) {
             assertEquals(0, dirs.count());
         }
@@ -911,7 +942,9 @@ class SystemIntegrationTest {
                                                             .wrap(new byte[] {1, 2, 3})),
                                             Flux.never());
                                 }));
-        var subscription = uploads.upload(project, "cancelled", null, file, "test").subscribe();
+        String actor = users.findByUsername("admin").block(Duration.ofSeconds(10)).getId();
+        var subscription =
+                asUser(token, uploads.upload(project, "cancelled", null, file, actor)).subscribe();
         assertTrue(started.await(10, java.util.concurrent.TimeUnit.SECONDS));
         subscription.dispose();
         org.awaitility.Awaitility.await()

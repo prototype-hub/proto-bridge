@@ -107,7 +107,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(14, localTypes.size());
+        assertEquals(16, localTypes.size());
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -143,11 +143,13 @@ class DatabaseDescriptionIntegrationTest {
                         "p_share",
                         "p_installation",
                         "p_creation_receipt",
-                        "p_file_cleanup"),
+                        "p_file_cleanup",
+                        "p_project_member",
+                        "p_preview_session"),
                 tables);
         assertEquals(
-                109,
-                describedColumns); // 79 persistent declared fields, 14 IDs, and 16 tree fields.
+                124,
+                describedColumns); // 92 persistent declared fields, 16 IDs, and 16 tree fields.
         assertEquals("id", comment("s_user_detail", "id"));
         for (String name : Set.of("parent_id", "path", "_level", "sort_index"))
             assertFalse(comment("s_menu", name).isBlank(), name);

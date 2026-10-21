@@ -44,11 +44,16 @@ class AuditWebFilterTest {
 
     @ParameterizedTest
     @CsvSource({
-        "POST,/prototype-hub/versions/version-id/shares,share.create,",
-        "DELETE,/prototype-hub/shares/share-id,share.delete,share-id"
+        "POST,/prototype-hub/versions/version-id/shares,share.create,share,",
+        "POST,/prototype-hub/versions/version-id/preview-session,preview.authorize,version,version-id",
+        "POST,/prototype-hub/projects/_ownership-migration,project.ownership.migrate,project,",
+        "POST,/prototype-hub/projects/project-id/claim,project.claim,project,project-id",
+        "PUT,/prototype-hub/projects/project-id/members/user-id,project.members.update,project,project-id",
+        "DELETE,/prototype-hub/projects/project-id/members/user-id,project.members.delete,project,project-id",
+        "DELETE,/prototype-hub/shares/share-id,share.delete,share,share-id"
     })
     void sharingWritesKeepTheirAuditActionsWithoutRequestPasswords(
-            HttpMethod method, String path, String action, String resourceId) {
+            HttpMethod method, String path, String action, String resourceType, String resourceId) {
         var dispatcher = mock(AuditDispatcher.class);
         var filter = new AuditWebFilter(dispatcher);
         var request =
@@ -63,7 +68,7 @@ class AuditWebFilterTest {
         verify(dispatcher).offer(event.capture());
         AuditEvent recorded = event.getValue();
         assertEquals(action, recorded.action());
-        assertEquals("share", recorded.resourceType());
+        assertEquals(resourceType, recorded.resourceType());
         assertEquals(resourceId, recorded.resourceId());
         assertEquals("success", recorded.result());
         assertEquals("share-write", recorded.traceId());
