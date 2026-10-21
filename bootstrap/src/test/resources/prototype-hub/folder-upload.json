@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "source": {
+    "rootName": "中文原型 导出",
+    "kind": "original synthetic HTML export",
+    "capture": "native directory picker and real module Worker in Chrome",
+    "browserVersion": "155.0.8059.85",
+    "basePath": "/tools/",
+    "packer": "src/modules/protohub-manager-ui/workers/folder-archive-pack.ts#packFolderArchive",
+    "manifest": "src/modules/protohub-manager-ui/utils/folder-manifest.ts#buildFolderManifest",
+    "fflate": "0.8.3",
+    "mtime": "local-calendar 2000-01-01 00:00:00",
+    "repository": "https://github.com/prototype-hub/proto-bridge-ui",
+    "regeneration": "The frontend folder-upload Playwright test saves the native-directory/module-Worker multipart ZIP and the original selected file bytes. No Axure source or external prototype is included."
+  },
+  "archiveSha256": "e981aa4c8f2a3ee08f35c5396f796bafe868caca8b40072dbe94aca2818213c1",
+  "archiveBytes": 1098,
+  "entries": [
+    {
+      "path": "index.html",
+      "webkitRelativePath": "中文原型 导出/index.html",
+      "size": 53,
+      "sha256": "d506efc68294db60ce1f6b0153553ec0ff924971e9611d89afb95b8946b6913d",
+      "base64": "PCFkb2N0eXBlIGh0bWw+PGh0bWw+PGJvZHk+5Lit5paH6aaW6aG1PC9ib2R5PjwvaHRtbD4="
+    },
+    {
+      "path": "assets/empty.txt",
+      "webkitRelativePath": "中文原型 导出/assets/empty.txt",
+      "size": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "base64": ""
+    },
+    {
+      "path": "data/document.js",
+      "webkitRelativePath": "中文原型 导出/data/document.js",
+      "size": 42,
+      "sha256": "06b978ded43bbb4d9deae970cdf708c958d9cc9ebb1982081fff92e173d245f9",
+      "base64": "d2luZG93LnBhZ2VzID0gWyLpobXpnaIv56ys5LqMIOmhtS5odG1sIl07"
+    },
+    {
+      "path": "fonts/example.woff2",
+      "webkitRelativePath": "中文原型 导出/fonts/example.woff2",
+      "size": 7,
+      "sha256": "330e26237462f16fcc91c9a4bae60d2ead7c5b21632a3527fa5393594f93ab56",
+      "base64": "d09GMgABAg=="
+    },
+    {
+      "path": "resources/scripts/app.js",
+      "webkitRelativePath": "中文原型 导出/resources/scripts/app.js",
+      "size": 28,
+      "sha256": "368d29be6eada073cdf806f2aba61601a568db99d32421d9c604e5a3f61d48b7",
+      "base64": "d2luZG93LmZvbGRlckZpeHR1cmUgPSB0cnVlOw=="
+    },
+    {
+      "path": "images/中文 空格.bin",
+      "webkitRelativePath": "中文原型 导出/images/中文 空格.bin",
+      "size": 6,
+      "sha256": "23d65ea0eba723b11cc9382350d0ab3756eedeef67957f1a341d629c58cbde77",
+      "base64": "AP+AAQID"
+    },
+    {
+      "path": "页面/第二 页.html",
+      "webkitRelativePath": "中文原型 导出/页面/第二 页.html",
+      "size": 37,
+      "sha256": "49db41fba6b9a52621b1b710ed5d3b4b9dd1671cf61f7d444d05428f86d4d902",
+      "base64": "PGh0bWw+PGJvZHk+bmVzdGVkIHBhZ2U8L2JvZHk+PC9odG1sPg=="
+    }
+  ],
+  "zipBase64": "UEsDBBQACAAIAAAAISgAAAAAAAAAAAAAAAAQAAAAYXNzZXRzL2VtcHR5LnR4dAMAUEsHCAAAAAACAAAAAAAAAFBLAwQUAAgACAAAACEoAAAAAAAAAAAAAAAAEAAAAGRhdGEvZG9jdW1lbnQuanMrz8xLyS/XK0hMTy1WsFWIVnq5cOvLuYv0n69Z82RXjwKQp5dRkpujFGsNAFBLBwiIB73DLAAAACoAAABQSwMEFAAIAAgAAAAhKAAAAAAAAAAAAAAAABMAAABmb250cy9leGFtcGxlLndvZmYyK/d3M2JgZAIAUEsHCMxEKTAJAAAABwAAAFBLAwQUAAgICAAAACEoAAAAAAAAAAAAAAAAGAAAAGltYWdlcy/kuK3mlocg56m65qC8LmJpbmP438DIxAwAUEsHCBuJAjwIAAAABgAAAFBLAwQUAAgACAAAACEoAAAAAAAAAAAAAAAACgAAAGluZGV4Lmh0bWyzUUzJTy6pLEhVyCjJzbGzgZBJ+SmVdk92rH02rf3lsmkvF2610QcL2eiD5QFQSwcIhX9Cei0AAAA1AAAAUEsDBBQACAAIAAAAISgAAAAAAAAAAAAAAAAYAAAAcmVzb3VyY2VzL3NjcmlwdHMvYXBwLmpzK8/MS8kv10vLz0lJLXLLrCgpLUpVsFUoKSpNtQYAUEsHCHpyq7YeAAAAHAAAAFBLAwQUAAgICAAAACEoAAAAAAAAAAAAAAAAFgAAAOmhtemdoi/nrKzkuowg6aG1Lmh0bWyzySjJzbGzScpPqbTLSy0uSU1RKEhMT7XRB4vY6IOlAVBLBwhuia/nIAAAACUAAABQSwECFAAUAAgACAAAACEoAAAAAAIAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAYXNzZXRzL2VtcHR5LnR4dFBLAQIUABQACAAIAAAAISiIB73DLAAAACoAAAAQAAAAAAAAAAAAAAAAAEAAAABkYXRhL2RvY3VtZW50LmpzUEsBAhQAFAAIAAgAAAAhKMxEKTAJAAAABwAAABMAAAAAAAAAAAAAAAAAqgAAAGZvbnRzL2V4YW1wbGUud29mZjJQSwECFAAUAAgICAAAACEoG4kCPAgAAAAGAAAAGAAAAAAAAAAAAAAAAAD0AAAAaW1hZ2VzL+S4reaWhyDnqbrmoLwuYmluUEsBAhQAFAAIAAgAAAAhKIV/QnotAAAANQAAAAoAAAAAAAAAAAAAAAAAQgEAAGluZGV4Lmh0bWxQSwECFAAUAAgACAAAACEoenKrth4AAAAcAAAAGAAAAAAAAAAAAAAAAACnAQAAcmVzb3VyY2VzL3NjcmlwdHMvYXBwLmpzUEsBAhQAFAAICAgAAAAhKG6Jr+cgAAAAJQAAABYAAAAAAAAAAAAAAAAACwIAAOmhtemdoi/nrKzkuowg6aG1Lmh0bWxQSwUGAAAAAAcABwDFAQAAbwIAAAAA"
+}
