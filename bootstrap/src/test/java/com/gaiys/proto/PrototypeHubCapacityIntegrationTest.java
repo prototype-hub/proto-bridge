@@ -25,9 +25,12 @@ import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionMigrationService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
+import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
@@ -92,6 +95,7 @@ import reactor.test.StepVerifier;
             "proto.logging.elasticsearch.enabled=false",
             "proto.security.login-encryption-enabled=false",
             "CORS_ENABLED=true",
+            "CORS_ALLOWED_ORIGINS=http://localhost:5173",
             "prototype-hub.cleanup.interval-ms=3600000"
         })
 @Testcontainers
@@ -127,6 +131,9 @@ class PrototypeHubCapacityIntegrationTest {
     @Autowired ReactiveUserService users;
     @Autowired PrototypeVersionService versions;
     @Autowired PrototypeUploadService uploads;
+    @Autowired PrototypeRevisionService revisions;
+    @Autowired PrototypeRevisionMigrationService revisionMigration;
+    @Autowired PrototypeManifestBuilder manifests;
     @Autowired PrototypeDeletionService deletion;
     @Autowired PrototypeCreationReceiptService receipts;
     @Autowired PrototypeInstallationService installations;
@@ -305,6 +312,7 @@ class PrototypeHubCapacityIntegrationTest {
         String another = project();
         assertNotEquals(id, upload(another, "release", zip, "same-key").block(TIMEOUT).getId());
         asAdmin(deletion.deleteVersion(id)).block(TIMEOUT);
+        cleanup.retryPending().block(TIMEOUT);
         expectCode(
                 upload(project, "release", zip, "same-key"), "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
         assertEquals(4, directoryCount(project));
@@ -388,6 +396,7 @@ class PrototypeHubCapacityIntegrationTest {
             allowMutation("p_version");
         }
         asAdmin(deletion.deleteVersion(version.getId())).block(TIMEOUT);
+        cleanup.retryPending().block(TIMEOUT);
         assertEquals(4, versions.usage(project).block(TIMEOUT).versions().used());
         upload(project, "reclaimed", zip, null).block(TIMEOUT);
         assertEquals(5, count("p_version"));
@@ -419,6 +428,7 @@ class PrototypeHubCapacityIntegrationTest {
                 upload(project, "denied", zip("denied"), null),
                 "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
         var old = oldVersions.getFirst();
+        asAdmin(revisionMigration.migrate(old.getId(), true)).block(TIMEOUT);
         var replaced =
                 asAdmin(uploads.update(old.getId(), "replacement", null, file(zip("replacement"))))
                         .block(TIMEOUT);
@@ -429,7 +439,7 @@ class PrototypeHubCapacityIntegrationTest {
                         .contains("replacement"));
         assertEquals(6, count("p_project"));
         assertEquals(6, count("p_version"));
-        assertEquals(6, directoryCount(project));
+        assertEquals(7, directoryCount(project));
         for (var row : rows) assertNotNull(projects.requireById(row.getId()).block(TIMEOUT));
         for (var row : oldVersions) assertNotNull(versions.requireById(row.getId()).block(TIMEOUT));
         asAdmin(deletion.deleteVersion(oldVersions.getLast().getId())).block(TIMEOUT);
@@ -561,7 +571,9 @@ class PrototypeHubCapacityIntegrationTest {
                         cleanup,
                         database,
                         receipts,
-                        access);
+                        access,
+                        revisions,
+                        manifests);
         Mono<PrototypeVersionEntity> operation =
                 replace
                         ? asAdmin(
@@ -612,8 +624,12 @@ class PrototypeHubCapacityIntegrationTest {
                                 "已提交的版本必须仍有可读取的原型文件"),
                 () -> assertNull(failure.get()));
         assertEquals("committed", persisted.getVersionName());
-        if (replace) assertEquals(original.getId(), persisted.getId());
-        else assertEquals(1, count("p_creation_receipt"));
+        if (replace) {
+            assertEquals(original.getId(), persisted.getId());
+            assertTrue(
+                    Files.exists(FILES.resolve(original.getStoragePath()).resolve("index.html")));
+            assertEquals(2, count("p_revision"));
+        } else assertEquals(1, count("p_creation_receipt"));
     }
 
     /** 门控的是事务管理器的公共 commit Publisher，不更改数据库或 Reactor 内部实现。 */
@@ -736,7 +752,8 @@ class PrototypeHubCapacityIntegrationTest {
 
     private void rejectMutation(String table, String event) {
         sql(
-                "create function reject_capacity_mutation() returns trigger language plpgsql as $$ begin raise exception 'controlled capacity failure'; end $$");
+                "create function reject_capacity_mutation() returns trigger language plpgsql as $$"
+                        + " begin raise exception 'controlled capacity failure'; end $$");
         sql(
                 "create trigger reject_capacity_mutation before "
                         + event

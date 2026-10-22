@@ -7,6 +7,10 @@ import io.swagger.v3.oas.annotations.media.Schema;
 @Schema(description = "原型版本响应信息")
 public record VersionResponse(
         @Schema(description = "原型版本标识") String id,
+        @Schema(description = "当前已发布快照标识；旧数据为空") String currentRevisionId,
+        @Schema(description = "本响应内容所属快照；幂等重放时为原成功快照") String revisionId,
+        @Schema(description = "当前真实的历史快照总数") long revisionCount,
+        @Schema(description = "是否必须先显式迁移旧内容") boolean migrationRequired,
         @Schema(description = "版本所属的原型项目标识") String projectId,
         @Schema(description = "原型版本名称") String versionName,
         @Schema(description = "原型版本说明") String description,
@@ -17,8 +21,18 @@ public record VersionResponse(
         @Schema(description = "已停用的永久运行地址，固定为空；请获取短期预览会话") String runtimeBaseUrl,
         @Schema(description = "已停用的永久预览地址，固定为空；请获取短期预览会话") String previewUrl) {
     public static VersionResponse from(PrototypeVersionEntity v) {
+        return from(v, v.getCurrentRevisionId() == null ? 0 : 1);
+    }
+
+    public static VersionResponse from(PrototypeVersionEntity v, long count) {
         return new VersionResponse(
                 v.getId(),
+                v.getCurrentRevisionId(),
+                v.getResponseRevisionId() == null
+                        ? v.getCurrentRevisionId()
+                        : v.getResponseRevisionId(),
+                count,
+                v.getCurrentRevisionId() == null,
                 v.getProjectId(),
                 v.getVersionName(),
                 v.getDescription(),

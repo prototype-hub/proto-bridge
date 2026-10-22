@@ -1,8 +1,8 @@
 package com.gaiys.proto.prototypehub.web;
 
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
-import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.ShareVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.PublicShareResponse;
@@ -36,7 +36,7 @@ import reactor.core.publisher.Mono;
 @Authorize(ignore = true)
 public class PublicPrototypeShareController {
     private final PrototypeShareService shares;
-    private final PrototypeVersionService versions;
+    private final PrototypeRevisionService revisions;
     private final PrototypeStorageService storage;
 
     @GetMapping("/shares/{token}")
@@ -57,8 +57,8 @@ public class PublicPrototypeShareController {
     public Mono<List<PrototypePageInfo>> pages(
             @PathVariable String token, @PathVariable String accessKey) {
         return shares.requireAccess(token, accessKey)
-                .flatMap(s -> versions.requireById(s.getVersionId()))
-                .flatMap(storage::listPages);
+                .flatMap(shares::requireRevision)
+                .flatMap(revisions::pages);
     }
 
     @GetMapping("/shares/{token}/{accessKey}/runtime/{*resourcePath}")
@@ -68,7 +68,7 @@ public class PublicPrototypeShareController {
             @PathVariable String accessKey,
             @PathVariable String resourcePath) {
         return shares.requireAccess(token, accessKey)
-                .flatMap(s -> versions.requireById(s.getVersionId()))
+                .flatMap(shares::requireRevision)
                 .flatMap(v -> storage.resolveResource(v, resourcePath))
                 .map(PrototypeRuntimeController::response);
     }

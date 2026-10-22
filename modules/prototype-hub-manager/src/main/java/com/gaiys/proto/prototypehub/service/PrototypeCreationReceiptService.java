@@ -31,6 +31,12 @@ public class PrototypeCreationReceiptService
 
     /** 调用方先取得安装行或项目行锁；重放先于额度检查，已删除资源不会被重建。 */
     public <T> Mono<T> replay(Request request, Function<String, Mono<T>> resource) {
+        return replayReceipt(request, receipt -> resource.apply(receipt.getResourceId()));
+    }
+
+    /** 版本上传同时校验首次成功快照；其他资源继续使用原资源回执入口。 */
+    public <T> Mono<T> replayReceipt(
+            Request request, Function<PrototypeCreationReceiptEntity, Mono<T>> resource) {
         if (request == null) return Mono.empty();
         return findById(request.id())
                 .flatMap(
@@ -38,7 +44,7 @@ public class PrototypeCreationReceiptService
                             if (!receipt.getFingerprint().equals(request.fingerprint())) {
                                 return Mono.error(conflict());
                             }
-                            return resource.apply(receipt.getResourceId())
+                            return resource.apply(receipt)
                                     .switchIfEmpty(
                                             Mono.error(PrototypeCreationReceiptService::conflict));
                         });
@@ -46,11 +52,16 @@ public class PrototypeCreationReceiptService
 
     /** 与资源 INSERT 同一事务提交；失败时资源和回执一起回滚。 */
     public Mono<Void> record(Request request, String resourceId) {
+        return record(request, resourceId, null);
+    }
+
+    public Mono<Void> record(Request request, String resourceId, String revisionId) {
         if (request == null) return Mono.empty();
         PrototypeCreationReceiptEntity receipt = new PrototypeCreationReceiptEntity();
         receipt.setId(request.id());
         receipt.setFingerprint(request.fingerprint());
         receipt.setResourceId(resourceId);
+        receipt.setRevisionId(revisionId);
         receipt.setCreateTime(System.currentTimeMillis());
         return insert(receipt).then();
     }

@@ -22,6 +22,10 @@ import org.hswebframework.web.api.crud.entity.GenericEntity;
         })
 @Schema(description = "原型内部预览短期会话摘要及授权绑定")
 public class PrototypePreviewSessionEntity extends GenericEntity<String> {
+    @Column(name = "revision_id", length = 64)
+    @Schema(description = "固定内容快照标识；旧数据需显式迁移，短会话为空时拒绝访问")
+    private String revisionId;
+
     @Column(name = "project_id", length = 64, nullable = false)
     @Schema(description = "授权项目标识")
     private String projectId;
@@ -35,7 +39,7 @@ public class PrototypePreviewSessionEntity extends GenericEntity<String> {
     private String userId;
 
     @Column(name = "storage_path", length = 1024, nullable = false)
-    @Schema(description = "签发时版本文件路径，替换后旧授权失效")
+    @Schema(description = "签发时不可变快照的文件路径，替换逻辑版本不改变本会话内容")
     private String storagePath;
 
     @Column(name = "access_epoch", length = 64, nullable = false)

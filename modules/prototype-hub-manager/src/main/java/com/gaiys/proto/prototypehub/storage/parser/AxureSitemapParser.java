@@ -158,10 +158,9 @@ public class AxureSitemapParser {
                         && HtmlInspectorInjector.isHtml(file)
                         && !Files.isSymbolicLink(file))
                     result.add(
-                            new PrototypePageInfo(
+                            PrototypePageInfo.page(
                                     title,
                                     site.relativize(file).toString().replace('\\', '/'),
-                                    false,
                                     children));
                 else result.addAll(children);
             }

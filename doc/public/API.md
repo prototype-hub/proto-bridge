@@ -8,7 +8,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 本人个人资料及头像沿自助入口校验当前身份；品牌图片使用管理上传权限。前端菜单/按钮不是安全边界，所有管理写入、文件读取、分享与关联操作须由后端执行权限和数据范围校验。多角色授权合并/撤销、禁用状态、分页上限和初始化幂等应有回归。
 
-原型业务包括项目、版本、ZIP上传/替换、预览、页面树、Inspect与受控分享。分享/预览 URL 含能力密钥，禁止公开真实链接；错误与审计记录需脱敏。上传时验证 ZIP 大小/条目/深度、解压路径和内容类型，不执行包内安装脚本。
+原型业务包括项目、逻辑版本、不可变修订、ZIP上传/更新、预览、页面树、Inspect与受控分享。分享/预览 URL 含能力密钥，禁止公开真实链接；错误与审计记录需脱敏。上传时验证 ZIP 大小/条目/深度、解压路径和内容类型，不执行包内安装脚本。
 
 ## 项目成员与授权
 
@@ -40,9 +40,29 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 `POST /prototype-hub/versions/{id}/preview-session` 在当前成员和 `prototype-hub-version.query` 校验后返回 `{runtimeBaseUrl,previewUrl,expiresAt}`，有效期 5 分钟。同一用户/版本最多保留 8 个凭证，旧凭证会被裁减；不要将这些 URL 放进公开日志或 Issue。版本列表、详情、上传和替换响应中的 `runtimeBaseUrl`、`previewUrl` 保留为 null，不再随普通查询发放长期匿名访问能力。
 
-凭证限定当前逻辑版本及其 `storagePath` 快照，并非不可变修订。每次运行文件读取都会重新校验账号、通用版本查询权限、当前项目归属及授权代次。撤员后重新加入不会复活旧凭证，调整成员也会使此前内部凭证失效；替换 ZIP 后旧凭证不能读取替换内容，必须重新换取。到期后前端可在当前身份下重新获取，失败时清除原预览上下文。已经返回浏览器的内容无法远程收回。
+凭证固定签发时的不可变 `revisionId`；默认入口解析当前修订，也可通过下节的修订入口选择历史。每次运行文件读取都会重新校验账号、通用版本查询权限、当前项目归属及授权代次。撤员后重新加入不会复活旧凭证，调整成员也会使此前内部凭证失效；更新 ZIP 后旧凭证在剩余有效期内继续读取原修订，既不会漂移到新内容，也不因此获得其他修订权限。到期后前端可在当前身份下重新获取，失败时清除原预览上下文。已经返回浏览器的内容无法远程收回。
 
 持久化旧 `previewKey` **立即停止授权**。旧的内部嵌入 URL 需从管理平台重新打开换取短期凭证；前后端须配套部署，不能混跑仍接受长期 key 的旧后端节点。公开分享使用自身的 token/accessKey 与有效期，仍沿独立公开入口访问。所有原型运行文件维持 `no-store`、`no-referrer` 与 opaque sandbox，不注入平台令牌、不开放 `allow-same-origin`。
+
+## 不可变修订与更新冲突
+
+`versionId` 表示逻辑版本，`revisionId` 表示一次已校验发布的文件快照。版本响应包含 `currentRevisionId`、本响应所属 `revisionId`、历史数量 `revisionCount` 和 `migrationRequired`；通常两个 ID 相同，创建回执重放时可能不同。修订响应包含 `id/projectId/versionId/versionName/description/entryFile/manifestSha256/fileCount/totalBytes/createdBy/createdAt`，名称和说明保留上传时值，不返回内部存储路径或完整清单。
+
+| 请求 | 行为 |
+| --- | --- |
+| `GET /prototype-hub/versions/{id}/current-revision` | 解析当前修订身份 |
+| `GET /prototype-hub/versions/{id}/revisions?after=…&limit=50` | 历史数组，按创建时间和 ID 倒序；`limit` 为 1–100，`after` 必须属于该逻辑版本 |
+| `GET /prototype-hub/versions/{id}/revisions/{rid}` | 固定修订元数据 |
+| `GET /prototype-hub/versions/{id}/revisions/{rid}/pages` | 发布时保存的页面树 |
+| `POST /prototype-hub/versions/{id}/revisions/{rid}/preview-session` | 换取固定修订的五分钟内部预览 |
+
+这些入口沿用 `prototype-hub-version.query` 与当前项目读取范围，不能通过拼接其他项目或逻辑版本的修订 ID 越权。页面树新增 `pageId=SHA256(规范化相对路径 UTF-8)`；页面身份是 `(revisionId,pageId)`，相同路径跨修订不表示相同业务状态。当前 `/versions/{id}/pages`、默认预览及新建分享均解析当前修订。
+
+更新 multipart 可增加 `expectedRevisionId`，值取用户开始更新时的 `currentRevisionId`。省略时服务端也会在接收和文件校验前捕获当前指针；最终短事务重新检查权限和指针，仅一份并发更新可成功。冲突返回 409 / `PROTOTYPE_HUB_VERSION_CONFLICT`，需刷新后明确重新选择，不能自动覆盖。ZIP、清单或数据库提交失败时保留上一修订与文件；取消 HTTP 不等于取消已经提交的更新。成功更新保留历史文件，不再删除上一目录。
+
+新建公开分享固定创建时的当前修订，响应增加 `revisionId`；更新逻辑版本不会改变已有分享内容。当前没有跟随最新、切回历史、删除单修订或完整软删除功能。删除逻辑版本会撤销其全部分享和内部会话，并为全部历史目录登记持久清理任务，文件由有界后台重试回收；仍有数据库引用的路径不会删除。
+
+历史版本没有 `currentRevisionId` 时，列表和详情可显示 `migrationRequired=true`；当前修订、页面、更新及新建分享返回 409 / `PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED`。无修订绑定的旧公开分享不可用，旧内部会话不再授权。管理员在停写并完成联合备份后调用 `POST /prototype-hub/versions/{id}/revision-migration`，请求 `{"apply":false}` 预检、`true` 显式幂等迁移；需要有效 ADMIN 和版本 save。响应为 `versionId/migrationRequired/revisionId/manifestSha256/fileCount/totalBytes/sharesToBind/receiptsToBind/applied`，`migrationRequired` 表示操作完成后状态，两个数量表示操作前待绑定数量。详细升级步骤见[数据说明](DATA.md#不可变修订与旧内容迁移)。
 
 ## HTML 文件夹上传
 
@@ -53,7 +73,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 | 操作 | 请求 | 结果 |
 | --- | --- | --- |
 | 新建版本 | `POST /prototype-hub/projects/{projectId}/versions` | 创建逻辑版本，接受 `Idempotency-Key`，仍受项目版本容量约束 |
-| 替换已有版本 | `PUT /prototype-hub/versions/{id}` | 替换同一逻辑版本，不增加版本占用；不是不可变修订 |
+| 更新已有版本 | `PUT /prototype-hub/versions/{id}` | 校验完成后新增不可变修订并切换当前指针；不增加逻辑版本占用 |
 
 浏览器文件夹入口采用保守预算：最多 5000 个文件、合计 128 MiB、单文件 64 MiB；输入大小预算用于控制浏览器负担，不表示固定内存峰值。超限、浏览器不支持目录选择/Worker 或打包失败时，可使用原有 ZIP 入口。ZIP 入口的浏览器上限仍为 500 MiB；后端独立执行配置中的上传大小、解压大小、条目数、路径和文件类型校验，其默认值分别为 ZIP 500 MiB、解压 2048 MiB、20000 条目。前端预算不会放宽服务器策略，目录中的不合法路径也不会被静默过滤后上传。
 
@@ -63,7 +83,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 ## 原型容量与创建重试
 
-同一数据库的部署最多保有 **5 个项目**，每个项目最多保有 **5 个逻辑版本**。用量按实际项目/版本记录计算，与操作者、列表筛选和应用副本无关；删除释放占用，编辑项目及 `PUT /prototype-hub/versions/{id}` 原位替换 ZIP 不增加占用。历史数据库已有超限数据时仍可启动、读取、分享、修改和删除，只拒绝继续新增；项目仍有版本时须先删除版本再删除项目。
+同一数据库的部署最多保有 **5 个项目**，每个项目最多保有 **5 个逻辑版本**。用量按实际项目/版本记录计算，与操作者、列表筛选和应用副本无关；删除释放占用，编辑项目及 `PUT /prototype-hub/versions/{id}` 更新 ZIP 仅增加修订，不增加逻辑版本占用。历史数据库已有超限数据时仍可启动、读取、分享、修改和删除，只拒绝继续新增；项目仍有版本时须先删除版本再删除项目。
 
 以下路径相对于后端 API 根路径，响应列给出统一响应体的 `result`：
 
@@ -74,7 +94,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 `Capacity` 包含 `used`、`limit`、`remaining`、`overLimit`、`canCreate`。当前 `limit=5`，`remaining=max(0,limit-used)`；达到上限时 `canCreate=false`，只有超过上限时 `overLimit=true`。`installationId` 是随数据库持久保存的 UUID，重启和数据库备份恢复不会主动重置，详见[数据说明](DATA.md)。用量为查询时快照，创建时仍由服务端事务重新校验。
 
-`POST /prototype-hub/projects` 与 `POST /prototype-hub/projects/{projectId}/versions` 接受可选的 `Idempotency-Key` 请求头。提供时须为 1–128 个可打印 ASCII 非空白字符；客户端对同一次创建意图的失败重试沿用该键，修改创建内容或开始新的创建意图时换键。键按当前用户、创建动作和所属项目绑定；项目元数据、版本元数据及原始 ZIP 字节的 SHA-256 参与请求指纹。相同键与内容在重新校验当前项目访问范围后返回首次创建的同一资源，不再占用容量；失去范围后不能借旧回执读取资源。内容不同或该资源已删除时返回冲突，不重新创建。回执与资源在同一事务提交，回执不保存原始键或完整请求；上传重放会清理本次临时文件。未提供键的客户端保持普通 POST 语义，不保证重复请求只创建一次。
+`POST /prototype-hub/projects` 与 `POST /prototype-hub/projects/{projectId}/versions` 接受可选的 `Idempotency-Key` 请求头。提供时须为 1–128 个可打印 ASCII 非空白字符；客户端对同一次创建意图的失败重试沿用该键，修改创建内容或开始新的创建意图时换键。键按当前用户、创建动作和所属项目绑定；项目元数据、版本元数据及原始 ZIP 字节的 SHA-256 参与请求指纹。相同键与内容在重新校验当前项目访问范围后返回首次创建的同一资源，不再占用容量；版本创建重放中的 `revisionId`、名称和说明对应原成功快照，`currentRevisionId` 与 `revisionCount` 对应当前真实状态，重放不会把当前指针切回旧修订；失去范围后不能借旧回执读取资源。内容不同或该资源已删除时返回冲突，不重新创建。回执与资源在同一事务提交，回执不保存原始键或完整请求；上传重放会清理本次临时文件。未提供键的客户端保持普通 POST 语义，不保证重复请求只创建一次。
 
 | HTTP 状态 | 错误码 | 含义 |
 | --- | --- | --- |

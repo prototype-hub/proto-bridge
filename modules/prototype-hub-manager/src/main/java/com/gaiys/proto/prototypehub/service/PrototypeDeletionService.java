@@ -29,7 +29,8 @@ public class PrototypeDeletionService {
                                 access.lockProject(found.getProjectId())
                                         .then(
                                                 database.sql(
-                                                                "select id from p_version where id=:id for update")
+                                                                "select id from p_version where"
+                                                                        + " id=:id for update")
                                                         .bind("id", id)
                                                         .fetch()
                                                         .one()
@@ -45,25 +46,29 @@ public class PrototypeDeletionService {
                                                         PrototypeProjectAccessService.Action.EDIT)))
                 .flatMap(
                         version ->
-                                shares.deleteByVersionId(id)
+                                // 一条 INSERT SELECT 消费 rowsUpdated，目录数量不在 JVM 聚合，也不在开放游标中嵌套写入。
+                                cleanup.enqueueVersionHistory(version)
+                                        .then(shares.deleteByVersionId(id))
                                         .then(
                                                 database.sql(
-                                                                "delete from p_preview_session where version_id=:id")
+                                                                "delete from p_preview_session"
+                                                                        + " where version_id=:id")
+                                                        .bind("id", id)
+                                                        .fetch()
+                                                        .rowsUpdated())
+                                        .then(
+                                                database.sql(
+                                                                "delete from p_revision where"
+                                                                        + " project_id=:project and"
+                                                                        + " version_id=:id")
+                                                        .bind("project", version.getProjectId())
                                                         .bind("id", id)
                                                         .fetch()
                                                         .rowsUpdated())
                                         .then(versions.deleteById(id))
-                                        .then(
-                                                cleanup.enqueue(
-                                                        version.getProjectId(),
-                                                        id,
-                                                        version.getStoragePath()))
-                                        .map(
-                                                task ->
-                                                        reactor.util.function.Tuples.of(
-                                                                version, task)))
-                .as(transactions::transactional)
-                .flatMap(pair -> cleanup.attempt(pair.getT2()).thenReturn(pair.getT1()));
+                                        .thenReturn(version))
+                .as(transactions::transactional);
+        // 目录只在提交后由有界持久任务回收，DELETE 不等待无上限的历史 I/O。
     }
 
     public Mono<PrototypeProjectEntity> deleteProject(String id) {
@@ -77,13 +82,15 @@ public class PrototypeDeletionService {
                                         .then(shares.deleteByProjectId(id))
                                         .then(
                                                 database.sql(
-                                                                "delete from p_preview_session where project_id=:id")
+                                                                "delete from p_preview_session"
+                                                                        + " where project_id=:id")
                                                         .bind("id", id)
                                                         .fetch()
                                                         .rowsUpdated())
                                         .then(
                                                 database.sql(
-                                                                "delete from p_project_member where project_id=:id")
+                                                                "delete from p_project_member where"
+                                                                        + " project_id=:id")
                                                         .bind("id", id)
                                                         .fetch()
                                                         .rowsUpdated())

@@ -4,11 +4,15 @@ import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypePreviewSessionService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
-import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionMigrationService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
+import com.gaiys.proto.prototypehub.web.request.RevisionMigrationRequest;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -27,6 +31,7 @@ import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
+import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -50,7 +55,8 @@ public class PrototypeVersionController {
     private final PrototypeVersionService versions;
     private final PrototypeUploadService upload;
     private final PrototypeDeletionService deletion;
-    private final PrototypeStorageService storage;
+    private final PrototypeRevisionService revisions;
+    private final PrototypeRevisionMigrationService migration;
     private final PrototypeProjectAccessService access;
     private final PrototypePreviewSessionService previews;
 
@@ -60,7 +66,7 @@ public class PrototypeVersionController {
     public Flux<VersionResponse> list(@RequestParam(required = false) String projectId) {
         return access.readableVersions(projectId)
                 .sort((a, b) -> Long.compare(b.getCreateTime(), a.getCreateTime()))
-                .map(VersionResponse::from);
+                .concatMap(versions::response);
     }
 
     /** 版本容量沿用版本查询权限；项目存在性由服务校验，不放宽为项目查询权限。 */
@@ -75,21 +81,79 @@ public class PrototypeVersionController {
     @QueryAction
     @Operation(summary = "查询原型版本详情")
     public Mono<VersionResponse> detail(@PathVariable String id) {
-        return access.requireVersion(id, Action.READ).map(VersionResponse::from);
+        return access.requireVersion(id, Action.READ).flatMap(versions::response);
     }
 
     @GetMapping("/versions/{id}/pages")
     @QueryAction
     @Operation(summary = "查询原型版本页面目录")
     public Mono<List<PrototypePageInfo>> pages(@PathVariable String id) {
-        return access.requireVersion(id, Action.READ).flatMap(storage::listPages);
+        return access.requireVersion(id, Action.READ)
+                .flatMap(revisions::current)
+                .flatMap(revisions::pages);
     }
 
     @PostMapping("/versions/{id}/preview-session")
     @QueryAction
-    @Operation(summary = "获取五分钟内部预览会话", description = "只授予当前文件和项目授权代次，成员变更或版本替换后失效")
+    @Operation(summary = "获取五分钟内部预览会话", description = "固定签发时快照与项目授权代次，成员撤权或账号停用后失效，逻辑版本替换不改变会话内容")
     public Mono<PreviewSessionResponse> previewSession(@PathVariable String id) {
         return previews.create(id);
+    }
+
+    @GetMapping("/versions/{id}/current-revision")
+    @QueryAction
+    @Operation(summary = "解析当前快照唯一身份，后续页面及会话请求使用返回的快照标识")
+    public Mono<RevisionResponse> currentRevision(@PathVariable String id) {
+        return access.requireVersion(id, Action.READ)
+                .flatMap(revisions::current)
+                .map(RevisionResponse::from);
+    }
+
+    @GetMapping("/versions/{id}/revisions")
+    @QueryAction
+    @Operation(summary = "按发布时间和标识倒序查询不可变历史，最多一百条")
+    public Flux<RevisionResponse> history(
+            @PathVariable String id,
+            @RequestParam(required = false) String after,
+            @RequestParam(defaultValue = "50") int limit) {
+        return access.requireVersion(id, Action.READ)
+                .flatMapMany(version -> revisions.history(version, after, limit))
+                .map(RevisionResponse::from);
+    }
+
+    @GetMapping("/versions/{id}/revisions/{rid}")
+    @QueryAction
+    @Operation(summary = "查询固定快照元数据")
+    public Mono<RevisionResponse> revision(@PathVariable String id, @PathVariable String rid) {
+        return access.requireVersion(id, Action.READ)
+                .flatMap(version -> revisions.require(version, rid))
+                .map(RevisionResponse::from);
+    }
+
+    @GetMapping("/versions/{id}/revisions/{rid}/pages")
+    @QueryAction
+    @Operation(summary = "读取发布时保存的固定快照页面清单")
+    public Mono<List<PrototypePageInfo>> revisionPages(
+            @PathVariable String id, @PathVariable String rid) {
+        return access.requireVersion(id, Action.READ)
+                .flatMap(version -> revisions.require(version, rid))
+                .flatMap(revisions::pages);
+    }
+
+    @PostMapping("/versions/{id}/revisions/{rid}/preview-session")
+    @QueryAction
+    @Operation(summary = "获取固定历史快照的五分钟内部预览会话")
+    public Mono<PreviewSessionResponse> revisionPreview(
+            @PathVariable String id, @PathVariable String rid) {
+        return previews.create(id, rid);
+    }
+
+    @PostMapping("/versions/{id}/revision-migration")
+    @SaveAction
+    @Operation(summary = "管理员显式检查或迁移单版本旧内容及旧分享和创建回执")
+    public Mono<RevisionMigrationResponse> migrate(
+            @PathVariable String id, @RequestBody RevisionMigrationRequest input) {
+        return migration.migrate(id, input.apply());
     }
 
     @PostMapping(value = "/projects/{projectId}/versions", consumes = "multipart/form-data")
@@ -111,7 +175,7 @@ public class PrototypeVersionController {
                                         file,
                                         auth.getUser().getId(),
                                         key))
-                .map(VersionResponse::from);
+                .flatMap(versions::response);
     }
 
     @PutMapping(value = "/versions/{id}", consumes = "multipart/form-data")
@@ -121,14 +185,16 @@ public class PrototypeVersionController {
             @PathVariable String id,
             @RequestPart String versionName,
             @RequestPart(required = false) String description,
-            @RequestPart FilePart file) {
-        return upload.update(id, versionName, description, file).map(VersionResponse::from);
+            @RequestPart FilePart file,
+            @RequestPart(required = false) String expectedRevisionId) {
+        return upload.update(id, versionName, description, file, expectedRevisionId)
+                .flatMap(versions::response);
     }
 
     @DeleteMapping("/versions/{id}")
     @DeleteAction
     @Operation(summary = "删除原型版本及分享")
     public Mono<VersionResponse> delete(@PathVariable String id) {
-        return deletion.deleteVersion(id).map(VersionResponse::from);
+        return deletion.deleteVersion(id).flatMap(versions::response);
     }
 }

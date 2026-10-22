@@ -96,7 +96,9 @@ class DatabaseDescriptionIntegrationTest {
     @BeforeEach
     void removeOnlyTestFixturesFromTheIsolatedDatabase() {
         sql(
-                "DROP TABLE IF EXISTS description_test.a_comment_fixture, description_test.z_comment_fixture, description_test.z_write_failure, description_test.\"future \"\"table\", public.s_menu CASCADE");
+                "DROP TABLE IF EXISTS description_test.a_comment_fixture,"
+                        + " description_test.z_comment_fixture, description_test.z_write_failure,"
+                        + " description_test.\"future \"\"table\", public.s_menu CASCADE");
     }
 
     @Test
@@ -107,7 +109,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(16, localTypes.size());
+        assertEquals(17, localTypes.size());
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -140,6 +142,7 @@ class DatabaseDescriptionIntegrationTest {
                         "s_user_setting",
                         "p_project",
                         "p_version",
+                        "p_revision",
                         "p_share",
                         "p_installation",
                         "p_creation_receipt",
@@ -148,8 +151,8 @@ class DatabaseDescriptionIntegrationTest {
                         "p_preview_session"),
                 tables);
         assertEquals(
-                124,
-                describedColumns); // 92 persistent declared fields, 16 IDs, and 16 tree fields.
+                141,
+                describedColumns); // Immutable revision fields and four explicit revision bindings.
         assertEquals("id", comment("s_user_detail", "id"));
         for (String name : Set.of("parent_id", "path", "_level", "sort_index"))
             assertFalse(comment("s_menu", name).isBlank(), name);
@@ -166,7 +169,9 @@ class DatabaseDescriptionIntegrationTest {
     void repeatedStartupRepairsChangedDescriptionsWithoutChangingRowsColumnsOrTableIdentity() {
         String before =
                 database.sql(
-                                "SELECT c.oid::text AS identity FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relname='s_menu'")
+                                "SELECT c.oid::text AS identity FROM pg_catalog.pg_class c JOIN"
+                                        + " pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE"
+                                        + " n.nspname=:schema AND c.relname='s_menu'")
                         .bind("schema", SCHEMA)
                         .map((row, metadata) -> row.get("identity", String.class))
                         .one()
@@ -192,7 +197,9 @@ class DatabaseDescriptionIntegrationTest {
         assertEquals(
                 before,
                 database.sql(
-                                "SELECT c.oid::text AS identity FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relname='s_menu'")
+                                "SELECT c.oid::text AS identity FROM pg_catalog.pg_class c JOIN"
+                                        + " pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE"
+                                        + " n.nspname=:schema AND c.relname='s_menu'")
                         .bind("schema", SCHEMA)
                         .map((row, metadata) -> row.get("identity", String.class))
                         .one()
@@ -203,7 +210,8 @@ class DatabaseDescriptionIntegrationTest {
     void
             futureRegisteredEntityUsesOfficialMappingAndEscapesIdentifiersAndTextWithoutAStaticCatalog() {
         sql(
-                "CREATE TABLE description_test.\"future \"\"table\" (id varchar(64), \"quoted \"\"value\" varchar(64), silent varchar(64))");
+                "CREATE TABLE description_test.\"future \"\"table\" (id varchar(64), \"quoted"
+                        + " \"\"value\" varchar(64), silent varchar(64))");
         sql("COMMENT ON COLUMN description_test.\"future \"\"table\".silent IS 'keep existing'");
         var service = fixtureService(properties, FutureFixture.class);
         assertEquals(3, service.synchronize().block(TIMEOUT));
@@ -229,7 +237,9 @@ class DatabaseDescriptionIntegrationTest {
         assertEquals(
                 0L,
                 database.sql(
-                                "SELECT count(*) AS total FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relname='z_comment_fixture'")
+                                "SELECT count(*) AS total FROM pg_catalog.pg_class c JOIN"
+                                        + " pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE"
+                                        + " n.nspname=:schema AND c.relname='z_comment_fixture'")
                         .bind("schema", SCHEMA)
                         .map((row, metadata) -> row.get("total", Long.class))
                         .one()
@@ -268,7 +278,10 @@ class DatabaseDescriptionIntegrationTest {
         assertEquals(
                 "public stays unchanged",
                 database.sql(
-                                "SELECT pg_catalog.obj_description(c.oid, 'pg_class') AS description FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname='public' AND c.relname='s_menu'")
+                                "SELECT pg_catalog.obj_description(c.oid, 'pg_class') AS"
+                                        + " description FROM pg_catalog.pg_class c JOIN"
+                                        + " pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE"
+                                        + " n.nspname='public' AND c.relname='s_menu'")
                         .map((row, metadata) -> row.get("description", String.class))
                         .one()
                         .block(TIMEOUT));
@@ -332,8 +345,14 @@ class DatabaseDescriptionIntegrationTest {
     private String comment(String table, String column) {
         String query =
                 column == null
-                        ? "SELECT pg_catalog.obj_description(c.oid, 'pg_class') AS description FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relname=:table"
-                        : "SELECT pg_catalog.col_description(c.oid, a.attnum) AS description FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE n.nspname=:schema AND c.relname=:table AND a.attname=:column AND NOT a.attisdropped";
+                        ? "SELECT pg_catalog.obj_description(c.oid, 'pg_class') AS description FROM"
+                                + " pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON"
+                                + " n.oid=c.relnamespace WHERE n.nspname=:schema AND c.relname=:table"
+                        : "SELECT pg_catalog.col_description(c.oid, a.attnum) AS description FROM"
+                                + " pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON"
+                                + " n.oid=c.relnamespace JOIN pg_catalog.pg_attribute a ON"
+                                + " a.attrelid=c.oid WHERE n.nspname=:schema AND c.relname=:table AND"
+                                + " a.attname=:column AND NOT a.attisdropped";
         var statement = database.sql(query).bind("schema", SCHEMA).bind("table", table);
         if (column != null) statement = statement.bind("column", column);
         // Mapping an Optional preserves SQL NULL without returning null to Reactor.
@@ -346,7 +365,11 @@ class DatabaseDescriptionIntegrationTest {
 
     private Set<String> columnNames(String table) {
         return database.sql(
-                        "SELECT a.attname AS name FROM pg_catalog.pg_class c JOIN pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE n.nspname=:schema AND c.relname=:table AND a.attnum>0 AND NOT a.attisdropped")
+                        "SELECT a.attname AS name FROM pg_catalog.pg_class c JOIN"
+                                + " pg_catalog.pg_namespace n ON n.oid=c.relnamespace JOIN"
+                                + " pg_catalog.pg_attribute a ON a.attrelid=c.oid WHERE"
+                                + " n.nspname=:schema AND c.relname=:table AND a.attnum>0 AND NOT"
+                                + " a.attisdropped")
                 .bind("schema", SCHEMA)
                 .bind("table", table)
                 .map((row, metadata) -> row.get("name", String.class))

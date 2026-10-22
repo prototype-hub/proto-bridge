@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import javax.persistence.Column;
 import javax.persistence.Index;
@@ -21,6 +22,10 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型版本分享链接及访问控制信息")
 public class PrototypeShareEntity extends GenericEntity<String> {
+    @Column(name = "revision_id", length = 64)
+    @Schema(description = "固定内容快照标识；旧数据需显式迁移，短会话为空时拒绝访问")
+    private String revisionId;
+
     @Column(name = "project_id", length = 64, nullable = false)
     @Schema(description = "分享所属的原型项目标识")
     private String projectId;
@@ -37,12 +42,12 @@ public class PrototypeShareEntity extends GenericEntity<String> {
     @Schema(description = "公开分享链接标识")
     private String token;
 
-    @com.fasterxml.jackson.annotation.JsonIgnore
+    @JsonIgnore
     @Column(name = "access_key", length = 128, nullable = false)
     @Schema(description = "分享运行文件访问密钥")
     private String accessKey;
 
-    @com.fasterxml.jackson.annotation.JsonIgnore
+    @JsonIgnore
     @Column(name = "password_hash", length = 255)
     @Schema(description = "分享访问密码的 BCrypt 哈希，未设置密码时为空")
     private String passwordHash;
