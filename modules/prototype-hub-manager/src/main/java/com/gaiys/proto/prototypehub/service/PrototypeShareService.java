@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
@@ -35,6 +36,7 @@ public class PrototypeShareService
     private final DatabaseClient database;
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
+    private final PrototypeRevisionService revisions;
 
     public Flux<PrototypeShareEntity> findByVersionId(String id) {
         return createQuery().where(PrototypeShareEntity::getVersionId, id).fetch();
@@ -67,7 +69,16 @@ public class PrototypeShareService
     public Mono<PrototypeShareEntity> createShare(
             String versionId, ShareCreateRequest input, String actor) {
         return access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE)
-                .flatMap(version -> work.call(() -> buildShare(version, versionId, input, actor)))
+                .flatMap(
+                        version ->
+                                revisions
+                                        .current(version)
+                                        .then(
+                                                work.call(
+                                                        () ->
+                                                                buildShare(
+                                                                        version, versionId, input,
+                                                                        actor))))
                 .flatMap(share -> persistShare(versionId, share));
     }
 
@@ -118,8 +129,13 @@ public class PrototypeShareService
                                 .switchIfEmpty(
                                         Mono.error(() -> PrototypeHubException.missing("version"))))
                 .then(access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE))
-                .then(insert(share))
-                .thenReturn(share)
+                .flatMap(version -> revisions.current(version))
+                .flatMap(
+                        revision -> {
+                            // 必须在项目/版本锁内取 current，不能把密码计算前读到的指针当作发布时指针。
+                            share.setRevisionId(revision.getId());
+                            return insert(share).thenReturn(share);
+                        })
                 .as(transactions::transactional);
     }
 
@@ -130,6 +146,7 @@ public class PrototypeShareService
                 .filter(
                         s ->
                                 Boolean.TRUE.equals(s.getEnabled())
+                                        && s.getRevisionId() != null
                                         && (s.getExpiresAt() == null
                                                 || s.getExpiresAt() > System.currentTimeMillis()))
                 .switchIfEmpty(
@@ -142,7 +159,7 @@ public class PrototypeShareService
 
     public Mono<PrototypeShareEntity> requireAccess(String token, String key) {
         return requireActive(token)
-                .flatMap(share -> access.correlatedVersion(share).thenReturn(share))
+                .flatMap(share -> requireRevision(share).thenReturn(share))
                 .filter(s -> matches(s.getAccessKey(), key))
                 .switchIfEmpty(
                         Mono.error(
@@ -154,7 +171,7 @@ public class PrototypeShareService
 
     public Mono<PublicShareResponse> getPublicInfo(String token, String password) {
         return requireActive(token)
-                .flatMap(share -> access.correlatedVersion(share).thenReturn(share))
+                .flatMap(share -> requireRevision(share).thenReturn(share))
                 .flatMap(
                         share -> {
                             if (share.getPasswordHash() == null) return info(share, true);
@@ -175,7 +192,7 @@ public class PrototypeShareService
     }
 
     private Mono<PublicShareResponse> info(PrototypeShareEntity share, boolean grant) {
-        return Mono.zip(projects.requireById(share.getProjectId()), access.correlatedVersion(share))
+        return Mono.zip(projects.requireById(share.getProjectId()), requireRevision(share))
                 .map(
                         pair -> {
                             String key = grant ? share.getAccessKey() : null;
@@ -198,8 +215,21 @@ public class PrototypeShareService
                                     grant
                                             ? PrototypeUrls.preview(
                                                     base, pair.getT2().getEntryFile())
-                                            : null);
+                                            : null,
+                                    share.getRevisionId());
                         });
+    }
+
+    /** 公开访问固定快照；旧分享必须显式迁移，不允许退回逻辑版本当前内容。 */
+    public Mono<PrototypeRevisionEntity> requireRevision(PrototypeShareEntity share) {
+        return access.correlatedVersion(share)
+                .flatMap(version -> revisions.require(version, share.getRevisionId()))
+                .onErrorMap(
+                        PrototypeHubException.class,
+                        error ->
+                                PrototypeHubException.notFound(
+                                        "error.prototype-hub.share_unavailable",
+                                        "PROTOTYPE_HUB_SHARE_UNAVAILABLE"));
     }
 
     public Mono<PrototypeShareEntity> deleteShare(String id) {

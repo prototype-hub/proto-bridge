@@ -1,9 +1,11 @@
 package com.gaiys.proto.prototypehub.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import javax.persistence.Column;
 import javax.persistence.Index;
 import javax.persistence.Table;
+import javax.persistence.Transient;
 import lombok.Getter;
 import lombok.Setter;
 import org.hswebframework.web.api.crud.entity.GenericEntity;
@@ -17,6 +19,15 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型项目版本及上传文件信息")
 public class PrototypeVersionEntity extends GenericEntity<String> {
+    @Column(name = "current_revision_id", length = 64)
+    @Schema(description = "当前不可变快照标识；为空时必须显式迁移旧内容")
+    private String currentRevisionId;
+
+    @Transient
+    @JsonIgnore
+    @Schema(description = "仅供幂等响应选择原成功快照，不参与数据库映射")
+    private String responseRevisionId;
+
     @Column(name = "project_id", length = 64, nullable = false)
     @Schema(description = "版本所属的原型项目标识")
     private String projectId;
@@ -29,7 +40,7 @@ public class PrototypeVersionEntity extends GenericEntity<String> {
     @Schema(description = "原型版本说明")
     private String description;
 
-    @com.fasterxml.jackson.annotation.JsonIgnore
+    @JsonIgnore
     @Column(name = "storage_path", length = 1024, nullable = false)
     @Schema(description = "原型版本文件的存储相对路径")
     private String storagePath;
@@ -38,7 +49,7 @@ public class PrototypeVersionEntity extends GenericEntity<String> {
     @Schema(description = "原型页面入口文件的相对路径")
     private String entryFile;
 
-    @com.fasterxml.jackson.annotation.JsonIgnore
+    @JsonIgnore
     @Column(name = "preview_key", length = 64, nullable = false)
     @Schema(description = "内部预览文件访问密钥")
     private String previewKey;

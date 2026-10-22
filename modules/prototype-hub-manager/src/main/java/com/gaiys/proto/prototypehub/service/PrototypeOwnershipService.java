@@ -41,12 +41,12 @@ public class PrototypeOwnershipService {
         // 只读取，不更新 owner/epoch，也不签发会话；可先在备份副本核对数量后显式 apply。
         return database.sql(
                         """
-                select count(*) as scanned,
-                count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and (p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null) as assigned,
-                count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and not ((p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null)) as pending,
-                count(*) filter(where p.owner_id ~ '[^[:space:]]') as unchanged
-                from p_project p left join s_user u on u.id=p.creator_id and u.status=1
-                """)
+select count(*) as scanned,
+count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and (p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null) as assigned,
+count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and not ((p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null)) as pending,
+count(*) filter(where p.owner_id ~ '[^[:space:]]') as unchanged
+from p_project p left join s_user u on u.id=p.creator_id and u.status=1
+""")
                 .map(
                         (row, metadata) ->
                                 new OwnershipMigrationResponse(
@@ -62,7 +62,8 @@ public class PrototypeOwnershipService {
                 .doOnNext(
                         result ->
                                 log.info(
-                                        "Prototype ownership migration applied: scanned={}, assigned={}, pending={}, unchanged={}",
+                                        "Prototype ownership migration applied: scanned={},"
+                                                + " assigned={}, pending={}, unchanged={}",
                                         result.scanned(),
                                         result.assigned(),
                                         result.pending(),
@@ -196,7 +197,8 @@ public class PrototypeOwnershipService {
                 .rowsUpdated()
                 .then(
                         database.sql(
-                                        "delete from p_project_member where project_id=:id and user_id=:owner")
+                                        "delete from p_project_member where project_id=:id and"
+                                                + " user_id=:owner")
                                 .bind("id", id)
                                 .bind("owner", ownerId)
                                 .fetch()

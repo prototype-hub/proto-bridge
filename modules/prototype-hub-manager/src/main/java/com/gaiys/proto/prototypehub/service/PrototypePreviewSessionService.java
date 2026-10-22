@@ -1,9 +1,11 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Actor;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
 import com.gaiys.proto.prototypehub.web.urls.PrototypeUrls;
 import java.nio.charset.StandardCharsets;
@@ -14,6 +16,7 @@ import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.web.authorization.exception.UnAuthorizedException;
 import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -22,7 +25,7 @@ import reactor.core.publisher.Mono;
 /**
  * 签发及验证 5 分钟内部预览能力，不向上传原型暴露平台登录凭证。
  *
- * <p>会话只存随机 secret 的摘要。每次资源请求重新核验身份、通用读动作、项目成员代次及具体文件路径； 不缓存授权，也不保证收回浏览器已经接收的内容。
+ * <p>会话只存随机 secret 的摘要。每次资源请求重新核验身份、通用读动作、项目成员代次及固定快照和文件路径； 不缓存授权，也不保证收回浏览器已经接收的内容。
  */
 @Service
 @RequiredArgsConstructor
@@ -34,8 +37,14 @@ public class PrototypePreviewSessionService {
     private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
     private final DatabaseClient database;
     private final TransactionalOperator transactions;
+    private final PrototypeRevisionService revisions;
 
     public Mono<PreviewSessionResponse> create(String versionId) {
+        return create(versionId, null);
+    }
+
+    /** 未指定快照时在项目锁内解析一次 current；指定时验证其确属本逻辑版本。 */
+    public Mono<PreviewSessionResponse> create(String versionId, String revisionId) {
         return access.current()
                 .flatMap(
                         actor ->
@@ -48,38 +57,48 @@ public class PrototypePreviewSessionService {
                                                                         "version")))
                                         .flatMap(
                                                 version ->
-                                                        access.lockProject(version.getProjectId())
-                                                                .then(
-                                                                        access.requireProject(
-                                                                                actor,
-                                                                                version
-                                                                                        .getProjectId(),
-                                                                                Action.READ,
-                                                                                true))
-                                                                .flatMap(
-                                                                        grant ->
-                                                                                versions.findById(
-                                                                                                versionId)
-                                                                                        .switchIfEmpty(
-                                                                                                Mono
-                                                                                                        .error(
-                                                                                                                () ->
-                                                                                                                        PrototypeHubException
-                                                                                                                                .missing(
-                                                                                                                                        "version")))
-                                                                                        .flatMap(
-                                                                                                current ->
-                                                                                                        persist(
-                                                                                                                actor
-                                                                                                                        .userId(),
-                                                                                                                current,
-                                                                                                                grant.project()
-                                                                                                                        .getAccessEpoch())))))
+                                                        createLocked(actor, version, revisionId)))
                 .as(transactions::transactional);
     }
 
+    private Mono<PreviewSessionResponse> createLocked(
+            Actor actor, PrototypeVersionEntity found, String revisionId) {
+        return access.lockProject(found.getProjectId())
+                .then(access.requireProject(actor, found.getProjectId(), Action.READ, true))
+                .flatMap(
+                        grant ->
+                                versions.findById(found.getId())
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "version")))
+                                        .flatMap(
+                                                version ->
+                                                        selected(version, revisionId)
+                                                                .flatMap(
+                                                                        revision ->
+                                                                                persist(
+                                                                                        actor
+                                                                                                .userId(),
+                                                                                        version,
+                                                                                        revision,
+                                                                                        grant.project()
+                                                                                                .getAccessEpoch()))));
+    }
+
+    private Mono<PrototypeRevisionEntity> selected(
+            PrototypeVersionEntity version, String revisionId) {
+        return revisionId == null
+                ? revisions.current(version)
+                : revisions.require(version, revisionId);
+    }
+
     private Mono<PreviewSessionResponse> persist(
-            String userId, PrototypeVersionEntity version, String epoch) {
+            String userId,
+            PrototypeVersionEntity version,
+            PrototypeRevisionEntity revision,
+            String epoch) {
         if (epoch == null || epoch.isBlank()) return Mono.error(denied());
         String token =
                 UUID.randomUUID().toString().replace("-", "")
@@ -90,14 +109,19 @@ public class PrototypePreviewSessionService {
         // 只清理已持锁项目的最多 256 个过期行，避免跨项目 GC 与账号删除的有序项目锁形成锁环。
         // 当前 user/version 保留最近 8 个会话；冷项目过期行仅在后续签发或绑定清理时回收。
         return database.sql(
-                        "delete from p_preview_session where id in (select id from p_preview_session where project_id=:projectId and expires_at<=:now order by expires_at,id limit 256)")
+                        "delete from p_preview_session where id in (select id from"
+                                + " p_preview_session where project_id=:projectId and expires_at<=:now"
+                                + " order by expires_at,id limit 256)")
                 .bind("projectId", version.getProjectId())
                 .bind("now", createdAt)
                 .fetch()
                 .rowsUpdated()
                 .then(
                         database.sql(
-                                        "delete from p_preview_session where id in (select id from p_preview_session where user_id=:userId and version_id=:versionId order by create_time desc,id desc offset 7)")
+                                        "delete from p_preview_session where id in (select id from"
+                                                + " p_preview_session where user_id=:userId and"
+                                                + " version_id=:versionId order by create_time desc,id"
+                                                + " desc offset 7)")
                                 .bind("userId", userId)
                                 .bind("versionId", version.getId())
                                 .fetch()
@@ -105,14 +129,15 @@ public class PrototypePreviewSessionService {
                 .then(
                         database.sql(
                                         """
-                        insert into p_preview_session(id,project_id,version_id,user_id,storage_path,access_epoch,create_time,expires_at)
-                        values(:id,:projectId,:versionId,:userId,:storagePath,:epoch,:createdAt,:expiresAt)
-                        """)
+insert into p_preview_session(id,project_id,version_id,revision_id,user_id,storage_path,access_epoch,create_time,expires_at)
+values(:id,:projectId,:versionId,:revisionId,:userId,:storagePath,:epoch,:createdAt,:expiresAt)
+""")
                                 .bind("id", digest(token))
                                 .bind("projectId", version.getProjectId())
                                 .bind("versionId", version.getId())
                                 .bind("userId", userId)
-                                .bind("storagePath", version.getStoragePath())
+                                .bind("revisionId", revision.getId())
+                                .bind("storagePath", revision.getStoragePath())
                                 .bind("epoch", epoch)
                                 .bind("createdAt", createdAt)
                                 .bind("expiresAt", expiresAt)
@@ -121,16 +146,17 @@ public class PrototypePreviewSessionService {
                 .thenReturn(
                         new PreviewSessionResponse(
                                 base,
-                                PrototypeUrls.preview(base, version.getEntryFile()),
+                                PrototypeUrls.preview(base, revision.getEntryFile()),
                                 expiresAt));
     }
 
-    public Mono<PrototypeVersionEntity> require(String versionId, String token) {
+    public Mono<PrototypeRevisionEntity> require(String versionId, String token) {
         if (token == null || !token.matches("[a-f0-9]{64}")) return Mono.error(denied());
         return sessions.findById(digest(token))
                 .filter(
                         session ->
                                 versionId.equals(session.getVersionId())
+                                        && session.getRevisionId() != null
                                         && session.getExpiresAt() > System.currentTimeMillis())
                 .flatMap(
                         session ->
@@ -159,24 +185,28 @@ public class PrototypePreviewSessionService {
                                                                 .filter(
                                                                         version ->
                                                                                 session.getProjectId()
-                                                                                                .equals(
-                                                                                                        version
-                                                                                                                .getProjectId())
-                                                                                        && Objects
-                                                                                                .equals(
-                                                                                                        session
-                                                                                                                .getStoragePath(),
-                                                                                                        version
-                                                                                                                .getStoragePath()))))
+                                                                                        .equals(
+                                                                                                version
+                                                                                                        .getProjectId()))
+                                                                .flatMap(
+                                                                        version ->
+                                                                                revisions.require(
+                                                                                        version,
+                                                                                        session
+                                                                                                .getRevisionId()))
+                                                                .filter(
+                                                                        revision ->
+                                                                                Objects.equals(
+                                                                                        session
+                                                                                                .getStoragePath(),
+                                                                                        revision
+                                                                                                .getStoragePath()))))
                 .switchIfEmpty(Mono.error(PrototypePreviewSessionService::denied))
-                // 匿名资源入口只暴露统一拒绝，不泄漏账号/成员/项目是否存在。
+                // 固定 revision 不再比较 current；替换仍保留本会话内容，撤权代次和停用继续逐请求校验。
                 .onErrorMap(
                         error ->
                                 error instanceof PrototypeHubException
-                                        || error
-                                                instanceof
-                                                org.hswebframework.web.authorization.exception
-                                                        .UnAuthorizedException,
+                                        || error instanceof UnAuthorizedException,
                         error -> denied());
     }
 

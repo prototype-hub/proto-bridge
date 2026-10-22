@@ -100,7 +100,10 @@ class SystemIntegrationTest {
                                             + html
                                             + "</body></html>",
                                     "data/document.js",
-                                    "var a='sitemap',b='rootNodes',c='pageName',d='url';function _creator(){return _(a,_(b,[_(c,'页面',d,'index.html')]))};return _creator();",
+                                    "var a='sitemap',b='rootNodes',c='pageName',d='url';function"
+                                            + " _creator(){return"
+                                            + " _(a,_(b,[_(c,'页面',d,'index.html')]))};return"
+                                            + " _creator();",
                                     "images/icon.svg",
                                     "<svg xmlns='http://www.w3.org/2000/svg'/>",
                                     "styles/style.css",
@@ -345,9 +348,9 @@ class SystemIntegrationTest {
                         zip("replacement"));
         assertTrue(version.path("previewUrl").isNull());
         assertTrue(updated.path("previewUrl").isNull());
-        // 原位替换不再允许旧内部凭证读取新文件；公开分享仍按其独立授权访问当前内容。
-        client.get().uri(runtime).exchange().expectStatus().isForbidden();
-        org.junit.jupiter.api.Assertions.assertFalse(
+        // 内部凭证与公开分享固定 R1；R2 只改变逻辑当前指针，不重写已发布快照。
+        client.get().uri(runtime).exchange().expectStatus().isOk();
+        org.junit.jupiter.api.Assertions.assertTrue(
                 java.nio.file.Files.exists(FILES.resolve(originalPath)));
         client.get()
                 .uri(publicPath + "/" + key + "/runtime/index.html")
@@ -358,7 +361,7 @@ class SystemIntegrationTest {
                 .value(
                         value ->
                                 org.junit.jupiter.api.Assertions.assertTrue(
-                                        value.contains("replacement")));
+                                        value.contains("initial")));
         client.delete()
                 .uri("/prototype-hub/shares/" + share.path("id").asText())
                 .header("X-Access-Token", token)
@@ -773,14 +776,17 @@ class SystemIntegrationTest {
         String id = version.path("id").asText();
         String old = versions.requireById(id).block(Duration.ofSeconds(10)).getStoragePath();
         database.sql(
-                        "create function reject_test_version_update() returns trigger language plpgsql as $$ begin if old.id='"
+                        "create function reject_test_version_update() returns trigger language"
+                                + " plpgsql as $$ begin if old.id='"
                                 + id
-                                + "' then raise exception 'controlled failure'; end if; return new; end $$")
+                                + "' then raise exception 'controlled failure'; end if; return new;"
+                                + " end $$")
                 .fetch()
                 .rowsUpdated()
                 .block();
         database.sql(
-                        "create trigger reject_test_update before update on p_version for each row execute function reject_test_version_update()")
+                        "create trigger reject_test_update before update on p_version for each row"
+                                + " execute function reject_test_version_update()")
                 .fetch()
                 .rowsUpdated()
                 .block();
@@ -843,6 +849,13 @@ class SystemIntegrationTest {
         Files.createSymbolicLink(old, neighbor);
         try {
             upload(HttpMethod.PUT, "/prototype-hub/versions/" + id, token, zip("new"));
+            client.delete()
+                    .uri("/prototype-hub/versions/" + id)
+                    .header("X-Access-Token", token)
+                    .exchange()
+                    .expectStatus()
+                    .isOk();
+            cleanup.retryPending().block(Duration.ofSeconds(10));
             var task =
                     cleanup.createQuery()
                             .where(

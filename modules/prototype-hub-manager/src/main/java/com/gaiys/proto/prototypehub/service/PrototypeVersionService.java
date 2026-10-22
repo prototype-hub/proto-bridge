@@ -1,10 +1,13 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
+import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import lombok.AllArgsConstructor;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -20,6 +23,15 @@ import reactor.core.publisher.Mono;
 public class PrototypeVersionService
         extends GenericReactiveCrudService<PrototypeVersionEntity, String> {
     private final PrototypeProjectService projects;
+    private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
+
+    public Mono<VersionResponse> response(PrototypeVersionEntity version) {
+        return revisions
+                .createQuery()
+                .where(PrototypeRevisionEntity::getVersionId, version.getId())
+                .count()
+                .map(count -> VersionResponse.from(version, count.longValue()));
+    }
 
     public Mono<VersionUsageResponse> usage(String project) {
         return projects.requireById(project)
@@ -67,16 +79,19 @@ public class PrototypeVersionService
             String name,
             String description,
             String path,
-            String entry) {
+            String entry,
+            String revisionId) {
         PrototypeVersionEntity update = old.copyTo(new PrototypeVersionEntity());
         update.setVersionName(name.trim());
         update.setDescription(description);
         update.setStoragePath(path);
         update.setEntryFile(entry);
+        update.setCurrentRevisionId(revisionId);
         return createUpdate()
                 .set(update)
                 .where(PrototypeVersionEntity::getId, old.getId())
                 .and(PrototypeVersionEntity::getStoragePath, old.getStoragePath())
+                .and(PrototypeVersionEntity::getCurrentRevisionId, old.getCurrentRevisionId())
                 .execute()
                 .flatMap(
                         rows ->

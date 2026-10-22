@@ -32,7 +32,7 @@ import zlib
 
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
-TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_share',
+TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_share',
           'p_creation_receipt', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
@@ -74,14 +74,18 @@ def storage_manifest(root):
     return files
 
 
-def sample_zip(target):
+def sample_zip(target, replacement=False):
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(FIXTURE.rglob('*')):
             if path.is_file():
                 # Stable ZIP metadata makes request replay and sample hashes reproducible.
                 info = zipfile.ZipInfo(path.relative_to(FIXTURE).as_posix(), (2026, 1, 1, 0, 0, 0))
                 info.compress_type = zipfile.ZIP_DEFLATED
-                archive.writestr(info, path.read_bytes())
+                content = path.read_bytes()
+                if replacement and path.suffix == '.html':
+                    content = content.replace(b'Runtime fixture home', b'Runtime fixture home revision two')
+                    content = content.replace(b'Runtime fixture nested page', b'Runtime fixture nested page revision two')
+                archive.writestr(info, content)
     return target
 
 
@@ -105,10 +109,13 @@ def file_multipart(filename, content, content_type, fields=()):
     return b''.join(parts), 'multipart/form-data; boundary=' + boundary
 
 
-def multipart(zip_path):
+def multipart(zip_path, expected_revision=None):
+    fields = (('versionName', 'Runtime fixture version'),
+              ('description', 'Original nested HTML restore sample'))
+    if expected_revision is not None:
+        fields += (('expectedRevisionId', expected_revision),)
     return file_multipart('runtime-fixture.zip', zip_path.read_bytes(), 'application/zip',
-                          (('versionName', 'Runtime fixture version'),
-                           ('description', 'Original nested HTML restore sample')))
+                          fields)
 
 
 def system_file_url(value):
@@ -176,6 +183,11 @@ class Api:
         body, content_type = multipart(zip_path)
         return self.request('POST', '/api/prototype-hub/projects/' + project + '/versions', body,
                             headers={'Content-Type': content_type, 'Idempotency-Key': key})
+
+    def replace(self, version, zip_path):
+        body, content_type = multipart(zip_path, version['currentRevisionId'])
+        return self.request('PUT', '/api/prototype-hub/versions/' + version['id'], body,
+                            headers={'Content-Type': content_type})
 
     def usage(self):
         return self.request('GET', '/api/prototype-hub/projects/_usage')
@@ -380,8 +392,10 @@ class RuntimeCheck:
         if version.get('id'):
             require(not version.get('previewUrl') and not version.get('runtimeBaseUrl'),
                     'Version management response disclosed a permanent preview capability')
-            version = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
-                                  '/preview-session')
+            path = '/api/prototype-hub/versions/' + version['id']
+            if version.get('revisionId'):
+                path += '/revisions/' + version['revisionId']
+            version = api.request('POST', path + '/preview-session')
             now = int(time.time() * 1000)
             require(now < version.get('expiresAt', 0) <= now + 300000,
                     'Internal preview expiry is not bounded to five minutes')
@@ -410,10 +424,38 @@ class RuntimeCheck:
                 'Incorrect share password was not rejected')
         granted = api.request('POST', path + '/verify', {'password': self.share_password})
         require(granted.get('accessKey'), 'Share access was not granted')
+        if share.get('revisionId'):
+            require(granted.get('revisionId') == share['revisionId'], 'Public share changed its fixed revision')
         current = self.preview(api, granted)
         if expected_preview:
             require(current == expected_preview, 'Share content changed after process/restore')
         return current
+
+    def verify_revisions(self, api, project, original, current, zip_path, key,
+                         original_hashes, current_hashes):
+        path = '/api/prototype-hub/versions/' + original['id']
+        require(original['revisionId'] != current['revisionId'], 'Replacement reused mutable revision identity')
+        head = api.request('GET', path + '/current-revision')
+        require(head['id'] == current['revisionId'], 'Logical current pointer changed')
+        first = api.request('GET', path + '/revisions?limit=1')
+        second = api.request('GET', path + '/revisions?limit=1&after=' + head['id'])
+        require(len(first) == len(second) == 1 and first[0]['id'] == head['id']
+                and second[0]['id'] == original['revisionId'], 'Revision keyset history differs')
+        for item in (first[0], second[0]):
+            require(re.fullmatch('[0-9a-f]{64}', item.get('manifestSha256', '')) is not None,
+                    'Revision has no reproducible manifest digest')
+            require(item.get('fileCount', 0) > 0 and item.get('totalBytes', 0) > 0,
+                    'Revision lost its immutable file manifest summary')
+        replayed = api.upload(project['id'], zip_path, key)
+        require(replayed['id'] == original['id']
+                and replayed['revisionId'] == original['revisionId']
+                and replayed['currentRevisionId'] == current['revisionId']
+                and replayed['revisionCount'] == 2, 'Creation receipt did not preserve the original snapshot')
+        require(self.preview(api, original) == original_hashes, 'Historical preview bytes changed')
+        require(self.preview(api, current) == current_hashes, 'Current revision preview bytes changed')
+        occupancy = api.request('GET', '/api/prototype-hub/versions/_usage?projectId=' + project['id'])
+        require(occupancy['versions']['used'] == 1, 'Revision replacement consumed a logical version slot')
+        return sorted(item['manifestSha256'] for item in (first[0], second[0]))
 
     def create_system_files(self, api):
         profile = api.request('GET', '/api/user/detail')
@@ -458,6 +500,7 @@ class RuntimeCheck:
         storage = self.workspace / 'source-storage'
         system_storage = self.workspace / 'source-system-files'
         zip_path = sample_zip(self.workspace / 'runtime-fixture.zip')
+        replacement_zip = sample_zip(self.workspace / 'runtime-replacement.zip', replacement=True)
         self.report['sample']['sha256'] = digest_file(zip_path)
         project_key, version_key = uuid.uuid4().hex, uuid.uuid4().hex
         with self.phase('packaged-jar-empty-database'):
@@ -480,6 +523,12 @@ class RuntimeCheck:
                     'Project replay created a second resource')
             require(api.upload(project['id'], zip_path, version_key)['id'] == version['id'],
                     'Version replay created a second resource')
+            current = api.replace(version, replacement_zip)
+            current_hashes = self.preview(api, current)
+            require(current_hashes != preview_hashes, 'Replacement fixture did not change the served bytes')
+            manifest_hashes = self.verify_revisions(api, project, version, current, zip_path,
+                                                   version_key, preview_hashes, current_hashes)
+            self.verify_share(api, share, preview_hashes)
         with self.phase('full-process-restart'):
             self.stop(process)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
@@ -493,6 +542,9 @@ class RuntimeCheck:
             require(self.preview(api, version) == preview_hashes, 'Preview bytes changed on restart')
             self.verify_project_member(api, member, project, version, preview_hashes)
             self.verify_share(api, share, preview_hashes)
+            require(self.verify_revisions(api, project, version, current, zip_path, version_key,
+                                          preview_hashes, current_hashes) == manifest_hashes,
+                    'Revision manifests changed on process restart')
         with self.phase('two-process-final-project-slot'):
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
             self.verify_system_files(other, system_files)
@@ -572,6 +624,9 @@ class RuntimeCheck:
             require(self.preview(restored, version) == preview_hashes, 'Restored preview differs')
             self.verify_share(restored, share, preview_hashes)
             self.verify_project_member(restored, member, project, version, preview_hashes)
+            require(self.verify_revisions(restored, project, version, current, zip_path, version_key,
+                                          preview_hashes, current_hashes) == manifest_hashes,
+                    'Restored immutable manifests differ')
             authorization_after = self.database_manifest('runtime_restored')
             for table in ('p_project', 'p_project_member'):
                 require(authorization_after[table] == before_database[table],
@@ -579,7 +634,7 @@ class RuntimeCheck:
             # The dump included the exact short-lived rows. A new preview is an expected
             # session-table mutation, never permission to omit stable ownership tables.
             require(authorization_after['p_preview_session']['count'] <=
-                    authorization_before['p_preview_session']['count'] + 2,
+                    authorization_before['p_preview_session']['count'] + 4,
                     'Internal preview issued an unbounded number of sessions')
             self.report['restoredProjectAuthorization'] = {
                 'tableHashesVerified': ['p_project', 'p_project_member'],
@@ -591,6 +646,10 @@ class RuntimeCheck:
             require(storage_manifest(restored_system_storage) == before_system_files,
                     'Startup changed restored system file ownership')
             self.report['restoredTables'] = before_database
+            self.report['restoredRevisions'] = {
+                'count': 2, 'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
+                'creationReceiptPinnedToOriginal': True, 'manifestSha256': manifest_hashes,
+                'historicalAndCurrentBytesVerified': True}
             self.report['restoredFileCount'] = len(before_files)
             self.report['restoredSystemFiles'] = {
                 'fileCount': len(before_system_files), 'downloadSha256': system_hashes,

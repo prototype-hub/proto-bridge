@@ -1,9 +1,10 @@
 package com.gaiys.proto.prototypehub.service;
 
-import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService.UploadPaths;
+import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import java.io.OutputStream;
@@ -11,6 +12,7 @@ import java.nio.file.Files;
 import java.security.DigestInputStream;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.concurrent.CancellationException;
 import java.util.function.Predicate;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -22,13 +24,11 @@ import org.springframework.transaction.reactive.TransactionSynchronizationManage
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Sinks;
-import reactor.util.function.Tuple2;
-import reactor.util.function.Tuples;
 
 /**
  * 协调原型 ZIP 接收、解压和版本持久化。
  *
- * <p>每次订阅独立创建上传目录和事务结果信号；usingWhen 等待数据库最终结果决定目录归属， 提交后的取消不会删除已生效的文件，旧目录通过持久化清理任务处理。
+ * <p>每次订阅独立创建上传目录和事务结果信号；usingWhen 等待数据库最终结果决定目录归属， 提交后的取消不会删除已生效的文件；历史目录持续保留，整体删除通过持久化任务清理。
  */
 @Service
 @Slf4j
@@ -44,6 +44,8 @@ public class PrototypeUploadService {
     private final DatabaseClient database;
     private final PrototypeCreationReceiptService receipts;
     private final PrototypeProjectAccessService access;
+    private final PrototypeRevisionService revisions;
+    private final PrototypeManifestBuilder manifests;
 
     public Mono<PrototypeVersionEntity> upload(
             String project, String name, String description, FilePart file, String actor) {
@@ -88,18 +90,21 @@ public class PrototypeUploadService {
                                             .then();
                     return existingProject.then(
                             Mono.usingWhen(
-                                    storage.prepareUpload(project, id),
-                                    paths ->
-                                            receiveAndCreate(
-                                                    project,
-                                                    id,
-                                                    name,
-                                                    description,
-                                                    file,
-                                                    actor,
-                                                    request,
-                                                    paths,
-                                                    attempt),
+                                    Mono.just(attempt),
+                                    acquired ->
+                                            prepareUpload(project, id, acquired)
+                                                    .flatMap(
+                                                            paths ->
+                                                                    receiveAndCreate(
+                                                                            project,
+                                                                            id,
+                                                                            name,
+                                                                            description,
+                                                                            file,
+                                                                            actor,
+                                                                            request,
+                                                                            paths,
+                                                                            acquired)),
                                     // 重放返回旧资源时本次目录不归任何版本所有，成功路径同样回收。
                                     paths -> cleanup(project, id, attempt),
                                     (paths, error) -> cleanup(project, id, attempt),
@@ -109,19 +114,65 @@ public class PrototypeUploadService {
 
     public Mono<PrototypeVersionEntity> update(
             String id, String name, String description, FilePart file) {
+        return update(id, name, description, file, null);
+    }
+
+    /** 可选客户端前置条件；缺省同样使用上传前快照比较，不能后到覆盖先提交的结果。 */
+    public Mono<PrototypeVersionEntity> update(
+            String id, String name, String description, FilePart file, String expectedRevisionId) {
         return Mono.defer(
                 () -> {
                     validate(name, description, file);
                     return access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT)
+                            .flatMap(old -> revisions.current(old).thenReturn(old))
                             .flatMap(
-                                    old -> updateExistingVersion(id, old, name, description, file));
+                                    old -> {
+                                        if (expectedRevisionId != null
+                                                && !expectedRevisionId.equals(
+                                                        old.getCurrentRevisionId()))
+                                            return Mono.error(versionConflict());
+                                        return access.current()
+                                                .flatMap(
+                                                        actor ->
+                                                                updateExistingVersion(
+                                                                        id,
+                                                                        old,
+                                                                        name,
+                                                                        description,
+                                                                        file,
+                                                                        actor.userId()));
+                                    });
                 });
     }
 
-    private Mono<String> receiveAndExtract(FilePart file, UploadPaths paths) {
+    private Mono<UploadPaths> prepareUpload(
+            String project, String storageId, UploadAttempt attempt) {
+        return work.call(
+                () -> {
+                    if (!attempt.beginWriting()) throw new CancellationException();
+                    try {
+                        return storage.prepareUploadNow(project, storageId, attempt::ownDirectory);
+                    } finally {
+                        attempt.completeWriting();
+                    }
+                });
+    }
+
+    private Mono<String> receiveAndExtract(
+            FilePart file, UploadPaths paths, UploadAttempt attempt) {
         // 接收完成后才解压，阻塞 ZIP 操作沿用 FileWork 的专用调度边界。
         return storage.receive(file, paths.zip())
-                .then(work.call(() -> extractor.extract(paths.zip(), paths.site())));
+                .then(
+                        work.call(
+                                () -> {
+                                    // 取消仅会 interrupt 调度线程；ZIP/文件库可能继续写，必须等物理 finally 才删除目录。
+                                    if (!attempt.beginWriting()) throw new CancellationException();
+                                    try {
+                                        return extractor.extract(paths.zip(), paths.site());
+                                    } finally {
+                                        attempt.completeWriting();
+                                    }
+                                }));
     }
 
     /** 接收、解压和散列均先完成，再进入持锁的短事务。 */
@@ -135,22 +186,26 @@ public class PrototypeUploadService {
             PrototypeCreationReceiptService.Request request,
             UploadPaths paths,
             UploadAttempt attempt) {
-        return receiveAndExtract(file, paths)
-                .zipWhen(entry -> payloadDigest(request, paths))
+        return receiveAndExtract(file, paths, attempt)
                 .flatMap(
-                        received -> {
-                            var completeRequest =
-                                    request == null ? null : request.withPayload(received.getT2());
-                            return createAndPersistVersion(
-                                    project,
-                                    id,
-                                    name,
-                                    description,
-                                    received.getT1(),
-                                    actor,
-                                    attempt,
-                                    completeRequest);
-                        });
+                        entry ->
+                                work.call(() -> manifests.build(paths.site(), entry))
+                                        .zipWith(payloadDigest(request, paths))
+                                        .flatMap(
+                                                received ->
+                                                        createAndPersistVersion(
+                                                                project,
+                                                                id,
+                                                                name,
+                                                                description,
+                                                                entry,
+                                                                actor,
+                                                                attempt,
+                                                                request == null
+                                                                        ? null
+                                                                        : request.withPayload(
+                                                                                received.getT2()),
+                                                                received.getT1())));
     }
 
     private Mono<String> payloadDigest(
@@ -176,7 +231,8 @@ public class PrototypeUploadService {
             String entry,
             String actor,
             UploadAttempt attempt,
-            PrototypeCreationReceiptService.Request request) {
+            PrototypeCreationReceiptService.Request request,
+            PrototypeManifestBuilder.Built manifest) {
         PrototypeVersionEntity version = new PrototypeVersionEntity();
         version.setId(id);
         version.setProjectId(project);
@@ -188,6 +244,9 @@ public class PrototypeUploadService {
         version.setStatus("ready");
         version.setCreatorId(actor);
         version.setCreateTime(System.currentTimeMillis());
+        version.setCurrentRevisionId(PrototypeShareService.random());
+        PrototypeRevisionEntity revision =
+                revisions.candidate(version, version.getCurrentRevisionId(), manifest);
         // 只在解压完成后持项目行锁，回执、实际计数和 INSERT 共用一个短事务及 Spring 连接。
         Mono<PrototypeVersionEntity> creation =
                 database.sql("select id from p_project where id=:id for update")
@@ -205,82 +264,136 @@ public class PrototypeUploadService {
                                                                         .EDIT)
                                                         .then(
                                                                 replayOrCreateVersion(
-                                                                        true, version, request))
-                                                : replayOrCreateVersion(false, version, request));
+                                                                        true, version, revision,
+                                                                        request))
+                                                : replayOrCreateVersion(
+                                                        false, version, revision, request));
         return inUploadTransaction(attempt, creation, result -> id.equals(result.getId()));
     }
 
     private Mono<PrototypeVersionEntity> replayOrCreateVersion(
             boolean projectExists,
             PrototypeVersionEntity version,
+            PrototypeRevisionEntity revision,
             PrototypeCreationReceiptService.Request request) {
-        return receipts.replay(
+        return receipts.replayReceipt(
                         request,
-                        id ->
-                                versions.findById(id)
+                        receipt ->
+                                versions.findById(receipt.getResourceId())
                                         .flatMap(
-                                                versionFound ->
+                                                found ->
                                                         access.requireVersion(
-                                                                id,
+                                                                found.getId(),
                                                                 PrototypeProjectAccessService.Action
-                                                                        .EDIT)))
+                                                                        .EDIT))
+                                        .flatMap(
+                                                found ->
+                                                        revisions
+                                                                .require(
+                                                                        found,
+                                                                        receipt.getRevisionId())
+                                                                .map(
+                                                                        original -> {
+                                                                            PrototypeVersionEntity
+                                                                                    response =
+                                                                                            found
+                                                                                                    .copyTo(
+                                                                                                            new PrototypeVersionEntity());
+                                                                            response
+                                                                                    .setResponseRevisionId(
+                                                                                            original
+                                                                                                    .getId());
+                                                                            response.setVersionName(
+                                                                                    original
+                                                                                            .getVersionName());
+                                                                            response.setDescription(
+                                                                                    original
+                                                                                            .getDescription());
+                                                                            response.setEntryFile(
+                                                                                    original
+                                                                                            .getEntryFile());
+                                                                            return response;
+                                                                        })))
                 .switchIfEmpty(
-                        Mono.defer(() -> insertWithinCapacity(projectExists, version, request)));
+                        Mono.defer(
+                                () ->
+                                        insertWithinCapacity(
+                                                projectExists, version, revision, request)));
     }
 
     private Mono<PrototypeVersionEntity> insertWithinCapacity(
             boolean projectExists,
             PrototypeVersionEntity version,
+            PrototypeRevisionEntity revision,
             PrototypeCreationReceiptService.Request request) {
-        // 先重放回执，再判断项目是否存在，已删除项目下的原请求仍返回幂等冲突。
         if (!projectExists) return Mono.error(PrototypeHubException.missing("project"));
         return versions.requireCapacity(version.getProjectId())
                 .then(versions.insert(version))
-                .then(receipts.record(request, version.getId()))
+                .then(revisions.insert(revision))
+                .then(receipts.record(request, version.getId(), revision.getId()))
                 .thenReturn(version);
     }
 
     private Mono<PrototypeVersionEntity> updateExistingVersion(
-            String id, PrototypeVersionEntity old, String name, String description, FilePart file) {
-        String replacement = id + "-update-" + PrototypeShareService.random();
+            String id,
+            PrototypeVersionEntity old,
+            String name,
+            String description,
+            FilePart file,
+            String actor) {
+        String revisionId = PrototypeShareService.random();
+        String replacement = id + "-revision-" + revisionId;
         UploadAttempt attempt = new UploadAttempt();
         return Mono.usingWhen(
-                storage.prepareUpload(old.getProjectId(), replacement),
-                paths ->
-                        receiveAndExtract(file, paths)
+                Mono.just(attempt),
+                acquired ->
+                        prepareUpload(old.getProjectId(), replacement, acquired)
                                 .flatMap(
-                                        entry ->
-                                                replaceVersionAndEnqueueCleanup(
-                                                        old,
-                                                        id,
-                                                        name,
-                                                        description,
-                                                        replacement,
-                                                        entry,
-                                                        attempt))
-                                .flatMap(
-                                        pair ->
-                                                cleanup.attempt(pair.getT2())
-                                                        .thenReturn(pair.getT1())),
+                                        paths ->
+                                                receiveAndExtract(file, paths, acquired)
+                                                        .flatMap(
+                                                                entry ->
+                                                                        work.call(
+                                                                                        () ->
+                                                                                                manifests
+                                                                                                        .build(
+                                                                                                                paths
+                                                                                                                        .site(),
+                                                                                                                entry))
+                                                                                .flatMap(
+                                                                                        manifest ->
+                                                                                                replaceVersion(
+                                                                                                        old,
+                                                                                                        name,
+                                                                                                        description,
+                                                                                                        replacement,
+                                                                                                        entry,
+                                                                                                        revisionId,
+                                                                                                        actor,
+                                                                                                        manifest,
+                                                                                                        acquired)))),
                 paths -> cleanup(old.getProjectId(), replacement, attempt),
                 (paths, error) -> cleanup(old.getProjectId(), replacement, attempt),
                 paths -> cleanup(old.getProjectId(), replacement, attempt));
     }
 
-    private Mono<Tuple2<PrototypeVersionEntity, FileCleanupEntity>> replaceVersionAndEnqueueCleanup(
+    private Mono<PrototypeVersionEntity> replaceVersion(
             PrototypeVersionEntity old,
-            String id,
             String name,
             String description,
             String replacement,
             String entry,
+            String revisionId,
+            String actor,
+            PrototypeManifestBuilder.Built manifest,
             UploadAttempt attempt) {
-        // 版本切换与旧目录清理任务原子提交，文件归属由事务最终完成状态决定。
-        Mono<Tuple2<PrototypeVersionEntity, FileCleanupEntity>> replacementResult =
+        // 项目→版本行锁；CAS 当前指针和路径防止并发覆盖。只发布 ready 快照，失败候选不进入历史。
+        // 新快照与当前投影同一短事务提交，旧目录持续被旧 revision 引用，替换不得登记清理。
+        Mono<PrototypeVersionEntity> result =
                 access.lockProject(old.getProjectId())
                         .then(
                                 database.sql("select id from p_version where id=:id for update")
-                                        .bind("id", id)
+                                        .bind("id", old.getId())
                                         .fetch()
                                         .one()
                                         .switchIfEmpty(
@@ -288,23 +401,30 @@ public class PrototypeUploadService {
                                                         () ->
                                                                 PrototypeHubException.missing(
                                                                         "version"))))
-                        // 上传接收期间可能被撤员；实际切换目录之前，在项目锁内重新检查当前授权。
-                        .then(access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT))
+                        .then(
+                                access.requireVersion(
+                                        old.getId(), PrototypeProjectAccessService.Action.EDIT))
                         .then(
                                 versions.replace(
                                         old,
                                         name,
                                         description,
                                         storage.relativeSitePath(old.getProjectId(), replacement),
-                                        entry))
+                                        entry,
+                                        revisionId))
                         .flatMap(
-                                updated ->
-                                        cleanup.enqueue(
-                                                        old.getProjectId(),
-                                                        id,
-                                                        old.getStoragePath())
-                                                .map(task -> Tuples.of(updated, task)));
-        return inUploadTransaction(attempt, replacementResult, result -> true);
+                                updated -> {
+                                    PrototypeRevisionEntity revision =
+                                            revisions.candidate(updated, revisionId, manifest);
+                                    revision.setCreatorId(actor);
+                                    return revisions.insert(revision).thenReturn(updated);
+                                });
+        return inUploadTransaction(attempt, result, updated -> true);
+    }
+
+    private static PrototypeHubException versionConflict() {
+        return new PrototypeHubException(
+                "error.prototype-hub.version_conflict", "PROTOTYPE_HUB_VERSION_CONFLICT", 409);
     }
 
     /**
@@ -330,11 +450,14 @@ public class PrototypeUploadService {
                 () -> {
                     // 接收/解压失败或事务尚未开始时也能结束归属判断；已登记则必须等 afterCompletion。
                     attempt.closeBeforeEnlistment();
-                    return attempt.completion
-                            .asMono()
+                    return attempt.closeWriting()
+                            .then(attempt.completion.asMono())
                             .flatMap(
                                     outcome ->
-                                            cleanupAfterTransaction(project, storageId, outcome));
+                                            attempt.ownsDirectory()
+                                                    ? cleanupAfterTransaction(
+                                                            project, storageId, outcome)
+                                                    : Mono.empty());
                 });
     }
 
@@ -343,7 +466,8 @@ public class PrototypeUploadService {
         if (outcome.status() == TransactionSynchronization.STATUS_UNKNOWN) {
             // 提交结果未知时禁止推断回滚，以免删除可能已被数据库引用的文件。
             log.error(
-                    "Upload transaction outcome is unknown; retaining files: project={}, storage={}",
+                    "Upload transaction outcome is unknown; retaining files: project={},"
+                            + " storage={}",
                     project,
                     storageId);
             return Mono.empty();
@@ -359,7 +483,21 @@ public class PrototypeUploadService {
                                     "Upload files require cleanup: project={}, storage={}",
                                     project,
                                     storageId);
-                            return Mono.empty();
+                            // 已确认不属于任何已提交快照的候选目录也登记持久重试，进程重启后可收敛。
+                            return cleanup.enqueue(
+                                            project,
+                                            storageId,
+                                            storage.relativeSitePath(project, storageId))
+                                    .then()
+                                    .onErrorResume(
+                                            databaseError -> {
+                                                log.error(
+                                                        "Unable to persist upload cleanup task:"
+                                                                + " project={}, storage={}",
+                                                        project,
+                                                        storageId);
+                                                return Mono.empty();
+                                            });
                         });
     }
 
@@ -371,6 +509,44 @@ public class PrototypeUploadService {
     /** 每次订阅独占的上传状态；协调事务登记与取消，仅在确认最终结果后释放候选目录。 */
     private static final class UploadAttempt {
         private final Sinks.One<UploadOutcome> completion = Sinks.one();
+        private final Sinks.One<Void> writeCompletion = Sinks.one();
+        private int activeWrites;
+        private boolean writeClosed;
+        private boolean directoryOwned;
+
+        private synchronized boolean beginWriting() {
+            if (writeClosed) return false;
+            activeWrites++;
+            return true;
+        }
+
+        private synchronized void ownDirectory() {
+            directoryOwned = true;
+        }
+
+        private void completeWriting() {
+            boolean complete;
+            synchronized (this) {
+                activeWrites--;
+                complete = writeClosed && activeWrites == 0;
+            }
+            if (complete) writeCompletion.tryEmitEmpty();
+        }
+
+        private Mono<Void> closeWriting() {
+            boolean complete;
+            synchronized (this) {
+                writeClosed = true;
+                complete = activeWrites == 0;
+            }
+            if (complete) writeCompletion.tryEmitEmpty();
+            return writeCompletion.asMono();
+        }
+
+        private synchronized boolean ownsDirectory() {
+            return directoryOwned;
+        }
+
         private boolean enlisted;
         private boolean closed;
         private boolean candidateOwned;

@@ -230,6 +230,48 @@ class RuntimeSafetyTest(unittest.TestCase):
             self.assertTrue(read.args[2].startswith(base))
         self.assertIn('p_project_member', runtime.TABLES)
         self.assertIn('p_preview_session', runtime.TABLES)
+        self.assertIn('p_revision', runtime.TABLES)
+
+    def test_historical_preview_selects_revision_without_using_current_pointer(self):
+        api = runtime.Api('http://127.0.0.1:1', set())
+        api.token = self.secret
+        base = '/api/prototype-hub/runtime/version/' + runtime.secrets.token_hex(32)
+        grant = {'runtimeBaseUrl': base, 'previewUrl': base + '/index.html',
+                 'expiresAt': int(runtime.time.time() * 1000) + 300000}
+        headers = {'Content-Security-Policy': 'sandbox allow-scripts'}
+        responses = [grant, (b'Runtime fixture home', headers),
+                     (b'Runtime fixture nested page', headers),
+                     ((runtime.FIXTURE / 'assets/style.css').read_bytes(), headers)]
+        check = runtime.RuntimeCheck(self.args(), self.root)
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=responses) as request:
+            check.preview(api, {'id': 'logical', 'revisionId': 'original',
+                                'currentRevisionId': 'current'})
+        self.assertEqual(('POST', '/api/prototype-hub/versions/logical/revisions/original/preview-session'),
+                         request.call_args_list[0].args[1:])
+
+    def test_revision_restore_check_rejects_receipt_rebound_to_current_content(self):
+        original = {'id': 'logical', 'revisionId': 'original'}
+        current = {'id': 'logical', 'revisionId': 'current'}
+        summary = {'manifestSha256': 'a' * 64, 'fileCount': 6, 'totalBytes': 100}
+        api = unittest.mock.Mock()
+        api.request.side_effect = [dict(summary, id='current'), [dict(summary, id='current')],
+                                   [dict(summary, id='original')]]
+        api.upload.return_value = {'id': 'logical', 'revisionId': 'current',
+                                   'currentRevisionId': 'current', 'revisionCount': 2}
+        check = runtime.RuntimeCheck(self.args(), self.root)
+        with self.assertRaisesRegex(runtime.VerificationFailure, 'original snapshot'):
+            check.verify_revisions(api, {'id': 'project'}, original, current,
+                                   self.root / 'unused.zip', 'key', {}, {})
+
+    def test_replacement_fixture_changes_bytes_without_changing_file_paths(self):
+        old = runtime.sample_zip(self.root / 'old.zip')
+        new = runtime.sample_zip(self.root / 'new.zip', replacement=True)
+        repeated = runtime.sample_zip(self.root / 'repeated.zip', replacement=True)
+        self.assertNotEqual(runtime.digest_file(old), runtime.digest_file(new))
+        self.assertEqual(runtime.digest_file(new), runtime.digest_file(repeated))
+        with runtime.zipfile.ZipFile(old) as before, runtime.zipfile.ZipFile(new) as after:
+            self.assertEqual(before.namelist(), after.namelist())
+            self.assertNotEqual(before.read('index.html'), after.read('index.html'))
 
     def system_images(self):
         return {'userId': 'runtime-user',

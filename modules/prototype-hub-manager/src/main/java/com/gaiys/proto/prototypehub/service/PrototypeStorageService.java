@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.configuration.properties.PrototypeHubStorageProperties;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
@@ -8,6 +9,7 @@ import com.gaiys.proto.prototypehub.storage.parser.AxureSitemapParser;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
+import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
@@ -38,14 +40,17 @@ public class PrototypeStorageService {
     private final AxureSitemapParser pages;
 
     public Mono<UploadPaths> prepareUpload(String projectId, String storageId) {
-        return work.call(
-                () -> {
-                    Path version = SafePaths.version(properties.getRoot(), projectId, storageId);
-                    Files.createDirectories(version.getParent());
-                    Files.createDirectory(version);
-                    return new UploadPaths(
-                            version, version.resolve("original.zip"), version.resolve("site"));
-                });
+        return work.call(() -> prepareUploadNow(projectId, storageId, () -> {}));
+    }
+
+    /** 仅供 FileWork 文件线程调用；创建成功立即登记归属，创建失败不得回收预先存在的目录。 */
+    public UploadPaths prepareUploadNow(String projectId, String storageId, Runnable acquired)
+            throws IOException {
+        Path version = SafePaths.version(properties.getRoot(), projectId, storageId);
+        Files.createDirectories(version.getParent());
+        Files.createDirectory(version);
+        acquired.run();
+        return new UploadPaths(version, version.resolve("original.zip"), version.resolve("site"));
     }
 
     public Mono<Void> receive(FilePart file, Path target) {
@@ -106,18 +111,40 @@ public class PrototypeStorageService {
                                 SafePaths.project(properties.getRoot(), project)));
     }
 
+    public Path site(PrototypeVersionEntity version) {
+        return SafePaths.storedVersion(
+                        properties.getRoot(), version.getProjectId(), version.getStoragePath())
+                .resolve("site");
+    }
+
+    public Mono<StoredResource> resolveResource(
+            PrototypeRevisionEntity revision, String requested) {
+        return resolveResource(
+                revision.getProjectId(),
+                revision.getStoragePath(),
+                revision.getEntryFile(),
+                requested);
+    }
+
+    /** 仅保留内部兼容入口；公开资源入口必须先解析固定 revision。 */
     public Mono<StoredResource> resolveResource(PrototypeVersionEntity version, String requested) {
+        return resolveResource(
+                version.getProjectId(),
+                version.getStoragePath(),
+                version.getEntryFile(),
+                requested);
+    }
+
+    private Mono<StoredResource> resolveResource(
+            String projectId, String storagePath, String entryFile, String requested) {
         return work.call(
                 () -> {
                     Path site =
-                            SafePaths.storedVersion(
-                                            properties.getRoot(),
-                                            version.getProjectId(),
-                                            version.getStoragePath())
+                            SafePaths.storedVersion(properties.getRoot(), projectId, storagePath)
                                     .resolve("site");
                     String relative =
                             requested == null || requested.isBlank() || requested.equals("/")
-                                    ? version.getEntryFile()
+                                    ? entryFile
                                     : requested.replaceFirst("^/+", "");
                     Path file = SafePaths.within(site, relative);
                     if (!Files.isRegularFile(file)) throw PrototypeHubException.missing("resource");

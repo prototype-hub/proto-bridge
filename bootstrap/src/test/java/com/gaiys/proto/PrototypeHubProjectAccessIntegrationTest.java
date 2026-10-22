@@ -298,7 +298,9 @@ class PrototypeHubProjectAccessIntegrationTest {
 
     private String snapshot() {
         return database.sql(
-                        "select md5(coalesce(jsonb_agg(jsonb_build_array(id,name,creator_id,create_time,modifier_id,modify_time) order by id)::text,'[]')) as hash from p_project")
+                        "select"
+                                + " md5(coalesce(jsonb_agg(jsonb_build_array(id,name,creator_id,create_time,modifier_id,modify_time)"
+                                + " order by id)::text,'[]')) as hash from p_project")
                 .map((row, metadata) -> row.get("hash", String.class))
                 .one()
                 .block(TIMEOUT);
@@ -474,7 +476,9 @@ class PrototypeHubProjectAccessIntegrationTest {
         assertNotNull(original);
         try {
             sql(
-                    "update s_dimension set properties=jsonb_set(properties::jsonb,'{state}','\"disabled\"'::jsonb)::text where id='ADMIN'");
+                    "update s_dimension set"
+                            + " properties=jsonb_set(properties::jsonb,'{state}','\"disabled\"'::jsonb)::text"
+                            + " where id='ADMIN'");
             call(
                     HttpMethod.GET,
                     "/prototype-hub/projects/" + project,
@@ -612,7 +616,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         }
         String persistedDigest =
                 database.sql(
-                                "select id from p_preview_session where user_id=:user and version_id=:version")
+                                "select id from p_preview_session where user_id=:user and"
+                                        + " version_id=:version")
                         .bind("user", viewer.id())
                         .bind("version", id)
                         .map((row, metadata) -> row.get("id", String.class))
@@ -681,7 +686,7 @@ class PrototypeHubProjectAccessIntegrationTest {
     }
 
     @Test
-    void previewStopsAfterReplacementDisableOrGenericActionRevocationAndSessionsAreBounded() {
+    void previewPinsRevisionAndStopsAfterDisableOrGenericActionRevocationAndSessionsAreBounded() {
         Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
         String project = project(owner, "Preview lifecycle").path("id").asText();
         String version =
@@ -691,7 +696,7 @@ class PrototypeHubProjectAccessIntegrationTest {
         member(project, viewer, "viewer");
         JsonNode old = preview(viewer.token(), version);
         upload(owner.token(), project, version, "after replacement", null, 200);
-        runtime(old, "index.html", 403);
+        runtime(old, "index.html", 200);
         JsonNode updated = preview(viewer.token(), version);
         assertNotEquals(old.path("runtimeBaseUrl"), updated.path("runtimeBaseUrl"));
         runtime(updated, "index.html", 200);
@@ -707,7 +712,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         runtime(first, "index.html", 403);
         Long count =
                 database.sql(
-                                "select count(*) as count from p_preview_session where user_id=:user and version_id=:version")
+                                "select count(*) as count from p_preview_session where"
+                                        + " user_id=:user and version_id=:version")
                         .bind("user", owner.id())
                         .bind("version", version)
                         .map((row, metadata) -> row.get("count", Long.class))
@@ -730,7 +736,8 @@ class PrototypeHubProjectAccessIntegrationTest {
                 path(granted, "index.html").replace("/" + first + "/", "/" + second + "/");
         client.get().uri(wrongVersion).exchange().expectStatus().isForbidden();
         database.sql(
-                        "update p_preview_session set expires_at=0 where user_id=:user and version_id=:version")
+                        "update p_preview_session set expires_at=0 where user_id=:user and"
+                                + " version_id=:version")
                 .bind("user", owner.id())
                 .bind("version", first)
                 .fetch()
@@ -746,7 +753,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         String valid = project(creator, "Valid legacy creator").path("id").asText();
         String orphan = project(creator, "Missing legacy creator").path("id").asText();
         database.sql(
-                        "update p_project set owner_id=null,access_epoch=null where id in (:valid,:orphan)")
+                        "update p_project set owner_id=null,access_epoch=null where id in"
+                                + " (:valid,:orphan)")
                 .bind("valid", valid)
                 .bind("orphan", orphan)
                 .fetch()
@@ -948,7 +956,8 @@ class PrototypeHubProjectAccessIntegrationTest {
 
     private String authorizationSnapshot() {
         return database.sql(
-                        "select md5(coalesce(jsonb_agg(jsonb_build_array(id,owner_id,access_epoch) order by id)::text,'[]')) as hash from p_project")
+                        "select md5(coalesce(jsonb_agg(jsonb_build_array(id,owner_id,access_epoch)"
+                                + " order by id)::text,'[]')) as hash from p_project")
                 .map((row, metadata) -> row.get("hash", String.class))
                 .one()
                 .block(TIMEOUT);
@@ -1063,7 +1072,8 @@ class PrototypeHubProjectAccessIntegrationTest {
                                                                     new DefaultDataBufferFactory()
                                                                             .wrap(
                                                                                     archive(
-                                                                                            "revoked replacement"))));
+                                                                                            "revoked"
+                                                                                                    + " replacement"))));
                                         }));
         var operation =
                 uploads.update(version, "Unauthorized replacement", null, file)
@@ -1160,9 +1170,11 @@ class PrototypeHubProjectAccessIntegrationTest {
         sql("create schema legacy_pre_member");
         sql("create table legacy_pre_member.protohub_project(id varchar(64))");
         sql(
-                "create table legacy_pre_member.protohub_version(id varchar(64),project_id varchar(64),status varchar(64))");
+                "create table legacy_pre_member.protohub_version(id varchar(64),project_id"
+                        + " varchar(64),status varchar(64))");
         sql(
-                "create table legacy_pre_member.protohub_share(id varchar(64),project_id varchar(64),version_id varchar(64),token varchar(64))");
+                "create table legacy_pre_member.protohub_share(id varchar(64),project_id"
+                        + " varchar(64),version_id varchar(64),token varchar(64))");
         sql("create table legacy_pre_member.protohub_file_cleanup(id varchar(64))");
         for (String name : List.of("preflight-db.sql", "snapshot-db.sql")) {
             var old =
@@ -1235,7 +1247,13 @@ class PrototypeHubProjectAccessIntegrationTest {
                             () ->
                                     Flux.from(
                                                     anchor.createStatement(
-                                                                    "select exists(select 1 from pg_stat_activity a where a.pid<>pg_backend_pid() and a.wait_event_type='Lock' and pg_backend_pid()=any(pg_blocking_pids(a.pid))) as blocked")
+                                                                    "select exists(select 1 from"
+                                                                            + " pg_stat_activity a"
+                                                                            + " where"
+                                                                            + " a.pid<>pg_backend_pid()"
+                                                                            + " and a.wait_event_type='Lock'"
+                                                                            + " and pg_backend_pid()=any(pg_blocking_pids(a.pid)))"
+                                                                            + " as blocked")
                                                             .execute())
                                             .flatMap(
                                                     row ->
@@ -1269,7 +1287,15 @@ class PrototypeHubProjectAccessIntegrationTest {
                             () ->
                                     Flux.from(
                                                     anchor.createStatement(
-                                                                    "select exists(select 1 from pg_stat_activity a join pg_stat_activity b on b.pid=any(pg_blocking_pids(a.pid)) where a.pid<>pg_backend_pid() and a.wait_event_type='Lock' and pg_backend_pid()=any(pg_blocking_pids(b.pid))) as blocked")
+                                                                    "select exists(select 1 from"
+                                                                            + " pg_stat_activity a join"
+                                                                            + " pg_stat_activity b on"
+                                                                            + " b.pid=any(pg_blocking_pids(a.pid))"
+                                                                            + " where"
+                                                                            + " a.pid<>pg_backend_pid()"
+                                                                            + " and a.wait_event_type='Lock'"
+                                                                            + " and pg_backend_pid()=any(pg_blocking_pids(b.pid)))"
+                                                                            + " as blocked")
                                                             .execute())
                                             .flatMap(
                                                     row ->

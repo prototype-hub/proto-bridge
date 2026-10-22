@@ -16,6 +16,32 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_member_table'
 SELECT 'project_authorization',count(*),md5(coalesce(jsonb_agg(jsonb_build_array(id,owner_id,access_epoch) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_project_table";
 \endif
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name='p_creation_receipt' AND column_name='revision_id') AS prototype_hub_has_receipt_revision \gset
+\if :prototype_hub_has_receipt_revision
+SELECT 'creation_receipt_revision_bindings',count(*),md5(coalesce(jsonb_agg(
+ jsonb_build_array(id,resource_id,revision_id) ORDER BY id)::text,'[]')) FROM p_creation_receipt;
+\endif
+-- Immutable content and current/share bindings must survive migration and restore.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_table')) IS NOT NULL AS prototype_hub_has_revisions \gset
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_version_table' AND column_name='current_revision_id') AS prototype_hub_has_current_revision \gset
+\if :prototype_hub_has_revisions
+SELECT 'revisions',count(*),md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_revision_table" r;
+\if :prototype_hub_has_current_revision
+SELECT 'current_revision_bindings',count(*),md5(coalesce(jsonb_agg(
+ jsonb_build_array(id,project_id,current_revision_id,storage_path,entry_file) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_version_table";
+\endif
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_share_table' AND column_name='revision_id') AS prototype_hub_has_share_revision \gset
+\if :prototype_hub_has_share_revision
+SELECT 'share_revision_bindings',count(*),md5(coalesce(jsonb_agg(
+ jsonb_build_array(id,project_id,version_id,revision_id) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_share_table";
+\endif
+\endif
 \if :prototype_hub_has_members
 SELECT 'project_members',count(*),md5(coalesce(jsonb_agg(to_jsonb(m) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_member_table" m;

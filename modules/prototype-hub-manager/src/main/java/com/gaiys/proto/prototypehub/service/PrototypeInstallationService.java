@@ -20,8 +20,8 @@ public class PrototypeInstallationService
     public Mono<PrototypeInstallationEntity> initialize() {
         // 当前应用限定 PostgreSQL；ON CONFLICT 保证多副本启动时不覆盖已有部署身份。
         return database.sql(
-                        "insert into p_installation(id, installation_id, create_time) "
-                                + "values(:id, :installationId, :createTime) on conflict(id) do nothing")
+                        "insert into p_installation(id, installation_id, create_time) values(:id,"
+                                + " :installationId, :createTime) on conflict(id) do nothing")
                 .bind("id", SINGLETON_ID)
                 .bind("installationId", UUID.randomUUID().toString())
                 .bind("createTime", System.currentTimeMillis())

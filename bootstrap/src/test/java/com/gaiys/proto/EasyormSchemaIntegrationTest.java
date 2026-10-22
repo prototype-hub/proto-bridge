@@ -99,7 +99,8 @@ class EasyormSchemaIntegrationTest {
             assertEquals("public", mapping.getSchema().getName());
             Set<String> columns =
                     strings(
-                            "SELECT column_name FROM information_schema.columns WHERE table_schema='public' AND table_name='"
+                            "SELECT column_name FROM information_schema.columns WHERE"
+                                    + " table_schema='public' AND table_name='"
                                     + mapping.getName()
                                     + "'");
             assertFalse(columns.isEmpty(), mapping.getName());
@@ -112,29 +113,39 @@ class EasyormSchemaIntegrationTest {
         assertEquals(
                 expected,
                 strings(
-                        "SELECT table_name FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+                        "SELECT table_name FROM information_schema.tables WHERE"
+                                + " table_schema='public' AND table_type='BASE TABLE'"));
         assertFalse(expected.contains("flyway_schema_history"));
         assertEquals(
                 "2000",
                 scalar(
-                        "SELECT character_maximum_length::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_share' AND column_name='description'"));
+                        "SELECT character_maximum_length::text FROM information_schema.columns"
+                                + " WHERE table_schema='public' AND table_name='p_share' AND"
+                                + " column_name='description'"));
         assertFalse(
                 scalar(
-                                "SELECT col_description('public.p_share'::regclass, attnum) FROM pg_attribute WHERE attrelid='public.p_share'::regclass AND attname='description'")
+                                "SELECT col_description('public.p_share'::regclass, attnum) FROM"
+                                        + " pg_attribute WHERE attrelid='public.p_share'::regclass AND"
+                                        + " attname='description'")
                         .isBlank());
         assertEquals(
                 "128",
                 scalar(
-                        "SELECT character_maximum_length::text FROM information_schema.columns WHERE table_schema='public' AND table_name='s_dimension' AND column_name='name'"));
+                        "SELECT character_maximum_length::text FROM information_schema.columns"
+                                + " WHERE table_schema='public' AND table_name='s_dimension' AND"
+                                + " column_name='name'"));
         assertEquals(
                 "64",
                 scalar(
-                        "SELECT character_maximum_length::text FROM information_schema.columns WHERE table_schema='public' AND table_name='s_autz_setting_info' AND column_name='dimension_target'"));
+                        "SELECT character_maximum_length::text FROM information_schema.columns"
+                                + " WHERE table_schema='public' AND table_name='s_autz_setting_info'"
+                                + " AND column_name='dimension_target'"));
         assertEquals("14", scalar("SELECT count(*)::text FROM s_menu"));
         for (String table :
                 List.of(
                         "p_project",
                         "p_version",
+                        "p_revision",
                         "p_share",
                         "p_file_cleanup",
                         "p_creation_receipt",
@@ -160,26 +171,34 @@ class EasyormSchemaIntegrationTest {
         assertEquals(
                 "2",
                 scalar(
-                        "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND tablename='s_dictionary_item' AND indexname IN ('s_dictionary_item_dict_id_value_key','s_dictionary_item_dict_id_ordinal_key')"));
+                        "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND"
+                                + " tablename='s_dictionary_item' AND indexname IN"
+                                + " ('s_dictionary_item_dict_id_value_key','s_dictionary_item_dict_id_ordinal_key')"));
         assertEquals(
                 "2",
                 scalar(
-                        "SELECT count(*)::text FROM pg_index i JOIN pg_class c ON c.oid=i.indexrelid WHERE c.relname IN ('s_dictionary_item_dict_id_value_key','s_dictionary_item_dict_id_ordinal_key') AND i.indisunique"));
+                        "SELECT count(*)::text FROM pg_index i JOIN pg_class c ON"
+                                + " c.oid=i.indexrelid WHERE c.relname IN"
+                                + " ('s_dictionary_item_dict_id_value_key','s_dictionary_item_dict_id_ordinal_key')"
+                                + " AND i.indisunique"));
     }
 
     @Test
     void repeatedAutomaticDdlAddsNullableColumnAndIndexWithoutChangingExistingDataOrTypes()
             throws Exception {
         execute(
-                "CREATE TABLE public.easyorm_addition_fixture (id varchar(64) PRIMARY KEY, title varchar(512) NOT NULL, legacy_number bigint, extra_value text)");
+                "CREATE TABLE public.easyorm_addition_fixture (id varchar(64) PRIMARY KEY, title"
+                        + " varchar(512) NOT NULL, legacy_number bigint, extra_value text)");
         execute("CREATE INDEX addition_existing_idx ON public.easyorm_addition_fixture(title)");
         execute(
-                "INSERT INTO public.easyorm_addition_fixture VALUES ('retained',repeat('x',400),123,'keep extra')");
+                "INSERT INTO public.easyorm_addition_fixture VALUES"
+                        + " ('retained',repeat('x',400),123,'keep extra')");
         String tableIdentity =
                 scalar("SELECT 'public.easyorm_addition_fixture'::regclass::oid::text");
         String indexDefinition =
                 scalar(
-                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='addition_existing_idx'");
+                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND"
+                                + " indexname='addition_existing_idx'");
         synchronize(AdditionFixture.class);
         synchronize(AdditionFixture.class);
         assertEquals(
@@ -188,31 +207,44 @@ class EasyormSchemaIntegrationTest {
         assertEquals(
                 "512",
                 scalar(
-                        "SELECT character_maximum_length::text FROM information_schema.columns WHERE table_schema='public' AND table_name='easyorm_addition_fixture' AND column_name='title'"));
+                        "SELECT character_maximum_length::text FROM information_schema.columns"
+                                + " WHERE table_schema='public' AND"
+                                + " table_name='easyorm_addition_fixture' AND column_name='title'"));
         assertEquals(
                 "NO",
                 scalar(
-                        "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='easyorm_addition_fixture' AND column_name='title'"));
+                        "SELECT is_nullable FROM information_schema.columns WHERE"
+                                + " table_schema='public' AND table_name='easyorm_addition_fixture' AND"
+                                + " column_name='title'"));
         assertEquals(
                 "bigint",
                 scalar(
-                        "SELECT data_type FROM information_schema.columns WHERE table_schema='public' AND table_name='easyorm_addition_fixture' AND column_name='legacy_number'"));
+                        "SELECT data_type FROM information_schema.columns WHERE"
+                                + " table_schema='public' AND table_name='easyorm_addition_fixture' AND"
+                                + " column_name='legacy_number'"));
         assertEquals(
                 "YES",
                 scalar(
-                        "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='easyorm_addition_fixture' AND column_name='future_value'"));
+                        "SELECT is_nullable FROM information_schema.columns WHERE"
+                                + " table_schema='public' AND table_name='easyorm_addition_fixture' AND"
+                                + " column_name='future_value'"));
         assertEquals(
                 "400|123|keep extra|true",
                 scalar(
-                        "SELECT length(title)||'|'||legacy_number||'|'||extra_value||'|'||(future_value IS NULL)::text FROM public.easyorm_addition_fixture WHERE id='retained'"));
+                        "SELECT"
+                                + " length(title)||'|'||legacy_number||'|'||extra_value||'|'||(future_value"
+                                + " IS NULL)::text FROM public.easyorm_addition_fixture WHERE"
+                                + " id='retained'"));
         assertEquals(
                 indexDefinition,
                 scalar(
-                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='addition_existing_idx'"));
+                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND"
+                                + " indexname='addition_existing_idx'"));
         assertEquals(
                 "1",
                 scalar(
-                        "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND indexname='addition_future_idx'"));
+                        "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND"
+                                + " indexname='addition_future_idx'"));
     }
 
     @Test
@@ -222,16 +254,22 @@ class EasyormSchemaIntegrationTest {
         String role = scalar("SELECT properties FROM s_dimension WHERE id='MEMBER'");
         String revoked =
                 scalar(
-                        "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE dimension_type='role' AND dimension_target='MEMBER' AND permission='prototype-hub-share'");
+                        "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE"
+                                + " dimension_type='role' AND dimension_target='MEMBER' AND"
+                                + " permission='prototype-hub-share'");
         String menu = scalar("SELECT name FROM s_menu WHERE id='system-basis'");
         execute("UPDATE s_menu SET name='用户定制菜单' WHERE id='system-basis'");
         execute(
-                "UPDATE s_dimension SET properties='{\"state\":\"disabled\",\"groupId\":\"default\",\"custom\":true}' WHERE id='MEMBER'");
+                "UPDATE s_dimension SET"
+                        + " properties='{\"state\":\"disabled\",\"groupId\":\"default\",\"custom\":true}'"
+                        + " WHERE id='MEMBER'");
         execute(
-                "DELETE FROM s_autz_setting_info WHERE dimension_type='role' AND dimension_target='MEMBER' AND permission='prototype-hub-share'");
+                "DELETE FROM s_autz_setting_info WHERE dimension_type='role' AND"
+                        + " dimension_target='MEMBER' AND permission='prototype-hub-share'");
         Set<String> grants =
                 strings(
-                        "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE dimension_type='role' AND dimension_target='MEMBER'");
+                        "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE"
+                                + " dimension_type='role' AND dimension_target='MEMBER'");
         try {
             bootstrap.initialize().block(TIMEOUT);
             administrator.run(new DefaultApplicationArguments());
@@ -244,24 +282,32 @@ class EasyormSchemaIntegrationTest {
             assertEquals(
                     "disabled",
                     scalar(
-                            "SELECT properties::jsonb->>'state' FROM s_dimension WHERE id='MEMBER'"));
+                            "SELECT properties::jsonb->>'state' FROM s_dimension WHERE"
+                                    + " id='MEMBER'"));
             assertEquals(
                     grants,
                     strings(
-                            "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE dimension_type='role' AND dimension_target='MEMBER'"));
+                            "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE"
+                                    + " dimension_type='role' AND dimension_target='MEMBER'"));
             assertEquals(
                     "0",
                     scalar(
-                            "SELECT count(*)::text FROM s_autz_setting_info WHERE dimension_target='MEMBER' AND permission='prototype-hub-share'"));
+                            "SELECT count(*)::text FROM s_autz_setting_info WHERE"
+                                    + " dimension_target='MEMBER' AND"
+                                    + " permission='prototype-hub-share'"));
             assertEquals("14", scalar("SELECT count(*)::text FROM s_menu"));
             assertEquals(
                     "0",
                     scalar(
-                            "SELECT count(*)::text FROM s_autz_setting_info WHERE dimension_target='MEMBER' AND permission IN ('menu','permission','dictionary','dimension')"));
+                            "SELECT count(*)::text FROM s_autz_setting_info WHERE"
+                                    + " dimension_target='MEMBER' AND permission IN"
+                                    + " ('menu','permission','dictionary','dimension')"));
             assertEquals(
                     "1",
                     scalar(
-                            "SELECT count(*)::text FROM s_autz_setting_info WHERE dimension_target='ADMIN' AND permission='menu' AND state=1 AND actions::jsonb ? 'save'"));
+                            "SELECT count(*)::text FROM s_autz_setting_info WHERE"
+                                    + " dimension_target='ADMIN' AND permission='menu' AND state=1 AND"
+                                    + " actions::jsonb ? 'save'"));
         } finally {
             try (var connection = connection();
                     var restoreRole =
@@ -272,7 +318,9 @@ class EasyormSchemaIntegrationTest {
                                     "UPDATE s_menu SET name=? WHERE id='system-basis'");
                     var restoreGrant =
                             connection.prepareStatement(
-                                    "INSERT INTO s_autz_setting_info SELECT * FROM json_populate_record(NULL::s_autz_setting_info, ?::json)")) {
+                                    "INSERT INTO s_autz_setting_info SELECT * FROM"
+                                            + " json_populate_record(NULL::s_autz_setting_info,"
+                                            + " ?::json)")) {
                 restoreRole.setString(1, role);
                 restoreRole.executeUpdate();
                 restoreMenu.setString(1, menu);
@@ -286,7 +334,8 @@ class EasyormSchemaIntegrationTest {
     private void assertPartialMenuIndex() throws Exception {
         String definition =
                 scalar(
-                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='proto_menu_code_idx'");
+                        "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND"
+                                + " indexname='proto_menu_code_idx'");
         assertTrue(definition.contains("UNIQUE"), definition);
         assertTrue(definition.contains("WHERE"), definition);
         assertTrue(definition.contains("IS NOT NULL"), definition);

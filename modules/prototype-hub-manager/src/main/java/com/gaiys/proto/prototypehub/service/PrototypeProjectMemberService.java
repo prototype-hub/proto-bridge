@@ -27,15 +27,15 @@ public class PrototypeProjectMemberService {
                 .thenMany(
                         database.sql(
                                         """
-                select p.owner_id as user_id,u.name,u.username,'owner' as role,0 as ordering
-                from p_project p left join s_user u on u.id=p.owner_id
-                where p.id=:projectId and p.owner_id is not null
-                union all
-                select m.user_id,u.name,u.username,m.role,1 as ordering
-                from p_project_member m left join s_user u on u.id=m.user_id
-                where m.project_id=:projectId
-                order by ordering,user_id
-                """)
+select p.owner_id as user_id,u.name,u.username,'owner' as role,0 as ordering
+from p_project p left join s_user u on u.id=p.owner_id
+where p.id=:projectId and p.owner_id is not null
+union all
+select m.user_id,u.name,u.username,m.role,1 as ordering
+from p_project_member m left join s_user u on u.id=m.user_id
+where m.project_id=:projectId
+order by ordering,user_id
+""")
                                 .bind("projectId", projectId)
                                 .map(
                                         (row, metadata) ->
@@ -59,11 +59,11 @@ public class PrototypeProjectMemberService {
                 .thenMany(
                         database.sql(
                                         """
-                select u.id,u.name,u.username from s_user u
-                where u.status=1 and (position(lower(:keyword) in lower(coalesce(u.name,'')))>0 or position(lower(:keyword) in lower(coalesce(u.username,'')))>0)
-                and not exists(select 1 from p_project p where p.id=:projectId and p.owner_id=u.id)
-                order by u.username,u.id limit 20
-                """)
+select u.id,u.name,u.username from s_user u
+where u.status=1 and (position(lower(:keyword) in lower(coalesce(u.name,'')))>0 or position(lower(:keyword) in lower(coalesce(u.username,'')))>0)
+and not exists(select 1 from p_project p where p.id=:projectId and p.owner_id=u.id)
+order by u.username,u.id limit 20
+""")
                                 .bind("keyword", term)
                                 .bind("projectId", projectId)
                                 .map(
@@ -90,10 +90,10 @@ public class PrototypeProjectMemberService {
                         user ->
                                 database.sql(
                                                 """
-                        insert into p_project_member(id,project_id,user_id,role,create_time)
-                        values(:id,:projectId,:userId,:role,:createdAt)
-                        on conflict(project_id,user_id) do update set role=excluded.role,create_time=excluded.create_time
-                        """)
+insert into p_project_member(id,project_id,user_id,role,create_time)
+values(:id,:projectId,:userId,:role,:createdAt)
+on conflict(project_id,user_id) do update set role=excluded.role,create_time=excluded.create_time
+""")
                                         .bind("id", UUID.randomUUID().toString())
                                         .bind("projectId", projectId)
                                         .bind("userId", userId)
@@ -117,7 +117,8 @@ public class PrototypeProjectMemberService {
                 .flatMap(grant -> rejectOwner(grant.project(), userId))
                 .then(
                         database.sql(
-                                        "delete from p_project_member where project_id=:projectId and user_id=:userId")
+                                        "delete from p_project_member where project_id=:projectId"
+                                                + " and user_id=:userId")
                                 .bind("projectId", projectId)
                                 .bind("userId", userId)
                                 .fetch()

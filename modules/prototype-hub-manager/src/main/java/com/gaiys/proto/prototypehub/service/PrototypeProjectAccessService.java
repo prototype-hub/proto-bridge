@@ -77,7 +77,9 @@ public class PrototypeProjectAccessService {
                 .flatMap(
                         role ->
                                 database.sql(
-                                                "select count(*) as total from s_dimension_user where dimension_type_id='role' and dimension_id='ADMIN' and user_id=:userId")
+                                                "select count(*) as total from s_dimension_user"
+                                                        + " where dimension_type_id='role' and"
+                                                        + " dimension_id='ADMIN' and user_id=:userId")
                                         .bind("userId", auth.getUser().getId())
                                         .map((row, metadata) -> row.get("total", Long.class) > 0)
                                         .one())
@@ -146,7 +148,8 @@ public class PrototypeProjectAccessService {
                             // ADMIN 来自有效角色维度，不使用用户名/账号类型。只在管理入口记录例外，不逐静态资源刷日志。
                             if (audit && ProjectRole.admin.name().equals(grant.role())) {
                                 log.info(
-                                        "Prototype administrator scope access: actor={}, project={}, action={}",
+                                        "Prototype administrator scope access: actor={},"
+                                                + " project={}, action={}",
                                         actor.userId(),
                                         id,
                                         action);
@@ -196,15 +199,21 @@ public class PrototypeProjectAccessService {
                             String role =
                                     actor.administrator()
                                             ? "'admin'"
-                                            : "case when p.owner_id=:userId then 'owner' else m.role end";
+                                            : "case when p.owner_id=:userId then 'owner' else"
+                                                    + " m.role end";
                             String scope =
                                     actor.administrator()
                                             ? "true"
-                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId or m.role in ('editor','viewer'))";
+                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId"
+                                                    + " or m.role in ('editor','viewer'))";
                             String sql =
                                     "select p.*,"
                                             + role
-                                            + " as project_role,not exists(select 1 from s_user u where u.id=p.owner_id and u.status=1) as claim_required from p_project p left join p_project_member m on m.project_id=p.id and m.user_id=:userId where "
+                                            + " as project_role,not exists(select 1 from s_user u"
+                                            + " where u.id=p.owner_id and u.status=1) as"
+                                            + " claim_required from p_project p left join"
+                                            + " p_project_member m on m.project_id=p.id and"
+                                            + " m.user_id=:userId where "
                                             + scope
                                             + " order by p.create_time desc,p.id";
                             if (actor.administrator())
@@ -252,9 +261,13 @@ public class PrototypeProjectAccessService {
                             String scope =
                                     actor.administrator()
                                             ? "true"
-                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId or exists(select 1 from p_project_member m where m.project_id=p.id and m.user_id=:userId and m.role in ('editor','viewer')))";
+                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId"
+                                                    + " or exists(select 1 from p_project_member m"
+                                                    + " where m.project_id=p.id and m.user_id=:userId"
+                                                    + " and m.role in ('editor','viewer')))";
                             String sql =
-                                    "select v.* from p_version v join p_project p on p.id=v.project_id where "
+                                    "select v.* from p_version v join p_project p on"
+                                            + " p.id=v.project_id where "
                                             + scope
                                             + " order by v.create_time desc,v.id";
                             var query = database.sql(sql);
@@ -281,6 +294,10 @@ public class PrototypeProjectAccessService {
                                                         row.get("entry_file", String.class));
                                                 version.setPreviewKey(
                                                         row.get("preview_key", String.class));
+                                                version.setCurrentRevisionId(
+                                                        row.get(
+                                                                "current_revision_id",
+                                                                String.class));
                                                 version.setStatus(row.get("status", String.class));
                                                 version.setCreatorId(
                                                         row.get("creator_id", String.class));
@@ -324,7 +341,8 @@ public class PrototypeProjectAccessService {
         if (project.getOwnerId() == null || project.getOwnerId().isBlank()) return Mono.empty();
         if (actor.userId().equals(project.getOwnerId())) return Mono.just(ProjectRole.owner.name());
         return database.sql(
-                        "select role from p_project_member where project_id=:projectId and user_id=:userId and role in ('editor','viewer')")
+                        "select role from p_project_member where project_id=:projectId and"
+                                + " user_id=:userId and role in ('editor','viewer')")
                 .bind("projectId", project.getId())
                 .bind("userId", actor.userId())
                 .map((row, metadata) -> row.get("role", String.class))

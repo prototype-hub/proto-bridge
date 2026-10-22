@@ -12,4 +12,5 @@ public record PublicShareResponse(
         @Schema(description = "分享过期时间（Unix 毫秒），为空时不限制有效期") Long expiresAt,
         @Schema(description = "授权通过后返回的运行文件访问密钥") String accessKey,
         @Schema(description = "授权通过后返回的运行文件基础地址") String runtimeBaseUrl,
-        @Schema(description = "授权通过后返回的原型预览地址") String previewUrl) {}
+        @Schema(description = "授权通过后返回的原型预览地址") String previewUrl,
+        @Schema(description = "本分享固定绑定的不可变快照标识") String revisionId) {}

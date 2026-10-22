@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
@@ -48,7 +49,9 @@ class PrototypeHubRequestBoundaryTest {
                         cleanup,
                         database,
                         receipts,
-                        access);
+                        access,
+                        mock(PrototypeRevisionService.class),
+                        mock(PrototypeManifestBuilder.class));
         Mono<PrototypeVersionEntity> result =
                 replace
                         ? upload.update("version", "Release", "a".repeat(2001), file)
@@ -90,13 +93,16 @@ class PrototypeHubRequestBoundaryTest {
         var version = new PrototypeVersionEntity();
         version.setId("version");
         version.setProjectId("project");
+        version.setCurrentRevisionId("revision");
         var access = mock(PrototypeProjectAccessService.class);
+        var revisions = mock(PrototypeRevisionService.class);
+        when(revisions.current(version)).thenReturn(Mono.empty());
         when(access.requireVersion("version", PrototypeProjectAccessService.Action.SHARE))
                 .thenReturn(Mono.just(version));
         try (var work = new FileWork()) {
             var shares =
                     new PrototypeShareService(
-                            projects, versions, work, database, transaction, access);
+                            projects, versions, work, database, transaction, access, revisions);
             StepVerifier.create(
                             shares.createShare(
                                     "version",
