@@ -34,7 +34,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 删除账号会同步清除其成员和预览授权；原所有项目进入待认领。同名重建账号不会自动继承原归属，需管理员显式认领或重新添加成员。
 
-普通成员不能通过自己的项目角色获得平台用户管理、任意角色授权或其他项目的数据访问。公开分享是一项独立外部授权：撤员会撤销内部凭证，但不会自动撤销已经创建的公开分享；要阻止持有公开链接者继续访问，应显式删除对应分享。
+普通成员不能通过自己的项目角色获得平台用户管理、任意角色授权或其他项目的数据访问。公开分享是一项独立外部授权：撤员会撤销内部凭证，但不会自动撤销已经创建的公开分享；要阻止持有公开链接者继续访问，应暂停、永久撤销或删除对应分享。
 
 ## 内部预览凭证
 
@@ -56,13 +56,34 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 | `GET /prototype-hub/versions/{id}/revisions/{rid}/pages` | 发布时保存的页面树 |
 | `POST /prototype-hub/versions/{id}/revisions/{rid}/preview-session` | 换取固定修订的五分钟内部预览 |
 
-这些入口沿用 `prototype-hub-version.query` 与当前项目读取范围，不能通过拼接其他项目或逻辑版本的修订 ID 越权。页面树新增 `pageId=SHA256(规范化相对路径 UTF-8)`；页面身份是 `(revisionId,pageId)`，相同路径跨修订不表示相同业务状态。当前 `/versions/{id}/pages`、默认预览及新建分享均解析当前修订。
+这些入口沿用 `prototype-hub-version.query` 与当前项目读取范围，不能通过拼接其他项目或逻辑版本的修订 ID 越权。页面树新增 `pageId=SHA256(规范化相对路径 UTF-8)`；页面身份是 `(revisionId,pageId)`，相同路径跨修订不表示相同业务状态。当前 `/versions/{id}/pages`、默认预览及省略修订的新建固定分享均解析当前修订。
 
 更新 multipart 可增加 `expectedRevisionId`，值取用户开始更新时的 `currentRevisionId`。省略时服务端也会在接收和文件校验前捕获当前指针；最终短事务重新检查权限和指针，仅一份并发更新可成功。冲突返回 409 / `PROTOTYPE_HUB_VERSION_CONFLICT`，需刷新后明确重新选择，不能自动覆盖。ZIP、清单或数据库提交失败时保留上一修订与文件；取消 HTTP 不等于取消已经提交的更新。成功更新保留历史文件，不再删除上一目录。
 
-新建公开分享固定创建时的当前修订，响应增加 `revisionId`；更新逻辑版本不会改变已有分享内容。当前没有跟随最新、切回历史、删除单修订或完整软删除功能。删除逻辑版本会撤销其全部分享和内部会话，并为全部历史目录登记持久清理任务，文件由有界后台重试回收；仍有数据库引用的路径不会删除。
+新建公开分享默认固定创建时的当前修订；也可按下节选择历史修订或显式跟随最新。删除单修订或完整软删除尚未实现。删除逻辑版本会撤销其全部分享和内部会话，并为全部历史目录登记持久清理任务，文件由有界后台重试回收；仍有数据库引用的路径不会删除。
 
 历史版本没有 `currentRevisionId` 时，列表和详情可显示 `migrationRequired=true`；当前修订、页面、更新及新建分享返回 409 / `PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED`。无修订绑定的旧公开分享不可用，旧内部会话不再授权。管理员在停写并完成联合备份后调用 `POST /prototype-hub/versions/{id}/revision-migration`，请求 `{"apply":false}` 预检、`true` 显式幂等迁移；需要有效 ADMIN 和版本 save。响应为 `versionId/migrationRequired/revisionId/manifestSha256/fileCount/totalBytes/sharesToBind/receiptsToBind/applied`，`migrationRequired` 表示操作完成后状态，两个数量表示操作前待绑定数量。详细升级步骤见[数据说明](DATA.md#不可变修订与旧内容迁移)。
+
+## 分享生命周期
+
+管理接口沿用 `prototype-hub-share` 的 `query/save/delete` 动作，并与项目的分享管理范围取交集；owner、editor 和有效 ADMIN 例外可管理，viewer 不能借通用 save 权限获得分享管理能力。管理响应增加 `revisionMode/revisionId/revoked/configVersion`，不返回派生密钥、密码散列或密码明文。公开信息中的 `revisionId` 始终为本次实际授权的修订。
+
+| 请求 | 参数与行为 |
+| --- | --- |
+| `POST /prototype-hub/versions/{id}/shares` | 原 `password/expiresAt/description` 保留；可选 `revisionMode`，默认 `fixed`。fixed 可指定该逻辑版本下的历史 `revisionId`，省略则绑定锁内当前修订；latest 禁止传修订 ID。 |
+| `PUT /prototype-hub/shares/{id}` | 完整配置替换：`expectedVersion/description/expiresAt/revisionMode/revisionId/passwordAction/password`。description、expiresAt 为 null 时清空；不改变启停状态。 |
+| `PUT /prototype-hub/shares/{id}/enabled` | `{"expectedVersion":1,"enabled":false}` 暂停；true 重新启用。 |
+| `POST /prototype-hub/shares/{id}/rotate-link` | `{"expectedVersion":1}` 原子轮换链接 token 与访问密钥，记录 ID 和内容策略保持不变。 |
+| `POST /prototype-hub/shares/{id}/revoke` | `{"expectedVersion":1}` 永久撤销，保留管理记录；撤销后不能编辑、启用或轮换。 |
+| `DELETE /prototype-hub/shares/{id}` | 保留原有物理删除语义及 delete 权限，不要求 expectedVersion。 |
+
+`passwordAction` 必填并使用 `keep/replace/remove`：keep 保留密码，replace 必须同时提供新密码，remove 去除密码；新密码遵守 BCrypt 的 UTF-8 72 字节上限。普通 fixed → fixed 编辑省略 revisionId 时保留已有修订，不因上传新包而移动；latest → fixed 必须明确选择修订。配置中的有效期为 Unix 毫秒，新的非空有效期必须在未来。
+
+新记录的 `configVersion=1`；每次成功编辑、启停、撤销或轮换递增，客户端提交最近读到的 expectedVersion。并发或过期版本返回 409，需刷新记录后由用户确认重试，不能自动覆盖。所有这些管理变更都会轮换内部派生密钥，暂停后重新启用也不会复活旧的 HTML、资源或页面树凭据；轮换链接另外使旧 token 不再可用。
+
+`fixed` 在打开时读取指定修订，`latest` 在公开信息/密码校验时解析一次当前修订。两者均返回明确包含修订的 `runtimeBaseUrl/previewUrl/pagesUrl`，客户端应使用返回 URL，不能自行拼接当前修订。一次授权后的页面树、HTML 与相对资源保持该快照，即使期间上传新修订；每次资源读取仍检查最新分享启停、有效期、撤销状态及密钥。修改密码后，正在完成的旧密码校验也不能取得新配置的密钥。受密码保护的信息在校验前不包含运行或页面树访问凭据；公开客户端不发送平台登录 token。
+
+新规范路径为 `/prototype-hub/public/shares/{token}/{derivedKey}/revisions/{rid}/runtime/**` 和同级 `/pages`。已发布的无 rid 分享资源路径仅作为固定分享兼容入口，接受原有效访问密钥或当前固定修订的派生密钥，均固定到持久化的修订；跟随模式不接受该入口。既有空 revisionId 分享仍须显式旧内容迁移，不能退回读取当前版本。已发给浏览器的内容无法远程收回，外围代理与日志也须避免记录完整凭据。
 
 ## HTML 文件夹上传
 

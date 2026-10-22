@@ -31,6 +31,8 @@ public class PrototypeRuntimeCorsFilter implements WebFilter {
         config.setMaxAge(1800L);
         source.registerCorsConfiguration("/prototype-hub/runtime/**", config);
         source.registerCorsConfiguration("/prototype-hub/public/shares/*/*/runtime/**", config);
+        source.registerCorsConfiguration(
+                "/prototype-hub/public/shares/*/*/revisions/*/runtime/**", config);
     }
 
     @Override

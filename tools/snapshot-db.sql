@@ -40,6 +40,14 @@ SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=curren
 SELECT 'share_revision_bindings',count(*),md5(coalesce(jsonb_agg(
  jsonb_build_array(id,project_id,version_id,revision_id) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_share_table";
+SELECT count(*)=3 AS prototype_hub_has_share_lifecycle FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_share_table'
+ AND column_name IN ('revision_mode','revoked','config_version') \gset
+\if :prototype_hub_has_share_lifecycle
+-- Hash the complete private record: policy, revocation, version and rotated secrets must all survive restore.
+SELECT 'share_lifecycle',count(*),md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_share_table" s;
+\endif
 \endif
 \endif
 \if :prototype_hub_has_members

@@ -73,6 +73,27 @@ public class PublicPrototypeShareController {
                 .map(PrototypeRuntimeController::response);
     }
 
+    @GetMapping("/shares/{token}/{accessKey}/revisions/{revisionId}/pages")
+    @Operation(summary = "通过快照分享凭据查询页面目录")
+    public Mono<List<PrototypePageInfo>> revisionPages(
+            @PathVariable String token,
+            @PathVariable String accessKey,
+            @PathVariable String revisionId) {
+        return shares.requireRevisionAccess(token, accessKey, revisionId).flatMap(revisions::pages);
+    }
+
+    @GetMapping("/shares/{token}/{accessKey}/revisions/{revisionId}/runtime/{*resourcePath}")
+    @Operation(summary = "通过快照分享凭据读取运行文件")
+    public Mono<ResponseEntity<Resource>> revisionResource(
+            @PathVariable String token,
+            @PathVariable String accessKey,
+            @PathVariable String revisionId,
+            @PathVariable String resourcePath) {
+        return shares.requireRevisionAccess(token, accessKey, revisionId)
+                .flatMap(revision -> storage.resolveResource(revision, resourcePath))
+                .map(PrototypeRuntimeController::response);
+    }
+
     @GetMapping(value = "/inspector.js", produces = "application/javascript")
     @Operation(summary = "读取原型元素检查脚本")
     public ResponseEntity<Resource> inspector() {

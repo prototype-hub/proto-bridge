@@ -158,14 +158,18 @@ class DatabaseDescriptionIntegrationTest {
                         "p_project_member",
                         "p_preview_session"),
                 tables);
-        assertEquals(
-                141,
-                describedColumns); // Immutable revision fields and four explicit revision bindings.
+        assertEquals(144, describedColumns); // Revision bindings and three share-lifecycle fields.
         assertEquals("id", comment("s_user_detail", "id"));
         for (String name : Set.of("parent_id", "path", "_level", "sort_index"))
             assertFalse(comment("s_menu", name).isBlank(), name);
-        for (String name : Set.of("access_key", "password_hash", "description"))
-            assertFalse(comment("p_share", name).isBlank(), name);
+        for (String name :
+                Set.of(
+                        "access_key",
+                        "password_hash",
+                        "description",
+                        "revision_mode",
+                        "revoked",
+                        "config_version")) assertFalse(comment("p_share", name).isBlank(), name);
         assertFalse(columnNames("s_menu").contains("children"));
         assertFalse(columnNames("s_menu").contains("granted"));
         assertTrue(columnNames("s_user_setting").contains("setting_key"));

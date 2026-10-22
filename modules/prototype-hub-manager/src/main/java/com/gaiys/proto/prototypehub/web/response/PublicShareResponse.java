@@ -10,7 +10,9 @@ public record PublicShareResponse(
         @Schema(description = "原型版本名称") String versionName,
         @Schema(description = "是否需要分享访问密码") boolean passwordRequired,
         @Schema(description = "分享过期时间（Unix 毫秒），为空时不限制有效期") Long expiresAt,
-        @Schema(description = "授权通过后返回的运行文件访问密钥") String accessKey,
+        @Schema(description = "授权通过后返回、仅限本次快照的派生访问凭据") String accessKey,
         @Schema(description = "授权通过后返回的运行文件基础地址") String runtimeBaseUrl,
         @Schema(description = "授权通过后返回的原型预览地址") String previewUrl,
-        @Schema(description = "本分享固定绑定的不可变快照标识") String revisionId) {}
+        @Schema(description = "本次授权绑定的不可变快照标识") String revisionId,
+        @Schema(description = "快照模式：fixed 或 latest") String revisionMode,
+        @Schema(description = "授权通过后返回的快照页面目录地址") String pagesUrl) {}

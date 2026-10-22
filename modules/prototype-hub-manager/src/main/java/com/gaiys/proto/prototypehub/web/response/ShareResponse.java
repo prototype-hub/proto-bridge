@@ -16,7 +16,11 @@ public record ShareResponse(
         @Schema(description = "分享是否启用") boolean enabled,
         @Schema(description = "分享创建者用户标识") String createdBy,
         @Schema(description = "分享创建时间（Unix 毫秒）") Long createdAt,
-        @Schema(description = "前端公开分享页面路径") String sharePath) {
+        @Schema(description = "前端公开分享页面路径") String sharePath,
+        @Schema(description = "快照模式：fixed 或 latest") String revisionMode,
+        @Schema(description = "固定模式绑定的快照标识，latest 为空") String revisionId,
+        @Schema(description = "是否永久撤销") boolean revoked,
+        @Schema(description = "配置并发版本") long configVersion) {
     public static ShareResponse from(PrototypeShareEntity s) {
         return new ShareResponse(
                 s.getId(),
@@ -29,6 +33,10 @@ public record ShareResponse(
                 Boolean.TRUE.equals(s.getEnabled()),
                 s.getCreatorId(),
                 s.getCreateTime(),
-                "/#/share/" + s.getToken());
+                "/#/share/" + s.getToken(),
+                s.getRevisionMode() == null ? "fixed" : s.getRevisionMode(),
+                s.getRevisionId(),
+                Boolean.TRUE.equals(s.getRevoked()),
+                s.getConfigVersion() == null ? 0 : s.getConfigVersion());
     }
 }
