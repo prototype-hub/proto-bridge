@@ -1,6 +1,7 @@
 package com.gaiys.proto.system.configuration.initializer;
 
 import com.gaiys.proto.system.enums.UserType;
+import com.gaiys.proto.system.service.SystemInitializationLockService;
 import java.time.Duration;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
@@ -21,6 +22,7 @@ import reactor.core.publisher.Mono;
 @Order(Ordered.HIGHEST_PRECEDENCE + 200)
 public class AdministratorInitializer implements ApplicationRunner {
     private final ReactiveUserService users;
+    private final SystemInitializationLockService initializationLock;
     private final ReactiveRepository<DimensionUserEntity, String> bindings;
     private final TransactionalOperator transactions;
     private final ReactiveRepository<DimensionEntity, String> dimensions;
@@ -32,9 +34,11 @@ public class AdministratorInitializer implements ApplicationRunner {
             ReactiveRepository<DimensionUserEntity, String> bindings,
             TransactionalOperator transactions,
             ReactiveRepository<DimensionEntity, String> dimensions,
+            SystemInitializationLockService initializationLock,
             @Value("${proto.admin.username:admin}") String username,
             @Value("${proto.admin.password:}") String password) {
         this.users = users;
+        this.initializationLock = initializationLock;
         this.bindings = bindings;
         this.transactions = transactions;
         this.dimensions = dimensions;
@@ -45,7 +49,9 @@ public class AdministratorInitializer implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         // Startup boundary only: initialization completes before readiness and HTTP traffic.
-        users.findByUsername(username)
+        initializationLock
+                .acquire()
+                .then(Mono.defer(() -> users.findByUsername(username)))
                 .switchIfEmpty(
                         Mono.defer(
                                 () -> {

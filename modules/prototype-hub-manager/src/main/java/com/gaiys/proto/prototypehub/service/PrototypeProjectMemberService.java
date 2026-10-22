@@ -1,14 +1,25 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.web.response.MemberCandidateResponse;
 import com.gaiys.proto.prototypehub.web.response.ProjectMemberResponse;
+import java.util.List;
+import java.util.Locale;
 import java.util.UUID;
+import lombok.Getter;
 import lombok.RequiredArgsConstructor;
-import org.springframework.r2dbc.core.DatabaseClient;
+import lombok.Setter;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
+import org.hswebframework.web.api.crud.entity.RecordModifierEntity;
+import org.hswebframework.web.crud.query.QueryHelper;
+import org.hswebframework.web.system.authorization.api.entity.UserEntity;
+import org.hswebframework.web.system.authorization.api.service.reactive.ReactiveUserService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
@@ -19,32 +30,69 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class PrototypeProjectMemberService {
     private final PrototypeProjectAccessService access;
-    private final DatabaseClient database;
+    private static final int CANDIDATE_BATCH = 100;
+    private final ReactiveUserService users;
+    private final ReactiveRepository<UserEntity, String> userRepository;
+    private final ReactiveRepository<PrototypeProjectEntity, String> projects;
+    private final ReactiveRepository<PrototypeProjectMemberEntity, String> bindings;
+    private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
+    private final QueryHelper queries;
     private final TransactionalOperator transactions;
 
     public Flux<ProjectMemberResponse> members(String projectId) {
         return access.requireProject(projectId, Action.MEMBERS)
-                .thenMany(
-                        database.sql(
-                                        """
-select p.owner_id as user_id,u.name,u.username,'owner' as role,0 as ordering
-from p_project p left join s_user u on u.id=p.owner_id
-where p.id=:projectId and p.owner_id is not null
-union all
-select m.user_id,u.name,u.username,m.role,1 as ordering
-from p_project_member m left join s_user u on u.id=m.user_id
-where m.project_id=:projectId
-order by ordering,user_id
-""")
-                                .bind("projectId", projectId)
-                                .map(
-                                        (row, metadata) ->
-                                                new ProjectMemberResponse(
-                                                        row.get("user_id", String.class),
-                                                        row.get("name", String.class),
-                                                        row.get("username", String.class),
-                                                        row.get("role", String.class)))
-                                .all());
+                .flatMapMany(
+                        grant -> {
+                            String ownerId = grant.project().getOwnerId();
+                            Mono<ProjectMemberResponse> owner =
+                                    ownerId == null
+                                            ? Mono.empty()
+                                            : users.findById(ownerId)
+                                                    .map(
+                                                            user ->
+                                                                    new ProjectMemberResponse(
+                                                                            ownerId,
+                                                                            user.getName(),
+                                                                            user.getUsername(),
+                                                                            "owner"))
+                                                    .defaultIfEmpty(
+                                                            new ProjectMemberResponse(
+                                                                    ownerId, null, null, "owner"));
+                            Flux<ProjectMemberResponse> members =
+                                    queries.select(MemberRow.class)
+                                            .as(
+                                                    PrototypeProjectMemberEntity::getUserId,
+                                                    MemberRow::setUserId)
+                                            .as(
+                                                    PrototypeProjectMemberEntity::getRole,
+                                                    MemberRow::setRole)
+                                            .as(UserEntity::getName, MemberRow::setName)
+                                            .as(UserEntity::getUsername, MemberRow::setUsername)
+                                            .from(PrototypeProjectMemberEntity.class)
+                                            .leftJoin(
+                                                    UserEntity.class,
+                                                    join ->
+                                                            join.is(
+                                                                    UserEntity::getId,
+                                                                    PrototypeProjectMemberEntity
+                                                                            ::getUserId))
+                                            .where(
+                                                    condition ->
+                                                            condition.is(
+                                                                    PrototypeProjectMemberEntity
+                                                                            ::getProjectId,
+                                                                    projectId))
+                                            .orderByAsc(PrototypeProjectMemberEntity::getUserId)
+                                            .fetch()
+                                            .map(
+                                                    row ->
+                                                            new ProjectMemberResponse(
+                                                                    row.getUserId(),
+                                                                    row.getName(),
+                                                                    row.getUsername(),
+                                                                    row.getRole()));
+                            return owner.flux().concatWith(members);
+                        });
     }
 
     public Flux<MemberCandidateResponse> candidates(String projectId, String keyword) {
@@ -54,25 +102,102 @@ order by ordering,user_id
                     PrototypeHubException.badRequest(
                             "error.prototype-hub.member_keyword_invalid",
                             "PROTOTYPE_HUB_MEMBER_KEYWORD_INVALID"));
-        // position 按字面匹配，输入中的 %/_ 不会变成 SQL 通配符；只暴露最多 20 个必要身份字段。
+        // 有界 keyset 读取后按字面匹配；%/_ 不变成通配符，且不依赖各数据库的转义与大小写函数。
         return access.requireProject(projectId, Action.MEMBERS)
-                .thenMany(
-                        database.sql(
-                                        """
-select u.id,u.name,u.username from s_user u
-where u.status=1 and (position(lower(:keyword) in lower(coalesce(u.name,'')))>0 or position(lower(:keyword) in lower(coalesce(u.username,'')))>0)
-and not exists(select 1 from p_project p where p.id=:projectId and p.owner_id=u.id)
-order by u.username,u.id limit 20
-""")
-                                .bind("keyword", term)
-                                .bind("projectId", projectId)
-                                .map(
-                                        (row, metadata) ->
-                                                new MemberCandidateResponse(
-                                                        row.get("id", String.class),
-                                                        row.get("name", String.class),
-                                                        row.get("username", String.class)))
-                                .all());
+                .flatMapMany(
+                        grant ->
+                                Mono.just(new CandidateCursor(null, null, 20, List.of(), false))
+                                        .expand(
+                                                cursor ->
+                                                        cursor.complete()
+                                                                ? Mono.empty()
+                                                                : candidateBatch(
+                                                                        grant.project()
+                                                                                .getOwnerId(),
+                                                                        term.toLowerCase(
+                                                                                Locale.ROOT),
+                                                                        cursor),
+                                                1)
+                                        .concatMapIterable(CandidateCursor::matches, 1));
+    }
+
+    private Mono<CandidateCursor> candidateBatch(
+            String ownerId, String keyword, CandidateCursor cursor) {
+        var query =
+                userRepository
+                        .createQuery()
+                        .select(UserEntity::getId, UserEntity::getName, UserEntity::getUsername)
+                        .where(UserEntity::getStatus, (byte) 1);
+        if (ownerId != null) query.not(UserEntity::getId, ownerId);
+        if (cursor.id() != null)
+            query.nest()
+                    .gt(UserEntity::getUsername, cursor.username())
+                    .orNest()
+                    .is(UserEntity::getUsername, cursor.username())
+                    .gt(UserEntity::getId, cursor.id())
+                    .end()
+                    .end();
+        return query.orderBy(
+                        SortOrder.asc(UserEntity::getUsername), SortOrder.asc(UserEntity::getId))
+                .paging(0, CANDIDATE_BATCH)
+                .fetch()
+                .collectList()
+                .map(
+                        page -> {
+                            if (page.isEmpty())
+                                return new CandidateCursor(
+                                        cursor.username(),
+                                        cursor.id(),
+                                        cursor.remaining(),
+                                        List.of(),
+                                        true);
+                            List<MemberCandidateResponse> found =
+                                    page.stream()
+                                            .filter(
+                                                    user ->
+                                                            contains(user.getName(), keyword)
+                                                                    || contains(
+                                                                            user.getUsername(),
+                                                                            keyword))
+                                            .limit(cursor.remaining())
+                                            .map(
+                                                    user ->
+                                                            new MemberCandidateResponse(
+                                                                    user.getId(),
+                                                                    user.getName(),
+                                                                    user.getUsername()))
+                                            .toList();
+                            UserEntity last = page.getLast();
+                            int remaining = cursor.remaining() - found.size();
+                            return new CandidateCursor(
+                                    last.getUsername(),
+                                    last.getId(),
+                                    remaining,
+                                    found,
+                                    remaining == 0 || page.size() < CANDIDATE_BATCH);
+                        });
+    }
+
+    /** 仅保留排序游标及最多 20 条响应，不让递归订阅链累积用户实体页。 */
+    private record CandidateCursor(
+            String username,
+            String id,
+            int remaining,
+            List<MemberCandidateResponse> matches,
+            boolean complete) {}
+
+    private static boolean contains(String value, String keyword) {
+        return (value == null ? "" : value).toLowerCase(Locale.ROOT).contains(keyword);
+    }
+
+    /** 仅供 QueryHelper 映射成员关联结果，不作为 HTTP 响应实体。 */
+    @Getter
+    @Setter
+    public static class MemberRow {
+        private String userId;
+        private String name;
+        private String username;
+        private String role;
     }
 
     public Mono<ProjectMemberResponse> put(String projectId, String userId, String role) {
@@ -88,19 +213,7 @@ order by u.username,u.id limit 20
                                         .then(access.activeUser(userId)))
                 .flatMap(
                         user ->
-                                database.sql(
-                                                """
-insert into p_project_member(id,project_id,user_id,role,create_time)
-values(:id,:projectId,:userId,:role,:createdAt)
-on conflict(project_id,user_id) do update set role=excluded.role,create_time=excluded.create_time
-""")
-                                        .bind("id", UUID.randomUUID().toString())
-                                        .bind("projectId", projectId)
-                                        .bind("userId", userId)
-                                        .bind("role", role)
-                                        .bind("createdAt", System.currentTimeMillis())
-                                        .fetch()
-                                        .rowsUpdated()
+                                putBinding(projectId, userId, role)
                                         .then(rotate(projectId))
                                         .thenReturn(
                                                 new ProjectMemberResponse(
@@ -116,29 +229,59 @@ on conflict(project_id,user_id) do update set role=excluded.role,create_time=exc
                 .then(access.requireProject(projectId, Action.MEMBERS))
                 .flatMap(grant -> rejectOwner(grant.project(), userId))
                 .then(
-                        database.sql(
-                                        "delete from p_project_member where project_id=:projectId"
-                                                + " and user_id=:userId")
-                                .bind("projectId", projectId)
-                                .bind("userId", userId)
-                                .fetch()
-                                .rowsUpdated())
+                        bindings.createDelete()
+                                .where(PrototypeProjectMemberEntity::getProjectId, projectId)
+                                .and(PrototypeProjectMemberEntity::getUserId, userId)
+                                .execute())
                 .flatMap(rows -> rotate(projectId).thenReturn(rows > 0))
                 .as(transactions::transactional);
     }
 
     public Mono<Void> rotate(String projectId) {
         // 所有成员会话一起换代；撤员后重新添加也不能恢复先前已泄漏的内部预览 URL。
-        return database.sql("update p_project set access_epoch=:epoch where id=:id")
-                .bind("epoch", UUID.randomUUID().toString())
-                .bind("id", projectId)
-                .fetch()
-                .rowsUpdated()
+        // 授权谱系变更不修改项目编辑审计，使用官方标记仅关闭自动 modifier 补写。
+        return projects.createUpdate()
+                .set(PrototypeProjectEntity::getAccessEpoch, UUID.randomUUID().toString())
+                .where(PrototypeProjectEntity::getId, projectId)
+                .execute()
+                .contextWrite(RecordModifierEntity::markDoNotUpdate)
                 .then(
-                        database.sql("delete from p_preview_session where project_id=:id")
-                                .bind("id", projectId)
-                                .fetch()
-                                .rowsUpdated())
+                        sessions.createDelete()
+                                .where(PrototypePreviewSessionEntity::getProjectId, projectId)
+                                .execute())
+                .then();
+    }
+
+    private Mono<Void> putBinding(String projectId, String userId, String role) {
+        // 调用方已持项目行锁，同一项目的授权写入串行；先读后更新/插入不会依赖方言 upsert。
+        long now = System.currentTimeMillis();
+        return bindings.createQuery()
+                .select(PrototypeProjectMemberEntity::getId)
+                .where(PrototypeProjectMemberEntity::getProjectId, projectId)
+                .and(PrototypeProjectMemberEntity::getUserId, userId)
+                .fetchOne()
+                .flatMap(
+                        existing ->
+                                bindings.createUpdate()
+                                        .set(PrototypeProjectMemberEntity::getRole, role)
+                                        .set(PrototypeProjectMemberEntity::getCreateTime, now)
+                                        .where(
+                                                PrototypeProjectMemberEntity::getId,
+                                                existing.getId())
+                                        .execute()
+                                        .thenReturn(true))
+                .switchIfEmpty(
+                        Mono.defer(
+                                () -> {
+                                    PrototypeProjectMemberEntity binding =
+                                            new PrototypeProjectMemberEntity();
+                                    binding.setId(UUID.randomUUID().toString());
+                                    binding.setProjectId(projectId);
+                                    binding.setUserId(userId);
+                                    binding.setRole(role);
+                                    binding.setCreateTime(now);
+                                    return bindings.insert(binding).thenReturn(true);
+                                }))
                 .then();
     }
 

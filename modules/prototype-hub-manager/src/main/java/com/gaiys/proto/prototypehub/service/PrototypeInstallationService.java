@@ -3,8 +3,9 @@ package com.gaiys.proto.prototypehub.service;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
+import org.hswebframework.ezorm.rdb.operator.DatabaseOperator;
+import org.hswebframework.web.crud.configuration.EntityTableMetadataResolver;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -14,19 +15,23 @@ import reactor.core.publisher.Mono;
 public class PrototypeInstallationService
         extends GenericReactiveCrudService<PrototypeInstallationEntity, String> {
     private static final String SINGLETON_ID = "default";
-    private final DatabaseClient database;
+    private final DatabaseOperator database;
+    private final EntityTableMetadataResolver metadata;
 
-    /** EasyORM 建表完成后调用；并发启动只插入一次，已有超限数据不会影响身份初始化。 */
+    /** EasyORM 建表后调用；由官方 upsert 方言处理并发唯一键，绝不覆盖已有部署身份。 */
     public Mono<PrototypeInstallationEntity> initialize() {
-        // 当前应用限定 PostgreSQL；ON CONFLICT 保证多副本启动时不覆盖已有部署身份。
-        return database.sql(
-                        "insert into p_installation(id, installation_id, create_time) values(:id,"
-                                + " :installationId, :createTime) on conflict(id) do nothing")
-                .bind("id", SINGLETON_ID)
-                .bind("installationId", UUID.randomUUID().toString())
-                .bind("createTime", System.currentTimeMillis())
-                .fetch()
-                .rowsUpdated()
+        return Mono.defer(
+                        () ->
+                                database.dml()
+                                        .upsert(metadata.resolve(PrototypeInstallationEntity.class))
+                                        .columns("id", "installationId", "createTime")
+                                        .values(
+                                                SINGLETON_ID,
+                                                UUID.randomUUID().toString(),
+                                                System.currentTimeMillis())
+                                        .doNothingOnConflict(true)
+                                        .execute()
+                                        .reactive())
                 .then(current());
     }
 
@@ -36,10 +41,11 @@ public class PrototypeInstallationService
 
     /** 必须在创建项目的事务中调用，锁持有至资源和回执一起提交或回滚。 */
     public Mono<Void> lock() {
-        return database.sql("select id from p_installation where id=:id for update")
-                .bind("id", SINGLETON_ID)
-                .fetch()
-                .one()
+        return createQuery()
+                .select(PrototypeInstallationEntity::getId)
+                .where(PrototypeInstallationEntity::getId, SINGLETON_ID)
+                .forUpdate()
+                .fetchOne()
                 .switchIfEmpty(
                         Mono.error(new IllegalStateException("Installation is not initialized")))
                 .then();

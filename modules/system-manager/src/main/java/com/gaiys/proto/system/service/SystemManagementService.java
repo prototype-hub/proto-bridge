@@ -22,6 +22,8 @@ import java.util.Objects;
 import java.util.Set;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.ezorm.core.param.Term;
+import org.hswebframework.ezorm.rdb.supports.json.JsonTermType;
+import org.hswebframework.ezorm.rdb.supports.json.JsonValueCondition;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.api.crud.entity.QueryParamEntity;
 import org.hswebframework.web.id.IDGenerator;
@@ -34,7 +36,6 @@ import org.hswebframework.web.system.authorization.defaults.service.DefaultDimen
 import org.hswebframework.web.system.authorization.defaults.service.DefaultDimensionUserService;
 import org.hswebframework.web.system.authorization.defaults.service.DefaultReactiveUserService;
 import org.springframework.context.ApplicationEventPublisher;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import reactor.core.publisher.Flux;
@@ -51,7 +52,6 @@ public class SystemManagementService {
     private final RoleGroupService groups;
     private final PositionService positions;
     private final ApplicationEventPublisher events;
-    private final DatabaseClient database;
     private final ObjectMapper mapper;
     private final PasswordValidator passwords;
 
@@ -134,8 +134,7 @@ public class SystemManagementService {
     }
 
     public Mono<PagerResult<Map<String, Object>>> roles(QueryParamEntity query) {
-        return roleQuery(query)
-                .flatMap(q -> dimensions.queryPager(q))
+        return Mono.defer(() -> dimensions.queryPager(roleQuery(query)))
                 .map(
                         page ->
                                 PagerResult.of(
@@ -145,17 +144,18 @@ public class SystemManagementService {
     }
 
     public Flux<Map<String, Object>> allRoles(QueryParamEntity query) {
-        return roleQuery(query).flatMapMany(q -> dimensions.query(q.noPaging())).map(this::role);
+        return Flux.defer(() -> dimensions.query(roleQuery(query).noPaging())).map(this::role);
     }
 
-    private Mono<QueryParamEntity> roleQuery(QueryParamEntity source) {
+    private QueryParamEntity roleQuery(QueryParamEntity source) {
         QueryParamEntity query = typed(source, "role");
         query.getSorts()
                 .forEach(
                         sort -> {
                             if ("description".equals(sort.getName())) sort.setName("describe");
                         });
-        return roleTerms(query.getTerms()).thenReturn(query);
+        roleTerms(query.getTerms());
+        return query;
     }
 
     /** 旧前端默认分组标识只是别名，不创建或迁移第二个默认分组。 */
@@ -163,70 +163,47 @@ public class SystemManagementService {
         return "default_group".equals(value) ? "default" : value;
     }
 
-    private Mono<Void> roleTerms(List<Term> terms) {
-        return Flux.fromIterable(terms)
-                .concatMap(
-                        term -> {
-                            String column = term.getColumn();
-                            if ("description".equals(column)) term.setColumn("describe");
-                            if (Set.of("groupId", "state").contains(column == null ? "" : column)) {
-                                return resolveRoleProperty(term, column)
-                                        .then(Mono.defer(() -> roleTerms(term.getTerms())));
-                            }
-                            return roleTerms(term.getTerms());
-                        })
-                .then();
+    private void roleTerms(List<Term> terms) {
+        for (Term term : terms) {
+            String column = term.getColumn();
+            if ("description".equals(column)) term.setColumn("describe");
+            if (Set.of("groupId", "state").contains(column == null ? "" : column))
+                resolveRoleProperty(term, column);
+            roleTerms(term.getTerms());
+        }
     }
 
-    private Mono<Void> resolveRoleProperty(Term term, String property) {
+    /** 保留请求的布尔分组，由 EasyORM 的 JSON 条件方言处理属性取值、操作符和绑定参数。 */
+    private void resolveRoleProperty(Term term, String property) {
         String operator = term.getTermType();
-        if (operator == null) return Mono.error(invalid());
-        String predicate =
-                switch (operator) {
-                    case "eq" -> "= :value";
-                    case "not" -> "<> :value";
-                    case "in" -> "IN (:value)";
-                    case "nin" -> "NOT IN (:value)";
-                    case "like" -> "LIKE :value";
-                    case "nlike" -> "NOT LIKE :value";
-                    case "isnull" -> "IS NULL";
-                    case "notnull" -> "IS NOT NULL";
-                    default -> throw invalid();
-                };
-        if (!term.getOptions().isEmpty()) return Mono.error(invalid());
+        if (operator == null
+                || !Set.of("eq", "not", "in", "nin", "like", "nlike", "isnull", "notnull")
+                        .contains(operator)
+                || !term.getOptions().isEmpty()) throw invalid();
         boolean collection = "in".equals(operator) || "nin".equals(operator);
         boolean nullComparison = "isnull".equals(operator) || "notnull".equals(operator);
         Object value = term.getValue();
         if (collection) {
-            if (!(value instanceof Collection<?> values) || values.size() > 200)
-                return Mono.error(invalid());
+            if (!(value instanceof Collection<?> values) || values.size() > 200) throw invalid();
             List<String> normalized =
                     values.stream().map(item -> rolePropertyValue(property, item)).toList();
             if (normalized.isEmpty()) {
-                // 空 IN 不能被 ORM 忽略；空 NOT IN 仍只匹配非空 JSON 属性。
-                predicate = "in".equals(operator) ? "IS NULL AND FALSE" : "IS NOT NULL";
-                nullComparison = true;
+                // EasyORM 会忽略空 IN；显式使用非空主键的反例，避免放宽外层查询。
+                if ("in".equals(operator)) {
+                    term.setColumn("id");
+                    term.setTermType("isnull");
+                    term.setValue("");
+                    return;
+                }
+                // 原空 NOT IN 只匹配存在的非空属性，不能替换为恒真条件。
+                operator = "notnull";
+                value = null;
             } else value = normalized;
-        } else if (!nullComparison) value = rolePropertyValue(property, value);
-        // 只拼接固定操作符；属性名及值绑定参数，外层关系和嵌套分组不变。
-        DatabaseClient.GenericExecuteSpec statement =
-                database.sql(
-                                "SELECT id FROM s_dimension WHERE type_id='role' AND"
-                                        + " properties::jsonb ->> :property "
-                                        + predicate)
-                        .bind("property", property);
-        if (!nullComparison) statement = statement.bind("value", value);
-        return statement
-                .map((row, meta) -> row.get("id", String.class))
-                .all()
-                .collectList()
-                .doOnNext(
-                        matches -> {
-                            term.setColumn("id");
-                            term.setTermType(matches.isEmpty() ? "isnull" : "in");
-                            term.setValue(matches.isEmpty() ? "" : matches);
-                        })
-                .then();
+        } else if (nullComparison) value = null;
+        else value = rolePropertyValue(property, value);
+        term.setColumn("properties");
+        term.setTermType(JsonTermType.value);
+        term.setValue(JsonValueCondition.of(property, operator, value));
     }
 
     private String rolePropertyValue(String property, Object value) {

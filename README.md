@@ -144,6 +144,7 @@ flowchart LR
 | --- | --- | --- |
 | 后端 | Java 21、Spring Boot 3.5.16、WebFlux、Reactor | 认证、业务 API、文件交付、异步任务 |
 | 权限与数据 | hsweb 5.0.2、EasyORM、R2DBC PostgreSQL | 用户/角色/资源动作授权、结构同步和响应式持久化 |
+| 结构描述 | jOOQ 3.19.35 结构化 DDL | 安全生成表/字段注释与部分唯一索引，沿用 R2DBC 执行 |
 | 日志 | Logback、JSON 文件、可选 Elasticsearch 8.x | 系统/访问/审计日志及受控日志级别管理 |
 | 前端 | Vue 3、TypeScript、Vite 6、Pinia、Ant Design Vue | 管理页面、预览、分享、个人中心 |
 | 构建与运行 | Maven Wrapper 3.9.9、Docker、Nginx | 构建、镜像、静态托管及 HTTPS |

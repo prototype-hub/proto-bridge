@@ -569,7 +569,6 @@ class PrototypeHubCapacityIntegrationTest {
                         work,
                         TransactionalOperator.create(commit),
                         cleanup,
-                        database,
                         receipts,
                         access,
                         revisions,

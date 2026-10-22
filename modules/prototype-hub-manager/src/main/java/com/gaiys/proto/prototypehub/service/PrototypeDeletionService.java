@@ -1,11 +1,14 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import lombok.AllArgsConstructor;
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
@@ -18,8 +21,10 @@ public class PrototypeDeletionService {
     private final PrototypeShareService shares;
     private final FileCleanupService cleanup;
     private final TransactionalOperator transactions;
-    private final DatabaseClient database;
     private final PrototypeProjectAccessService access;
+    private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
+    private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
+    private final ReactiveRepository<PrototypeProjectMemberEntity, String> members;
 
     public Mono<PrototypeVersionEntity> deleteVersion(String id) {
         SafePaths.id(id);
@@ -27,44 +32,35 @@ public class PrototypeDeletionService {
                 .flatMap(
                         found ->
                                 access.lockProject(found.getProjectId())
-                                        .then(
-                                                database.sql(
-                                                                "select id from p_version where"
-                                                                        + " id=:id for update")
-                                                        .bind("id", id)
-                                                        .fetch()
-                                                        .one()
-                                                        .switchIfEmpty(
-                                                                Mono.error(
-                                                                        () ->
-                                                                                PrototypeHubException
-                                                                                        .missing(
-                                                                                                "version"))))
+                                        .then(access.lockVersion(id))
                                         .then(
                                                 access.requireVersion(
                                                         id,
                                                         PrototypeProjectAccessService.Action.EDIT)))
                 .flatMap(
                         version ->
-                                // 一条 INSERT SELECT 消费 rowsUpdated，目录数量不在 JVM 聚合，也不在开放游标中嵌套写入。
+                                // 有界批次登记全部历史目录，释放读取后批量写入，不在开放游标中嵌套写入。
                                 cleanup.enqueueVersionHistory(version)
                                         .then(shares.deleteByVersionId(id))
                                         .then(
-                                                database.sql(
-                                                                "delete from p_preview_session"
-                                                                        + " where version_id=:id")
-                                                        .bind("id", id)
-                                                        .fetch()
-                                                        .rowsUpdated())
+                                                sessions.createDelete()
+                                                        .where(
+                                                                PrototypePreviewSessionEntity
+                                                                        ::getVersionId,
+                                                                id)
+                                                        .execute())
                                         .then(
-                                                database.sql(
-                                                                "delete from p_revision where"
-                                                                        + " project_id=:project and"
-                                                                        + " version_id=:id")
-                                                        .bind("project", version.getProjectId())
-                                                        .bind("id", id)
-                                                        .fetch()
-                                                        .rowsUpdated())
+                                                revisions
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeRevisionEntity
+                                                                        ::getProjectId,
+                                                                version.getProjectId())
+                                                        .and(
+                                                                PrototypeRevisionEntity
+                                                                        ::getVersionId,
+                                                                id)
+                                                        .execute())
                                         .then(versions.deleteById(id))
                                         .thenReturn(version))
                 .as(transactions::transactional);
@@ -81,19 +77,19 @@ public class PrototypeDeletionService {
                                 rejectProjectWithVersions(id)
                                         .then(shares.deleteByProjectId(id))
                                         .then(
-                                                database.sql(
-                                                                "delete from p_preview_session"
-                                                                        + " where project_id=:id")
-                                                        .bind("id", id)
-                                                        .fetch()
-                                                        .rowsUpdated())
+                                                sessions.createDelete()
+                                                        .where(
+                                                                PrototypePreviewSessionEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
-                                                database.sql(
-                                                                "delete from p_project_member where"
-                                                                        + " project_id=:id")
-                                                        .bind("id", id)
-                                                        .fetch()
-                                                        .rowsUpdated())
+                                                members.createDelete()
+                                                        .where(
+                                                                PrototypeProjectMemberEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(projects.deleteById(id))
                                         .then(cleanup.enqueue(id, null, null))
                                         .map(

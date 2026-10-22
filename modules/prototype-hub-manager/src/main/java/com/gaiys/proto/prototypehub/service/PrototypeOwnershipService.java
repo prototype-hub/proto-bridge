@@ -1,16 +1,21 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.web.response.OwnershipMigrationResponse;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import java.util.List;
 import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
+import org.hswebframework.web.api.crud.entity.RecordModifierEntity;
+import org.hswebframework.web.system.authorization.api.entity.UserEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Flux;
@@ -30,7 +35,8 @@ public class PrototypeOwnershipService {
     private final PrototypeProjectAccessService access;
     private final PrototypeProjectMemberService members;
     private final ReactiveRepository<PrototypeProjectEntity, String> projects;
-    private final DatabaseClient database;
+    private final ReactiveRepository<UserEntity, String> users;
+    private final ReactiveRepository<PrototypeProjectMemberEntity, String> bindings;
     private final TransactionalOperator transactions;
 
     public Mono<OwnershipMigrationResponse> migrate(boolean apply) {
@@ -38,27 +44,76 @@ public class PrototypeOwnershipService {
     }
 
     private Mono<OwnershipMigrationResponse> dryRun() {
-        // 只读取，不更新 owner/epoch，也不签发会话；可先在备份副本核对数量后显式 apply。
-        return database.sql(
-                        """
-select count(*) as scanned,
-count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and (p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null) as assigned,
-count(*) filter(where (p.owner_id is null or p.owner_id !~ '[^[:space:]]') and not ((p.access_epoch is null or p.access_epoch !~ '[^[:space:]]') and u.id is not null)) as pending,
-count(*) filter(where p.owner_id ~ '[^[:space:]]') as unchanged
-from p_project p left join s_user u on u.id=p.creator_id and u.status=1
-""")
-                .map(
-                        (row, metadata) ->
-                                new OwnershipMigrationResponse(
-                                        row.get("scanned", Long.class),
-                                        row.get("assigned", Long.class),
-                                        row.get("pending", Long.class),
-                                        row.get("unchanged", Long.class)))
-                .one();
+        // 只读有界批次，不更新 owner/epoch 或签发会话；分类规则与显式 apply 保持一致。
+        return Mono.just(new MigrationCursor("", new OwnershipMigrationResponse(0, 0, 0, 0)))
+                .expand(this::inspectBatch, 1)
+                .last()
+                .map(MigrationCursor::total);
+    }
+
+    private Mono<MigrationCursor> inspectBatch(MigrationCursor cursor) {
+        OwnershipMigrationResponse total = cursor.total();
+        return projectBatch(cursor.after())
+                .flatMap(
+                        page -> {
+                            if (page.isEmpty()) return Mono.empty();
+                            Set<String> creators =
+                                    page.stream()
+                                            .map(PrototypeProjectEntity::getCreatorId)
+                                            .filter(PrototypeOwnershipService::hasText)
+                                            .collect(Collectors.toSet());
+                            Mono<Set<String>> active =
+                                    creators.isEmpty()
+                                            ? Mono.just(Set.of())
+                                            : users.createQuery()
+                                                    .select(UserEntity::getId)
+                                                    .where(UserEntity::getStatus, (byte) 1)
+                                                    .in(UserEntity::getId, creators)
+                                                    .fetch()
+                                                    .map(UserEntity::getId)
+                                                    .collect(Collectors.toSet());
+                            return active.flatMap(
+                                    ids -> {
+                                        long assigned = 0, pending = 0, unchanged = 0;
+                                        for (PrototypeProjectEntity project : page) {
+                                            if (hasText(project.getOwnerId())) unchanged++;
+                                            else if (!hasText(project.getAccessEpoch())
+                                                    && ids.contains(project.getCreatorId()))
+                                                assigned++;
+                                            else pending++;
+                                        }
+                                        OwnershipMigrationResponse sum =
+                                                new OwnershipMigrationResponse(
+                                                        total.scanned() + page.size(),
+                                                        total.assigned() + assigned,
+                                                        total.pending() + pending,
+                                                        total.unchanged() + unchanged);
+                                        return Mono.just(
+                                                new MigrationCursor(page.getLast().getId(), sum));
+                                    });
+                        });
+    }
+
+    private Mono<List<PrototypeProjectEntity>> projectBatch(String after) {
+        return projects.createQuery()
+                .select(
+                        PrototypeProjectEntity::getId,
+                        PrototypeProjectEntity::getOwnerId,
+                        PrototypeProjectEntity::getAccessEpoch,
+                        PrototypeProjectEntity::getCreatorId)
+                .where()
+                .gt(PrototypeProjectEntity::getId, after)
+                .orderBy(SortOrder.asc(PrototypeProjectEntity::getId))
+                .paging(0, BATCH_SIZE)
+                .fetch()
+                .collectList();
     }
 
     private Mono<OwnershipMigrationResponse> applyMigration() {
-        return applyBatch("", new OwnershipMigrationResponse(0, 0, 0, 0))
+        return Mono.just(new MigrationCursor("", new OwnershipMigrationResponse(0, 0, 0, 0)))
+                .expand(this::applyBatch, 1)
+                .last()
+                .map(MigrationCursor::total)
                 .doOnNext(
                         result ->
                                 log.info(
@@ -70,13 +125,13 @@ from p_project p left join s_user u on u.id=p.creator_id and u.status=1
                                         result.unchanged()));
     }
 
-    private Mono<OwnershipMigrationResponse> applyBatch(
-            String after, OwnershipMigrationResponse total) {
-        // 整批读取并释放连接后逐项目短事务，整批事务结束才取下一批；不通过 expand 预取查询争抢 pool=1。
-        return batch(after)
+    private Mono<MigrationCursor> applyBatch(MigrationCursor cursor) {
+        // 每页完成全部短事务后才发下一个游标；单分支 expand 不预取写入或保留已处理页。
+        OwnershipMigrationResponse total = cursor.total();
+        return batch(cursor.after())
                 .flatMap(
                         ids -> {
-                            if (ids.isEmpty()) return Mono.just(total);
+                            if (ids.isEmpty()) return Mono.empty();
                             return Flux.fromIterable(ids)
                                     .concatMap(this::migrateOne, 1)
                                     .reduce(
@@ -87,22 +142,22 @@ from p_project p left join s_user u on u.id=p.creator_id and u.status=1
                                                             sum.assigned() + item.assigned(),
                                                             sum.pending() + item.pending(),
                                                             sum.unchanged() + item.unchanged()))
-                                    .flatMap(
-                                            sum ->
-                                                    Mono.defer(
-                                                            () ->
-                                                                    applyBatch(
-                                                                            ids.get(ids.size() - 1),
-                                                                            sum)));
+                                    .map(sum -> new MigrationCursor(ids.getLast(), sum));
                         });
     }
 
+    /** 迭代状态只保留游标与四个标量，不跨页捕获实体列表。 */
+    private record MigrationCursor(String after, OwnershipMigrationResponse total) {}
+
     private Mono<List<String>> batch(String after) {
-        return database.sql("select id from p_project where id>:after order by id limit :batchSize")
-                .bind("after", after)
-                .bind("batchSize", BATCH_SIZE)
-                .map((row, metadata) -> row.get("id", String.class))
-                .all()
+        return projects.createQuery()
+                .select(PrototypeProjectEntity::getId)
+                .where()
+                .gt(PrototypeProjectEntity::getId, after)
+                .orderBy(SortOrder.asc(PrototypeProjectEntity::getId))
+                .paging(0, BATCH_SIZE)
+                .fetch()
+                .map(PrototypeProjectEntity::getId)
                 .collectList();
     }
 
@@ -190,19 +245,17 @@ from p_project p left join s_user u on u.id=p.creator_id and u.status=1
     }
 
     private Mono<Void> assign(String id, String ownerId) {
-        return database.sql("update p_project set owner_id=:owner where id=:id")
-                .bind("owner", ownerId)
-                .bind("id", id)
-                .fetch()
-                .rowsUpdated()
+        // 显式授权迁移保留历史创建/编辑信息；其余持久化事件仍正常触发。
+        return projects.createUpdate()
+                .set(PrototypeProjectEntity::getOwnerId, ownerId)
+                .where(PrototypeProjectEntity::getId, id)
+                .execute()
+                .contextWrite(RecordModifierEntity::markDoNotUpdate)
                 .then(
-                        database.sql(
-                                        "delete from p_project_member where project_id=:id and"
-                                                + " user_id=:owner")
-                                .bind("id", id)
-                                .bind("owner", ownerId)
-                                .fetch()
-                                .rowsUpdated())
+                        bindings.createDelete()
+                                .where(PrototypeProjectMemberEntity::getProjectId, id)
+                                .and(PrototypeProjectMemberEntity::getUserId, ownerId)
+                                .execute())
                 .then(members.rotate(id));
     }
 

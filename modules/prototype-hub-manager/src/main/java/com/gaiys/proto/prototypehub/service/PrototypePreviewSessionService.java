@@ -16,8 +16,8 @@ import java.util.Objects;
 import java.util.UUID;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
 import org.hswebframework.web.authorization.exception.UnAuthorizedException;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
@@ -35,7 +35,6 @@ public class PrototypePreviewSessionService {
     private final PrototypeProjectAccessService access;
     private final ReactiveRepository<PrototypeVersionEntity, String> versions;
     private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
-    private final DatabaseClient database;
     private final TransactionalOperator transactions;
     private final PrototypeRevisionService revisions;
 
@@ -108,46 +107,66 @@ public class PrototypePreviewSessionService {
         String base = "/api/prototype-hub/runtime/" + version.getId() + "/" + token;
         // 只清理已持锁项目的最多 256 个过期行，避免跨项目 GC 与账号删除的有序项目锁形成锁环。
         // 当前 user/version 保留最近 8 个会话；冷项目过期行仅在后续签发或绑定清理时回收。
-        return database.sql(
-                        "delete from p_preview_session where id in (select id from"
-                                + " p_preview_session where project_id=:projectId and expires_at<=:now"
-                                + " order by expires_at,id limit 256)")
-                .bind("projectId", version.getProjectId())
-                .bind("now", createdAt)
-                .fetch()
-                .rowsUpdated()
-                .then(
-                        database.sql(
-                                        "delete from p_preview_session where id in (select id from"
-                                                + " p_preview_session where user_id=:userId and"
-                                                + " version_id=:versionId order by create_time desc,id"
-                                                + " desc offset 7)")
-                                .bind("userId", userId)
-                                .bind("versionId", version.getId())
-                                .fetch()
-                                .rowsUpdated())
-                .then(
-                        database.sql(
-                                        """
-insert into p_preview_session(id,project_id,version_id,revision_id,user_id,storage_path,access_epoch,create_time,expires_at)
-values(:id,:projectId,:versionId,:revisionId,:userId,:storagePath,:epoch,:createdAt,:expiresAt)
-""")
-                                .bind("id", digest(token))
-                                .bind("projectId", version.getProjectId())
-                                .bind("versionId", version.getId())
-                                .bind("userId", userId)
-                                .bind("revisionId", revision.getId())
-                                .bind("storagePath", revision.getStoragePath())
-                                .bind("epoch", epoch)
-                                .bind("createdAt", createdAt)
-                                .bind("expiresAt", expiresAt)
-                                .fetch()
-                                .rowsUpdated())
+        PrototypePreviewSessionEntity session = new PrototypePreviewSessionEntity();
+        session.setId(digest(token));
+        session.setProjectId(version.getProjectId());
+        session.setVersionId(version.getId());
+        session.setRevisionId(revision.getId());
+        session.setUserId(userId);
+        session.setStoragePath(revision.getStoragePath());
+        session.setAccessEpoch(epoch);
+        session.setCreateTime(createdAt);
+        session.setExpiresAt(expiresAt);
+        return expired(version.getProjectId(), createdAt)
+                .then(prune(userId, version.getId()))
+                .then(sessions.insert(session))
                 .thenReturn(
                         new PreviewSessionResponse(
                                 base,
                                 PrototypeUrls.preview(base, revision.getEntryFile()),
                                 expiresAt));
+    }
+
+    private Mono<Void> expired(String projectId, long now) {
+        return sessions.createQuery()
+                .select(PrototypePreviewSessionEntity::getId)
+                .where(PrototypePreviewSessionEntity::getProjectId, projectId)
+                .lte(PrototypePreviewSessionEntity::getExpiresAt, now)
+                .orderBy(
+                        SortOrder.asc(PrototypePreviewSessionEntity::getExpiresAt),
+                        SortOrder.asc(PrototypePreviewSessionEntity::getId))
+                .paging(0, 256)
+                .fetch()
+                .map(PrototypePreviewSessionEntity::getId)
+                .collectList()
+                .flatMap(ids -> ids.isEmpty() ? Mono.empty() : sessions.deleteById(ids).then());
+    }
+
+    private Mono<Void> prune(String userId, String versionId) {
+        // 最多收集 7 个保留标识；删除其余记录由数据库执行，不将无界旧会话装入内存。
+        return sessions.createQuery()
+                .select(PrototypePreviewSessionEntity::getId)
+                .where(PrototypePreviewSessionEntity::getUserId, userId)
+                .and(PrototypePreviewSessionEntity::getVersionId, versionId)
+                .orderBy(
+                        SortOrder.desc(PrototypePreviewSessionEntity::getCreateTime),
+                        SortOrder.desc(PrototypePreviewSessionEntity::getId))
+                .paging(0, MAX_SESSIONS - 1)
+                .fetch()
+                .map(PrototypePreviewSessionEntity::getId)
+                .collectList()
+                .flatMap(
+                        ids -> {
+                            var deletion =
+                                    sessions.createDelete()
+                                            .where(PrototypePreviewSessionEntity::getUserId, userId)
+                                            .and(
+                                                    PrototypePreviewSessionEntity::getVersionId,
+                                                    versionId);
+                            if (!ids.isEmpty())
+                                deletion.notIn(PrototypePreviewSessionEntity::getId, ids);
+                            return deletion.execute().then();
+                        });
     }
 
     public Mono<PrototypeRevisionEntity> require(String versionId, String token) {

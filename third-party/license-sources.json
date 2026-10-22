@@ -6061,6 +6061,98 @@
         }
       ],
       "status": "collected"
+    },
+    "org.jooq:jooq:3.19.35": {
+      "source": "https://repo.maven.apache.org/maven2/org/jooq/jooq/3.19.35/jooq-3.19.35-sources.jar",
+      "sourceArchiveSha256": "961bea46384f1fa47454afb4b7a2bbd9df066f7f778b01dbd8226168392c81ab",
+      "files": [
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/AggregateFilterStep.java.txt",
+          "sourceEntry": "org/jooq/AggregateFilterStep.java",
+          "kind": "verbatim-source-header",
+          "sha256": "afd1840d2108affb717c4fb5bbda277d846d9ae360c88060eb9a7e0f3c406928"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/FlywayVersion.java.txt",
+          "sourceEntry": "org/jooq/FlywayVersion.java",
+          "kind": "verbatim-source-header",
+          "sha256": "7427f0f3f22af949205e47544e81ad07ac310282e6c0b5bf11586bf51f52ba96"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/tools/Ints.java.txt",
+          "sourceEntry": "org/jooq/tools/Ints.java",
+          "kind": "verbatim-source-header",
+          "sha256": "a89c545fa80c822428fcea7dbfb4be8de448291d90ee497b60fdc1b07258b8c3"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/tools/StringUtils.java.txt",
+          "sourceEntry": "org/jooq/tools/StringUtils.java",
+          "kind": "verbatim-source-header",
+          "sha256": "9e7455553db86a8ddedc3d79cb490e23687c6a2caeca5bfe91bf171366f4bfa8"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/tools/csv/CSVParser.java.txt",
+          "sourceEntry": "org/jooq/tools/csv/CSVParser.java",
+          "kind": "verbatim-source-header",
+          "sha256": "ac1a5a210d6e75e342c9face55480dd90a278db51f1c9938602d2b993dfd2cf8"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/tools/json/JSONArray.java.txt",
+          "sourceEntry": "org/jooq/tools/json/JSONArray.java",
+          "kind": "verbatim-source-header",
+          "sha256": "35cf775b2b0e3610c608231646e9b1808caaf6d1c3681fdce1d7167c6ae91dff"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/tools/reflect/Compile.java.txt",
+          "sourceEntry": "org/jooq/tools/reflect/Compile.java",
+          "kind": "verbatim-source-header",
+          "sha256": "0b11e0556d41ac345d5156919a968972c8e2de237d340603258fe9660e366e9b"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/types/UByte.java.txt",
+          "sourceEntry": "org/jooq/types/UByte.java",
+          "kind": "verbatim-source-header",
+          "sha256": "c01dbcfc4726ec9a80f9fdc000af5a5dbf0d7d6fd403e5a4a01869a075c70b68"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/util/postgres/PGInterval.java.txt",
+          "sourceEntry": "org/jooq/util/postgres/PGInterval.java",
+          "kind": "verbatim-source-header",
+          "sha256": "d4fb63a4bfcd2379afe2d308d44a4f037ca53a60fa317ce81a743e6777bacd3a"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/source-headers/org/jooq/util/postgres/PGobject.java.txt",
+          "sourceEntry": "org/jooq/util/postgres/PGobject.java",
+          "kind": "verbatim-source-header",
+          "sha256": "ca1d89e63ef3ebafbeefd96211e6b58401894f3b751a6079d1e81d74c2521888"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/project-notices/LICENSE.txt",
+          "source": "https://github.com/jOOQ/jOOQ/blob/version-3.19.35/jOOQ/LICENSE.txt",
+          "kind": "verbatim-project-notice",
+          "gitBlob": "f760207dfa6280bbcecda6b369f0a14bf4cfc8c4",
+          "sha256": "ab60a9cfdba041f203a846aeb66bf77d2167c29151567a78410fb7a941af99be"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/project-notices/NOTICE.txt",
+          "source": "https://github.com/jOOQ/jOOQ/blob/version-3.19.35/jOOQ/NOTICE.txt",
+          "kind": "verbatim-project-notice",
+          "gitBlob": "698edf47eee0f4e2494976975a2400bfcd1a0ce0",
+          "sha256": "0425e08bc9d89857e7e3a50a9f9082a3652b26958a77713b42d723225fb0ad95"
+        },
+        {
+          "file": "org.jooq_jooq_3.19.35/upstream-notices/pgjdbc-LICENSE.txt",
+          "source": "https://github.com/pgjdbc/pgjdbc/blob/REL42.7.12/LICENSE",
+          "kind": "verbatim-upstream-license",
+          "gitBlob": "5d3a0018c70cc0879c56f1f35370a923a7f00a74",
+          "sha256": "5be1f67a4d62692cc2fc8b81a71088943fc4c1462bd76fd2f04bc0e965ca6d53"
+        }
+      ],
+      "status": "collected",
+      "reviewNotes": [
+        "Maven Central open-source artifact declares Apache-2.0; its binary META-INF/LICENSE.txt preserves the commercial alternative notice.",
+        "The tagged jOOQ project NOTICE and all ten distinct source-header variants are preserved. PostgreSQL-derived PGInterval/PGobject headers and the upstream pgjdbc license are retained separately; no component is relicensed."
+      ]
     }
   }
 }

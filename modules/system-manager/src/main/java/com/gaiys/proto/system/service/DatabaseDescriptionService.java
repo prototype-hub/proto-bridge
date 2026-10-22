@@ -1,18 +1,22 @@
 package com.gaiys.proto.system.service;
 
+import com.gaiys.proto.system.configuration.builder.DatabaseMetadataDdl;
 import com.gaiys.proto.system.configuration.customizer.SchemaTableMetadataCustomizer;
 import java.util.ArrayList;
-import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.TreeMap;
 import org.hswebframework.ezorm.rdb.metadata.RDBTableMetadata;
+import org.hswebframework.ezorm.rdb.metadata.parser.TableMetadataParser;
 import org.hswebframework.web.api.crud.entity.TransactionManagers;
 import org.hswebframework.web.crud.configuration.AutoDDLProcessor;
 import org.hswebframework.web.crud.configuration.EasyormProperties;
 import org.hswebframework.web.crud.configuration.EntityInfo;
 import org.hswebframework.web.crud.configuration.EntityTableMetadataResolver;
+import org.jooq.SQLDialect;
+import org.jooq.conf.ParamType;
+import org.jooq.impl.DSL;
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.r2dbc.core.DatabaseClient;
@@ -60,9 +64,47 @@ public class DatabaseDescriptionService {
                                 return Mono.error(
                                         new IllegalStateException(
                                                 "Database comment schema is required"));
-                            return Flux.fromIterable(localTables(schema))
-                                    .concatMap(table -> synchronizeTable(schema, table))
-                                    .reduce(0, Integer::sum);
+                            List<RDBTableMetadata> tables = localTables(schema);
+                            if (tables.isEmpty()) return Mono.just(0);
+                            Map<String, RDBTableMetadata> mappings = new TreeMap<>();
+                            tables.forEach(table -> mappings.put(table.getName(), table));
+                            var parser =
+                                    tables.getFirst()
+                                            .getSchema()
+                                            .<TableMetadataParser>findFeatureNow(
+                                                    TableMetadataParser.id);
+                            // parseByNameReactive 使用 LIKE 并将请求名重新写入结果，会把下划线匹配的旁表
+                            // 混入映射。仅启动同步时读取一次官方真实元数据，再按实际 schema/name 精确过滤。
+                            return parser.parseAllReactive()
+                                    .cast(RDBTableMetadata.class)
+                                    .filter(
+                                            table ->
+                                                    table.getSchema() != null
+                                                            && schema.equals(
+                                                                    table.getSchema().getName())
+                                                            && mappings.containsKey(
+                                                                    table.getName()))
+                                    .collectMap(RDBTableMetadata::getName)
+                                    .flatMap(
+                                            actual ->
+                                                    Flux.fromIterable(tables)
+                                                            .concatMap(
+                                                                    table -> {
+                                                                        var current =
+                                                                                actual.get(
+                                                                                        table
+                                                                                                .getName());
+                                                                        if (current == null)
+                                                                            return Mono
+                                                                                    .<Integer>error(
+                                                                                            missingTable(
+                                                                                                    schema,
+                                                                                                    table
+                                                                                                            .getName()));
+                                                                        return synchronizeTable(
+                                                                                table, current);
+                                                                    })
+                                                            .reduce(0, Integer::sum));
                         })
                 .as(transactions::transactional);
     }
@@ -89,99 +131,104 @@ public class DatabaseDescriptionService {
         return List.copyOf(tables.values());
     }
 
-    private Mono<Integer> synchronizeTable(String schema, RDBTableMetadata table) {
-        return database.sql(
-                        """
-                        SELECT a.attname AS column_name,
-                               pg_catalog.obj_description(c.oid, 'pg_class') AS table_comment,
-                               pg_catalog.col_description(c.oid, a.attnum) AS column_comment
-                        FROM pg_catalog.pg_namespace n
-                        JOIN pg_catalog.pg_class c ON c.relnamespace = n.oid
-                        LEFT JOIN pg_catalog.pg_attribute a
-                          ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
-                        WHERE n.nspname = :schemaName AND c.relname = :tableName
-                          AND c.relkind IN ('r', 'p')
-                        """)
-                .bind("schemaName", schema)
-                .bind("tableName", table.getName())
-                .map(
-                        (row, metadata) ->
-                                new CatalogColumn(
-                                        row.get("column_name", String.class),
-                                        row.get("table_comment", String.class),
-                                        row.get("column_comment", String.class)))
-                .all()
-                .collectList()
+    private Mono<Integer> synchronizeTable(RDBTableMetadata table, RDBTableMetadata current) {
+        for (var column : table.getColumns()) {
+            if (current.getColumn(column.getName()).isEmpty())
+                return Mono.error(
+                        new IllegalStateException(
+                                "Mapped column is missing; check EasyORM schema synchronization: "
+                                        + table.getSchema().getName()
+                                        + "."
+                                        + table.getName()
+                                        + "."
+                                        + column.getName()));
+        }
+        return currentTableComment(table, current)
                 .flatMap(
-                        rows -> {
-                            if (rows.isEmpty())
-                                return Mono.error(
-                                        new IllegalStateException(
-                                                "Mapped table is missing; check EasyORM schema synchronization: "
-                                                        + schema
-                                                        + "."
-                                                        + table.getName()));
-                            Map<String, String> columns = new LinkedHashMap<>();
-                            rows.forEach(
-                                    row -> {
-                                        if (row.name() != null)
-                                            columns.put(row.name(), row.comment());
-                                    });
-                            for (var column : table.getColumns()) {
-                                if (!columns.containsKey(column.getName()))
-                                    return Mono.error(
-                                            new IllegalStateException(
-                                                    "Mapped column is missing; check EasyORM schema synchronization: "
-                                                            + schema
-                                                            + "."
-                                                            + table.getName()
-                                                            + "."
-                                                            + column.getName()));
-                            }
+                        comment -> {
                             List<CommentChange> changes = new ArrayList<>();
                             if (hasDescription(table.getComment())
-                                    && !Objects.equals(
-                                            table.getComment(), rows.getFirst().tableComment()))
+                                    && !Objects.equals(table.getComment(), comment))
                                 changes.add(new CommentChange(null, table.getComment()));
                             for (var column : table.getColumns()) {
                                 if (hasDescription(column.getComment())
                                         && !Objects.equals(
-                                                column.getComment(), columns.get(column.getName())))
+                                                column.getComment(),
+                                                current.getColumn(column.getName())
+                                                        .orElseThrow()
+                                                        .getComment()))
                                     changes.add(
                                             new CommentChange(
                                                     column.getName(), column.getComment()));
                             }
                             return Flux.fromIterable(changes)
                                     .concatMap(
-                                            change -> writeComment(schema, table.getName(), change))
+                                            change ->
+                                                    database.sql(
+                                                                    DatabaseMetadataDdl.comment(
+                                                                            table,
+                                                                            change.column(),
+                                                                            change.description()))
+                                                            .fetch()
+                                                            .rowsUpdated()
+                                                            .thenReturn(1))
                                     .reduce(0, Integer::sum);
                         });
     }
 
-    private Mono<Integer> writeComment(String schema, String table, CommentChange change) {
-        // PostgreSQL formats identifiers and literal text itself. This handles quotes, backslashes
-        // and non-ASCII descriptions without depending on standard_conforming_strings/search_path.
-        String format =
-                change.column() == null
-                        ? "SELECT pg_catalog.format('COMMENT ON TABLE %I.%I IS %L', CAST(:schemaName AS text), CAST(:tableName AS text), CAST(:description AS text)) AS statement"
-                        : "SELECT pg_catalog.format('COMMENT ON COLUMN %I.%I.%I IS %L', CAST(:schemaName AS text), CAST(:tableName AS text), CAST(:columnName AS text), CAST(:description AS text)) AS statement";
+    private Mono<String> currentTableComment(RDBTableMetadata table, RDBTableMetadata current) {
+        var context = DatabaseMetadataDdl.context(table);
+        if (context.dialect() != SQLDialect.POSTGRES)
+            return Mono.justOrEmpty(current.getComment()).defaultIfEmpty("");
+        // EasyORM 4.2.2 的 PG table-comment parser 仅按 relname 连接 pg_class。
+        // 此兼容边界使用结构化 DSL 同时限定 namespace，避免其他 schema 的同名表污染描述与幂等计数。
+        var namespace = DSL.table(DSL.name("pg_catalog", "pg_namespace")).as("n");
+        var relation = DSL.table(DSL.name("pg_catalog", "pg_class")).as("c");
         var query =
-                database.sql(format)
-                        .bind("schemaName", schema)
-                        .bind("tableName", table)
-                        .bind("description", change.description());
-        if (change.column() != null) query = query.bind("columnName", change.column());
-        return query.map((row, metadata) -> row.get("statement", String.class))
+                context.select(
+                                DSL.function(
+                                                DSL.name("pg_catalog", "obj_description"),
+                                                String.class,
+                                                DSL.field(DSL.name("c", "oid"), Long.class),
+                                                DSL.inline("pg_class"))
+                                        .as("description"))
+                        .from(namespace)
+                        .join(relation)
+                        .on(
+                                DSL.field(DSL.name("c", "relnamespace"), Long.class)
+                                        .eq(DSL.field(DSL.name("n", "oid"), Long.class)))
+                        .where(
+                                DSL.field(DSL.name("n", "nspname"), String.class)
+                                        .eq(DSL.param("schemaName", table.getSchema().getName())))
+                        .and(
+                                DSL.field(DSL.name("c", "relname"), String.class)
+                                        .eq(DSL.param("tableName", table.getName())))
+                        .and(
+                                DSL.field(DSL.name("c", "relkind"), String.class)
+                                        .in(DSL.inline("r"), DSL.inline("p")));
+        return database.sql(query.getSQL(ParamType.NAMED))
+                .bind("schemaName", table.getSchema().getName())
+                .bind("tableName", table.getName())
+                .map((row, metadata) -> new TableComment(row.get("description", String.class)))
                 .one()
-                .flatMap(statement -> database.sql(statement).fetch().rowsUpdated())
-                .thenReturn(1);
+                .switchIfEmpty(
+                        Mono.error(missingTable(table.getSchema().getName(), table.getName())))
+                .map(value -> value.description() == null ? "" : value.description());
+    }
+
+    private static IllegalStateException missingTable(String schema, String table) {
+        return new IllegalStateException(
+                "Mapped table is missing; check EasyORM schema synchronization: "
+                        + schema
+                        + "."
+                        + table);
     }
 
     private static boolean hasDescription(String description) {
         return description != null && !description.isBlank();
     }
 
-    private record CatalogColumn(String name, String tableComment, String comment) {}
+    private record TableComment(String description) {}
 
     private record CommentChange(String column, String description) {}
 }

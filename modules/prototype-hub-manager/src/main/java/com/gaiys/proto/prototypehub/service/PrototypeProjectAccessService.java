@@ -1,10 +1,12 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.query.PrototypeScopeQuery;
 import com.gaiys.proto.prototypehub.web.response.ProjectCapabilities;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import java.util.Arrays;
@@ -15,9 +17,9 @@ import org.hswebframework.web.authorization.Authentication;
 import org.hswebframework.web.authorization.ReactiveAuthenticationManager;
 import org.hswebframework.web.authorization.exception.UnAuthorizedException;
 import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
+import org.hswebframework.web.system.authorization.api.entity.DimensionUserEntity;
 import org.hswebframework.web.system.authorization.api.entity.UserEntity;
 import org.hswebframework.web.system.authorization.api.service.reactive.ReactiveUserService;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -36,9 +38,12 @@ public class PrototypeProjectAccessService {
     private final ReactiveRepository<PrototypeVersionEntity, String> versions;
     private final ReactiveRepository<PrototypeShareEntity, String> shares;
     private final ReactiveUserService users;
+    private final ReactiveRepository<UserEntity, String> userRepository;
     private final ReactiveRepository<DimensionEntity, String> dimensions;
     private final ReactiveAuthenticationManager authentication;
-    private final DatabaseClient database;
+    private final ReactiveRepository<DimensionUserEntity, String> dimensionUsers;
+    private final ReactiveRepository<PrototypeProjectMemberEntity, String> members;
+    private final PrototypeScopeQuery scope;
 
     public enum Action {
         READ,
@@ -76,13 +81,13 @@ public class PrototypeProjectAccessService {
                                                         .equals(role.getProperties().get("state"))))
                 .flatMap(
                         role ->
-                                database.sql(
-                                                "select count(*) as total from s_dimension_user"
-                                                        + " where dimension_type_id='role' and"
-                                                        + " dimension_id='ADMIN' and user_id=:userId")
-                                        .bind("userId", auth.getUser().getId())
-                                        .map((row, metadata) -> row.get("total", Long.class) > 0)
-                                        .one())
+                                dimensionUsers
+                                        .createQuery()
+                                        .where(DimensionUserEntity::getDimensionTypeId, "role")
+                                        .and(DimensionUserEntity::getDimensionId, "ADMIN")
+                                        .and(DimensionUserEntity::getUserId, auth.getUser().getId())
+                                        .count()
+                                        .map(count -> count > 0))
                 .defaultIfEmpty(false);
     }
 
@@ -103,17 +108,20 @@ public class PrototypeProjectAccessService {
     /**
      * 持久化授权绑定的生产者显式调用；必须处于实际事务内，且先于项目/安装行锁。
      *
-     * <p>删除账号持有用户行排他锁直到其 UserDeletedEvent 清理完成。KEY SHARE 与删除互斥，保证事件 扫描之后不会提交遗漏的新
+     * <p>删除账号持有用户行排他锁直到其 UserDeletedEvent 清理完成。绑定查询使用同样的排他锁与删除互斥，保证事件 扫描之后不会提交遗漏的新
      * owner/member/session；普通身份查询不得隐式取得此锁，避免项目→用户倒序。
      */
     public Mono<Boolean> tryLockActiveUser(String userId) {
         if (userId == null || userId.isBlank()) return Mono.just(false);
-        return database.sql("select id from s_user where id=:id and status=1 for key share")
-                .bind("id", userId)
-                .fetch()
-                .all()
-                .collectList()
-                .map(rows -> !rows.isEmpty());
+        // 官方 forUpdate 方言实现提供跨实例排他锁；较原共享锁更强，绑定生产者仍按用户→项目顺序。
+        return userRepository
+                .createQuery()
+                .select(UserEntity::getId)
+                .where(UserEntity::getId, userId)
+                .and(UserEntity::getStatus, (byte) 1)
+                .forUpdate()
+                .fetchOne()
+                .hasElement();
     }
 
     /** 多个账号始终按稳定顺序锁定；绑定的请求者与目标账号均须在提交前保持存在。 */
@@ -196,54 +204,11 @@ public class PrototypeProjectAccessService {
         return current()
                 .flatMapMany(
                         actor -> {
-                            String role =
-                                    actor.administrator()
-                                            ? "'admin'"
-                                            : "case when p.owner_id=:userId then 'owner' else"
-                                                    + " m.role end";
-                            String scope =
-                                    actor.administrator()
-                                            ? "true"
-                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId"
-                                                    + " or m.role in ('editor','viewer'))";
-                            String sql =
-                                    "select p.*,"
-                                            + role
-                                            + " as project_role,not exists(select 1 from s_user u"
-                                            + " where u.id=p.owner_id and u.status=1) as"
-                                            + " claim_required from p_project p left join"
-                                            + " p_project_member m on m.project_id=p.id and"
-                                            + " m.user_id=:userId where "
-                                            + scope
-                                            + " order by p.create_time desc,p.id";
                             if (actor.administrator())
                                 log.info(
                                         "Prototype administrator project scope query: actor={}",
                                         actor.userId());
-                            // 范围、角色和待认领状态由同一 SQL 产生，不逐条再查询用户或拼接创建者过滤。
-                            return database.sql(sql)
-                                    .bind("userId", actor.userId())
-                                    .map(
-                                            (row, metadata) ->
-                                                    new ProjectResponse(
-                                                            row.get("id", String.class),
-                                                            row.get("name", String.class),
-                                                            row.get("description", String.class),
-                                                            row.get("cover", String.class),
-                                                            row.get("creator_id", String.class),
-                                                            row.get("create_time", Long.class),
-                                                            row.get("modify_time", Long.class),
-                                                            row.get("owner_id", String.class),
-                                                            row.get("project_role", String.class),
-                                                            Boolean.TRUE.equals(
-                                                                    row.get(
-                                                                            "claim_required",
-                                                                            Boolean.class)),
-                                                            ProjectCapabilities.forRole(
-                                                                    row.get(
-                                                                            "project_role",
-                                                                            String.class))))
-                                    .all();
+                            return scope.projects(actor.userId(), actor.administrator());
                         });
     }
 
@@ -258,54 +223,11 @@ public class PrototypeProjectAccessService {
         return current()
                 .flatMapMany(
                         actor -> {
-                            String scope =
-                                    actor.administrator()
-                                            ? "true"
-                                            : "p.owner_id ~ '[^[:space:]]' and (p.owner_id=:userId"
-                                                    + " or exists(select 1 from p_project_member m"
-                                                    + " where m.project_id=p.id and m.user_id=:userId"
-                                                    + " and m.role in ('editor','viewer')))";
-                            String sql =
-                                    "select v.* from p_version v join p_project p on"
-                                            + " p.id=v.project_id where "
-                                            + scope
-                                            + " order by v.create_time desc,v.id";
-                            var query = database.sql(sql);
-                            if (!actor.administrator())
-                                query = query.bind("userId", actor.userId());
                             if (actor.administrator())
                                 log.info(
                                         "Prototype administrator version scope query: actor={}",
                                         actor.userId());
-                            return query.map(
-                                            (row, metadata) -> {
-                                                PrototypeVersionEntity version =
-                                                        new PrototypeVersionEntity();
-                                                version.setId(row.get("id", String.class));
-                                                version.setProjectId(
-                                                        row.get("project_id", String.class));
-                                                version.setVersionName(
-                                                        row.get("version_name", String.class));
-                                                version.setDescription(
-                                                        row.get("description", String.class));
-                                                version.setStoragePath(
-                                                        row.get("storage_path", String.class));
-                                                version.setEntryFile(
-                                                        row.get("entry_file", String.class));
-                                                version.setPreviewKey(
-                                                        row.get("preview_key", String.class));
-                                                version.setCurrentRevisionId(
-                                                        row.get(
-                                                                "current_revision_id",
-                                                                String.class));
-                                                version.setStatus(row.get("status", String.class));
-                                                version.setCreatorId(
-                                                        row.get("creator_id", String.class));
-                                                version.setCreateTime(
-                                                        row.get("create_time", Long.class));
-                                                return version;
-                                            })
-                                    .all();
+                            return scope.versions(actor.userId(), actor.administrator());
                         });
     }
 
@@ -328,11 +250,31 @@ public class PrototypeProjectAccessService {
 
     /** 修改入口在实际事务中先取得项目锁，再重新读取范围；上传解压阶段不持有此锁。 */
     public Mono<Void> lockProject(String id) {
-        return database.sql("select id from p_project where id=:id for update")
-                .bind("id", id)
-                .fetch()
-                .one()
-                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")))
+        return tryLockProject(id)
+                .flatMap(
+                        exists ->
+                                exists
+                                        ? Mono.empty()
+                                        : Mono.error(PrototypeHubException.missing("project")));
+    }
+
+    /** 创建重放需要区分已删除父资源；同样使用实际事务连接持锁。 */
+    public Mono<Boolean> tryLockProject(String id) {
+        return projects.createQuery()
+                .select(PrototypeProjectEntity::getId)
+                .where(PrototypeProjectEntity::getId, id)
+                .forUpdate()
+                .fetchOne()
+                .hasElement();
+    }
+
+    public Mono<Void> lockVersion(String id) {
+        return versions.createQuery()
+                .select(PrototypeVersionEntity::getId)
+                .where(PrototypeVersionEntity::getId, id)
+                .forUpdate()
+                .fetchOne()
+                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("version")))
                 .then();
     }
 
@@ -340,13 +282,13 @@ public class PrototypeProjectAccessService {
         if (actor.administrator()) return Mono.just(ProjectRole.admin.name());
         if (project.getOwnerId() == null || project.getOwnerId().isBlank()) return Mono.empty();
         if (actor.userId().equals(project.getOwnerId())) return Mono.just(ProjectRole.owner.name());
-        return database.sql(
-                        "select role from p_project_member where project_id=:projectId and"
-                                + " user_id=:userId and role in ('editor','viewer')")
-                .bind("projectId", project.getId())
-                .bind("userId", actor.userId())
-                .map((row, metadata) -> row.get("role", String.class))
-                .one();
+        return members.createQuery()
+                .select(PrototypeProjectMemberEntity::getRole)
+                .where(PrototypeProjectMemberEntity::getProjectId, project.getId())
+                .and(PrototypeProjectMemberEntity::getUserId, actor.userId())
+                .in(PrototypeProjectMemberEntity::getRole, "editor", "viewer")
+                .fetchOne()
+                .map(PrototypeProjectMemberEntity::getRole);
     }
 
     private static boolean allows(String role, Action action) {

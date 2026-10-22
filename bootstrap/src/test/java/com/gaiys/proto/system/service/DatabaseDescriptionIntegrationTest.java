@@ -16,6 +16,11 @@ import javax.persistence.Table;
 import javax.persistence.Transient;
 import lombok.Getter;
 import lombok.Setter;
+import org.hswebframework.ezorm.rdb.metadata.RDBTableMetadata;
+import org.hswebframework.ezorm.rdb.metadata.parser.TableMetadataParser;
+import org.hswebframework.ezorm.rdb.operator.DatabaseOperator;
+import org.hswebframework.ezorm.rdb.operator.builder.fragments.ddl.AlterRequest;
+import org.hswebframework.ezorm.rdb.operator.builder.fragments.ddl.AlterTableSqlBuilder;
 import org.hswebframework.web.api.crud.entity.GenericEntity;
 import org.hswebframework.web.api.crud.entity.TransactionManagers;
 import org.hswebframework.web.crud.configuration.AutoDDLProcessor;
@@ -88,6 +93,7 @@ class DatabaseDescriptionIntegrationTest {
     @Autowired EntityTableMetadataResolver resolver;
     @Autowired ObjectProvider<AutoDDLProcessor> registrations;
     @Autowired EasyormProperties properties;
+    @Autowired DatabaseOperator operator;
 
     @Autowired
     @Qualifier(TransactionManagers.reactiveTransactionManager)
@@ -98,7 +104,9 @@ class DatabaseDescriptionIntegrationTest {
         sql(
                 "DROP TABLE IF EXISTS description_test.a_comment_fixture,"
                         + " description_test.z_comment_fixture, description_test.z_write_failure,"
-                        + " description_test.\"future \"\"table\", public.s_menu CASCADE");
+                        + " description_test.cold_comment_fixture,"
+                        + " description_test.\"future \"\"table\","
+                        + " description_test.\"aXcommentXfixture\", public.s_menu CASCADE");
     }
 
     @Test
@@ -220,6 +228,61 @@ class DatabaseDescriptionIntegrationTest {
         assertEquals("id", comment("future \"table", "id"));
         assertEquals("keep existing", comment("future \"table", "silent"));
         assertEquals(Set.of("id", "quoted \"value", "silent"), columnNames("future \"table"));
+        assertEquals(0, service.synchronize().block(TIMEOUT));
+    }
+
+    @Test
+    void coldEasyormCreationAndRepeatedAlterEscapeDescriptionsThroughTheRegisteredDdlBuilder() {
+        var mapping = resolver.resolve(ColdFixture.class);
+        operator.ddl().createOrAlter(mapping).allowAlter(false).commit().reactive().block(TIMEOUT);
+        assertEquals(DESCRIPTION, comment("cold_comment_fixture", null));
+        assertEquals(DESCRIPTION, comment("cold_comment_fixture", "value"));
+        assertEquals(Set.of("id", "value"), columnNames("cold_comment_fixture"));
+        sql("COMMENT ON COLUMN description_test.cold_comment_fixture.value IS 'old'");
+        // The normal operator caches its known table. An external database alteration needs live
+        // metadata, just as startup description synchronization does.
+        var actual =
+                mapping.getSchema()
+                        .<TableMetadataParser>findFeatureNow(TableMetadataParser.id)
+                        .parseAllReactive()
+                        .cast(RDBTableMetadata.class)
+                        .filter(
+                                table ->
+                                        SCHEMA.equals(table.getSchema().getName())
+                                                && mapping.getName().equals(table.getName()))
+                        .single()
+                        .block(TIMEOUT);
+        var alteration =
+                mapping.getSchema()
+                        .findFeatureNow(AlterTableSqlBuilder.ID)
+                        .build(
+                                AlterRequest.builder()
+                                        .oldTable(actual)
+                                        .newTable(mapping)
+                                        .allowDrop(false)
+                                        .allowAlter(false)
+                                        .allowIndexAlter(false)
+                                        .build());
+        operator.sql().reactive().execute(alteration).block(TIMEOUT);
+        assertEquals(DESCRIPTION, comment("cold_comment_fixture", "value"));
+        assertEquals(0, fixtureService(properties, ColdFixture.class).synchronize().block(TIMEOUT));
+    }
+
+    @Test
+    void underscoreInMappedNameNeverMatchesAnUnrelatedTableDuringDescriptionSynchronization() {
+        sql(
+                "CREATE TABLE description_test.\"aXcommentXfixture\" (id varchar(64), value varchar(64))");
+        sql("COMMENT ON TABLE description_test.\"aXcommentXfixture\" IS 'unrelated table'");
+        var service = fixtureService(properties, GoodFixture.class);
+        var missing =
+                assertThrows(
+                        IllegalStateException.class, () -> service.synchronize().block(TIMEOUT));
+        assertTrue(missing.getMessage().contains("Mapped table is missing"));
+        assertEquals("unrelated table", comment("aXcommentXfixture", null));
+        sql("CREATE TABLE description_test.a_comment_fixture (id varchar(64), value varchar(64))");
+        assertEquals(3, service.synchronize().block(TIMEOUT));
+        assertEquals("new table description", comment("a_comment_fixture", null));
+        assertEquals("unrelated table", comment("aXcommentXfixture", null));
         assertEquals(0, service.synchronize().block(TIMEOUT));
     }
 
@@ -399,6 +462,16 @@ class DatabaseDescriptionIntegrationTest {
         @Transient
         @Schema(description = "仅用于显示")
         private String temporary;
+    }
+
+    @Getter
+    @Setter
+    @Table(name = "cold_comment_fixture")
+    @Schema(description = DESCRIPTION)
+    public static class ColdFixture extends GenericEntity<String> {
+        @Column
+        @Schema(description = DESCRIPTION)
+        private String value;
     }
 
     @Getter

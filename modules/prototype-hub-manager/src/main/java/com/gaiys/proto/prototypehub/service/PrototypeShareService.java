@@ -13,7 +13,6 @@ import java.security.MessageDigest;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -33,7 +32,6 @@ public class PrototypeShareService
     private final PrototypeProjectService projects;
     private final PrototypeVersionService versions;
     private final FileWork work;
-    private final DatabaseClient database;
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
     private final PrototypeRevisionService revisions;
@@ -116,18 +114,8 @@ public class PrototypeShareService
 
     private Mono<PrototypeShareEntity> persistShare(String versionId, PrototypeShareEntity share) {
         // 沿用项目、版本的锁顺序，父级存在性检查与分享插入处于同一事务。
-        return database.sql("select id from p_project where id=:id for update")
-                .bind("id", share.getProjectId())
-                .fetch()
-                .one()
-                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")))
-                .then(
-                        database.sql("select id from p_version where id=:id for update")
-                                .bind("id", versionId)
-                                .fetch()
-                                .one()
-                                .switchIfEmpty(
-                                        Mono.error(() -> PrototypeHubException.missing("version"))))
+        return access.lockProject(share.getProjectId())
+                .then(access.lockVersion(versionId))
                 .then(access.requireVersion(versionId, PrototypeProjectAccessService.Action.SHARE))
                 .flatMap(version -> revisions.current(version))
                 .flatMap(

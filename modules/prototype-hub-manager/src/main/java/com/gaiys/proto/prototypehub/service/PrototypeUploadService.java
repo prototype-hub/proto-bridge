@@ -17,7 +17,6 @@ import java.util.function.Predicate;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.codec.multipart.FilePart;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionSynchronization;
 import org.springframework.transaction.reactive.TransactionSynchronizationManager;
@@ -41,7 +40,6 @@ public class PrototypeUploadService {
     private final FileWork work;
     private final TransactionalOperator transactions;
     private final FileCleanupService cleanup;
-    private final DatabaseClient database;
     private final PrototypeCreationReceiptService receipts;
     private final PrototypeProjectAccessService access;
     private final PrototypeRevisionService revisions;
@@ -249,12 +247,7 @@ public class PrototypeUploadService {
                 revisions.candidate(version, version.getCurrentRevisionId(), manifest);
         // 只在解压完成后持项目行锁，回执、实际计数和 INSERT 共用一个短事务及 Spring 连接。
         Mono<PrototypeVersionEntity> creation =
-                database.sql("select id from p_project where id=:id for update")
-                        .bind("id", project)
-                        .fetch()
-                        .one()
-                        .map(lock -> true)
-                        .defaultIfEmpty(false)
+                access.tryLockProject(project)
                         .flatMap(
                                 exists ->
                                         exists
@@ -391,16 +384,7 @@ public class PrototypeUploadService {
         // 新快照与当前投影同一短事务提交，旧目录持续被旧 revision 引用，替换不得登记清理。
         Mono<PrototypeVersionEntity> result =
                 access.lockProject(old.getProjectId())
-                        .then(
-                                database.sql("select id from p_version where id=:id for update")
-                                        .bind("id", old.getId())
-                                        .fetch()
-                                        .one()
-                                        .switchIfEmpty(
-                                                Mono.error(
-                                                        () ->
-                                                                PrototypeHubException.missing(
-                                                                        "version"))))
+                        .then(access.lockVersion(old.getId()))
                         .then(
                                 access.requireVersion(
                                         old.getId(), PrototypeProjectAccessService.Action.EDIT))

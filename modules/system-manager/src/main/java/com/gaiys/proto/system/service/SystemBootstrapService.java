@@ -23,7 +23,6 @@ import org.hswebframework.web.system.authorization.defaults.service.PermissionSy
 import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.event.EventListener;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.ReactiveTransactionManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -46,7 +45,7 @@ public class SystemBootstrapService {
                     "prototype-hub-share", Set.of("query"),
                     "user", Set.of("update-self-info", "update-self-pwd"));
     private final MergedAuthorizeDefinition definitions = new MergedAuthorizeDefinition();
-    private final DatabaseClient database;
+    private final SystemInitializationLockService initializationLock;
     private final ReactiveRepository<DimensionTypeEntity, String> types;
     private final DefaultDimensionService dimensions;
     private final RoleGroupService groups;
@@ -56,7 +55,7 @@ public class SystemBootstrapService {
     private final TransactionalOperator transactions;
 
     public SystemBootstrapService(
-            DatabaseClient database,
+            SystemInitializationLockService initializationLock,
             ReactiveRepository<DimensionTypeEntity, String> types,
             DefaultDimensionService dimensions,
             RoleGroupService groups,
@@ -65,7 +64,7 @@ public class SystemBootstrapService {
             ObjectProvider<AuthorizeDefinitionCustomizer> customizers,
             @Qualifier(TransactionManagers.reactiveTransactionManager)
                     ReactiveTransactionManager manager) {
-        this.database = database;
+        this.initializationLock = initializationLock;
         this.types = types;
         this.dimensions = dimensions;
         this.groups = groups;
@@ -85,10 +84,8 @@ public class SystemBootstrapService {
     public Mono<Void> initialize() {
         return Mono.defer(
                         () ->
-                                database.sql(
-                                                "LOCK TABLE s_dimension_type, s_role_group, s_dimension, s_autz_setting_info, s_permission IN EXCLUSIVE MODE")
-                                        .fetch()
-                                        .rowsUpdated()
+                                initializationLock
+                                        .acquire()
                                         .then(synchronizePermissions())
                                         .then(initializeType("role", "角色"))
                                         .then(initializeType("org", "组织"))

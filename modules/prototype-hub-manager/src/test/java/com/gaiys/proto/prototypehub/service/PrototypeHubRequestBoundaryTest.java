@@ -18,7 +18,6 @@ import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.MethodSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.http.codec.multipart.FilePart;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
@@ -34,7 +33,6 @@ class PrototypeHubRequestBoundaryTest {
         var work = mock(FileWork.class);
         var transaction = mock(TransactionalOperator.class);
         var cleanup = mock(FileCleanupService.class);
-        var database = mock(DatabaseClient.class);
         var receipts = mock(PrototypeCreationReceiptService.class);
         var access = mock(PrototypeProjectAccessService.class);
         var file = mock(FilePart.class);
@@ -47,7 +45,6 @@ class PrototypeHubRequestBoundaryTest {
                         work,
                         transaction,
                         cleanup,
-                        database,
                         receipts,
                         access,
                         mock(PrototypeRevisionService.class),
@@ -73,7 +70,6 @@ class PrototypeHubRequestBoundaryTest {
                 work,
                 transaction,
                 cleanup,
-                database,
                 receipts,
                 access,
                 file);
@@ -88,7 +84,6 @@ class PrototypeHubRequestBoundaryTest {
     void newShareRejectsOversizedUtf8PasswordsBeforePersistence(String password) {
         var projects = mock(PrototypeProjectService.class);
         var versions = mock(PrototypeVersionService.class);
-        var database = mock(DatabaseClient.class);
         var transaction = mock(TransactionalOperator.class);
         var version = new PrototypeVersionEntity();
         version.setId("version");
@@ -102,7 +97,7 @@ class PrototypeHubRequestBoundaryTest {
         try (var work = new FileWork()) {
             var shares =
                     new PrototypeShareService(
-                            projects, versions, work, database, transaction, access, revisions);
+                            projects, versions, work, transaction, access, revisions);
             StepVerifier.create(
                             shares.createShare(
                                     "version",
@@ -117,6 +112,6 @@ class PrototypeHubRequestBoundaryTest {
                             })
                     .verify(Duration.ofSeconds(5));
         }
-        verifyNoInteractions(projects, database, transaction);
+        verifyNoInteractions(projects, transaction);
     }
 }

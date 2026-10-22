@@ -5,10 +5,14 @@ import com.gaiys.proto.system.service.RoleGroupService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.AllArgsConstructor;
+import org.hswebframework.ezorm.rdb.supports.json.JsonTermType;
+import org.hswebframework.ezorm.rdb.supports.json.JsonValueCondition;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.annotation.DeleteAction;
 import org.hswebframework.web.authorization.annotation.Resource;
 import org.hswebframework.web.crud.web.reactive.ReactiveServiceCrudController;
+import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
+import org.hswebframework.web.system.authorization.defaults.service.DefaultDimensionService;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -26,7 +30,7 @@ public class RoleGroupController
                 ManagementQueryController<RoleGroupEntity, String> {
     private final RoleGroupService service;
 
-    private final org.springframework.r2dbc.core.DatabaseClient database;
+    private final DefaultDimensionService dimensions;
 
     @Operation(summary = "删除角色分组")
     @Override
@@ -36,11 +40,14 @@ public class RoleGroupController
         if ("default".equals(id))
             return reactor.core.publisher.Mono.error(
                     com.gaiys.proto.system.service.support.ManagementSupport.conflict());
-        return database.sql(
-                        "SELECT count(*) AS n FROM s_dimension WHERE type_id='role' AND properties::jsonb->>'groupId'=:id")
-                .bind("id", id)
-                .map((row, meta) -> row.get("n", Long.class))
-                .one()
+        return dimensions
+                .createQuery()
+                .where(DimensionEntity::getTypeId, "role")
+                .accept(
+                        DimensionEntity::getProperties,
+                        JsonTermType.value,
+                        JsonValueCondition.of("groupId", id))
+                .count()
                 .zipWith(service.createQuery().where(RoleGroupEntity::getParentId, id).count())
                 .flatMap(
                         counts -> {
