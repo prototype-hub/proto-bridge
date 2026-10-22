@@ -28,12 +28,16 @@ import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.DefaultApplicationArguments;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.context.ApplicationContext;
 import org.springframework.core.env.Environment;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
 import org.testcontainers.containers.PostgreSQLContainer;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
+import reactor.core.publisher.Flux;
+import reactor.core.publisher.Mono;
+import reactor.core.scheduler.Schedulers;
 
 /** 使用独立 PostgreSQL 验证无运行 SQL 的冷启动、安全增量结构和初始化保留边界。 */
 @SpringBootTest(
@@ -75,10 +79,41 @@ class EasyormSchemaIntegrationTest {
     @Autowired SystemBootstrapService bootstrap;
     @Autowired AdministratorInitializer administrator;
     @Autowired MenuStartupInitializer menus;
+    @Autowired ApplicationContext context;
 
     @BeforeEach
     void removeOnlyPrivateSchemaFixture() throws Exception {
         execute("DROP TABLE IF EXISTS public.easyorm_addition_fixture");
+    }
+
+    @Test
+    void independentAdministratorInitializersCreateAndBindTheMissingAccountExactlyOnce()
+            throws Exception {
+        var user = scalar("SELECT id FROM s_user WHERE username='admin'");
+        execute("DELETE FROM s_dimension_user WHERE user_id='" + user + "'");
+        execute("DELETE FROM s_user WHERE id='" + user + "'");
+        var independent =
+                context.getAutowireCapableBeanFactory().createBean(AdministratorInitializer.class);
+        Flux.merge(
+                        Mono.fromRunnable(
+                                        () -> administrator.run(new DefaultApplicationArguments()))
+                                .subscribeOn(Schedulers.boundedElastic()),
+                        Mono.fromRunnable(() -> independent.run(new DefaultApplicationArguments()))
+                                .subscribeOn(Schedulers.boundedElastic()))
+                .then()
+                .block(TIMEOUT);
+        assertEquals("1", scalar("SELECT count(*)::text FROM s_user WHERE username='admin'"));
+        assertEquals(
+                "1",
+                scalar(
+                        "SELECT count(*)::text FROM s_dimension_user d JOIN s_user u ON u.id=d.user_id"
+                                + " WHERE u.username='admin' AND d.dimension_type_id='role' AND d.dimension_id='ADMIN'"));
+        String unchanged =
+                scalar("SELECT row_to_json(u)::text FROM s_user u WHERE username='admin'");
+        administrator.run(new DefaultApplicationArguments());
+        assertEquals(
+                unchanged,
+                scalar("SELECT row_to_json(u)::text FROM s_user u WHERE username='admin'"));
     }
 
     @Test

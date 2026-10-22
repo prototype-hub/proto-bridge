@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.FileCleanupService;
@@ -29,6 +30,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
@@ -503,6 +505,56 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     @Test
+    void historyQueueCrossesHundredRowPagesAndRepeatedDeletionRegistrationKeepsOneTaskPerPath()
+            throws Exception {
+        String project = project();
+        JsonNode uploaded = upload(project, null, archive("current"), null, null, 200);
+        String id = uploaded.path("id").asText();
+        var current = revisions.findById(uploaded.path("revisionId").asText()).block(TIMEOUT);
+        List<PrototypeRevisionEntity> history = new ArrayList<>();
+        for (int i = 0; i < 201; i++) {
+            var revision = new PrototypeRevisionEntity();
+            revision.setId(String.format("history-%04d", i));
+            revision.setProjectId(project);
+            revision.setVersionId(id);
+            revision.setVersionName("Historical " + i);
+            revision.setStoragePath("projects/" + project + "/versions/history-" + i + "/site");
+            revision.setEntryFile("index.html");
+            revision.setManifestJson(current.getManifestJson());
+            revision.setManifestSha256(current.getManifestSha256());
+            revision.setFileCount(current.getFileCount());
+            revision.setTotalBytes(current.getTotalBytes());
+            revision.setCreatorId(current.getCreatorId());
+            revision.setCreateTime(current.getCreateTime() - i - 1);
+            history.add(revision);
+            Path site = FILES.resolve(revision.getStoragePath());
+            Files.createDirectories(site);
+            Files.writeString(site.resolve("index.html"), "historical fixture");
+        }
+        revisions.insert(Flux.fromIterable(history)).block(TIMEOUT);
+        var version = versions.findById(id).block(TIMEOUT);
+        // One pooled connection must finish each 100-row read before its batch task writes. The
+        // current projection repeats an immutable path and must not create a second task.
+        Mono<Void> register =
+                access.lockProject(project)
+                        .then(access.lockVersion(id))
+                        .then(cleanup.enqueueVersionHistory(version))
+                        .as(transactions::transactional);
+        register.block(TIMEOUT);
+        assertEquals(202, count("p_file_cleanup"));
+        register.block(TIMEOUT);
+        assertEquals(202, count("p_file_cleanup"));
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        assertEquals(0, count("p_revision"));
+        assertEquals(202, count("p_file_cleanup"));
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(152, count("p_file_cleanup"));
+        for (int i = 0; i < 4; i++) cleanup.retryPending().block(TIMEOUT);
+        assertEquals(0, count("p_file_cleanup"));
+        assertEquals(0, directoryCount(project));
+    }
+
+    @Test
     void cancellationWaitsForAnInterruptIgnoringExtractorBeforeDeletingItsCandidate()
             throws Exception {
         String project = project();
@@ -560,7 +612,6 @@ class PrototypeHubRevisionIntegrationTest {
                         work,
                         transactions,
                         cleanup,
-                        database,
                         receipts,
                         access,
                         revisions,
@@ -653,7 +704,6 @@ class PrototypeHubRevisionIntegrationTest {
                         work,
                         transactions,
                         cleanup,
-                        database,
                         receipts,
                         access,
                         revisions,
@@ -723,7 +773,6 @@ class PrototypeHubRevisionIntegrationTest {
                         work,
                         transactions,
                         cleanup,
-                        database,
                         receipts,
                         access,
                         revisions,
@@ -816,7 +865,6 @@ class PrototypeHubRevisionIntegrationTest {
                         work,
                         transactions,
                         cleanup,
-                        database,
                         receipts,
                         access,
                         revisions,

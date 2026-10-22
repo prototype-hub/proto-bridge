@@ -1,6 +1,8 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
@@ -8,7 +10,7 @@ import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
-import org.springframework.r2dbc.core.DatabaseClient;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
@@ -25,8 +27,10 @@ public class PrototypeRevisionMigrationService {
     private final PrototypeStorageService storage;
     private final PrototypeManifestBuilder manifests;
     private final FileWork work;
-    private final DatabaseClient database;
     private final TransactionalOperator transactions;
+    private final ReactiveRepository<PrototypeVersionEntity, String> versions;
+    private final ReactiveRepository<PrototypeShareEntity, String> shares;
+    private final ReactiveRepository<PrototypeCreationReceiptEntity, String> receipts;
 
     public Mono<RevisionMigrationResponse> migrate(String versionId, boolean apply) {
         return access.requireAdministrator()
@@ -67,13 +71,7 @@ public class PrototypeRevisionMigrationService {
     private Mono<RevisionMigrationResponse> apply(
             PrototypeVersionEntity before, PrototypeRevisionEntity revision) {
         return access.lockProject(before.getProjectId())
-                .then(
-                        database.sql("select id from p_version where id=:id for update")
-                                .bind("id", before.getId())
-                                .fetch()
-                                .one()
-                                .switchIfEmpty(
-                                        Mono.error(() -> PrototypeHubException.missing("version"))))
+                .then(access.lockVersion(before.getId()))
                 .then(access.requireAdministrator())
                 .then(
                         access.requireVersion(
@@ -113,16 +111,15 @@ public class PrototypeRevisionMigrationService {
         return revisions
                 .insert(revision)
                 .then(
-                        database.sql(
-                                        "update p_version set current_revision_id=:revision where"
-                                                + " id=:id and current_revision_id is null and"
-                                                + " storage_path=:path and entry_file=:entry")
-                                .bind("revision", revision.getId())
-                                .bind("id", version.getId())
-                                .bind("path", version.getStoragePath())
-                                .bind("entry", version.getEntryFile())
-                                .fetch()
-                                .rowsUpdated())
+                        versions.createUpdate()
+                                .set(PrototypeVersionEntity::getCurrentRevisionId, revision.getId())
+                                .where(PrototypeVersionEntity::getId, version.getId())
+                                .isNull(PrototypeVersionEntity::getCurrentRevisionId)
+                                .and(
+                                        PrototypeVersionEntity::getStoragePath,
+                                        version.getStoragePath())
+                                .and(PrototypeVersionEntity::getEntryFile, version.getEntryFile())
+                                .execute())
                 .flatMap(
                         rows ->
                                 rows == 1
@@ -135,40 +132,39 @@ public class PrototypeRevisionMigrationService {
     }
 
     private Mono<Void> bindLegacy(PrototypeVersionEntity version, String revisionId) {
-        return database.sql(
-                        "update p_share set revision_id=:revision where project_id=:project and"
-                                + " version_id=:version and revision_id is null")
-                .bind("revision", revisionId)
-                .bind("project", version.getProjectId())
-                .bind("version", version.getId())
-                .fetch()
-                .rowsUpdated()
+        return shares.createUpdate()
+                .set(PrototypeShareEntity::getRevisionId, revisionId)
+                .where(PrototypeShareEntity::getProjectId, version.getProjectId())
+                .and(PrototypeShareEntity::getVersionId, version.getId())
+                .isNull(PrototypeShareEntity::getRevisionId)
+                .execute()
                 .then(
-                        database.sql(
-                                        "update p_creation_receipt set revision_id=:revision where"
-                                                + " resource_id=:version and revision_id is null")
-                                .bind("revision", revisionId)
-                                .bind("version", version.getId())
-                                .fetch()
-                                .rowsUpdated())
+                        receipts.createUpdate()
+                                .set(PrototypeCreationReceiptEntity::getRevisionId, revisionId)
+                                .where(
+                                        PrototypeCreationReceiptEntity::getResourceId,
+                                        version.getId())
+                                .isNull(PrototypeCreationReceiptEntity::getRevisionId)
+                                .execute())
                 .then();
     }
 
     private Mono<Counts> counts(PrototypeVersionEntity version) {
-        // 两个标量子查询一次返回，不让未消费的行游标占用迁移事务连接。
-        return database.sql(
-                        "select (select count(*) from p_share where project_id=:project and"
-                                + " version_id=:version and revision_id is null) as shares, (select"
-                                + " count(*) from p_creation_receipt where resource_id=:version and"
-                                + " revision_id is null) as receipts")
-                .bind("project", version.getProjectId())
-                .bind("version", version.getId())
-                .map(
-                        (row, metadata) ->
-                                new Counts(
-                                        row.get("shares", Long.class),
-                                        row.get("receipts", Long.class)))
-                .one();
+        // 串行标量查询消费完成后再获取下一结果，适配单连接事务。
+        return shares.createQuery()
+                .where(PrototypeShareEntity::getProjectId, version.getProjectId())
+                .and(PrototypeShareEntity::getVersionId, version.getId())
+                .isNull(PrototypeShareEntity::getRevisionId)
+                .count()
+                .flatMap(
+                        shareCount ->
+                                receipts.createQuery()
+                                        .where(
+                                                PrototypeCreationReceiptEntity::getResourceId,
+                                                version.getId())
+                                        .isNull(PrototypeCreationReceiptEntity::getRevisionId)
+                                        .count()
+                                        .map(receiptCount -> new Counts(shareCount, receiptCount)));
     }
 
     private RevisionMigrationResponse response(

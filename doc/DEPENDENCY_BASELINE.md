@@ -6,6 +6,8 @@ Log4j 通过 2.25.5 BOM 同步 API/bridge，OpenTelemetry 通过 1.62.0 BOM 同�
 
 hsweb/EasyORM 通过公开 Maven 依赖复用。仅使用公开 API 与扩展点，不复制私有模块或通过反射、Unsafe/字节码绕过可见性。Fastjson 1.x 兼容路径保持 SafeMode，升级框架时需验证整个序列化契约。
 
+业务查询、写入、关联过滤、分页与行锁使用 hsweb/EasyORM。Boot BOM 管理的 `org.jooq:jooq:3.19.35` 仅补齐结构化 DDL 渲染，包括安全注释与非空菜单 code 的部分唯一索引；不引入 JDBC 执行路径或另一套业务仓储。实际连接与验证目标仍为 PostgreSQL，复用方言 API 不等于其他数据库已经适配通过。
+
 当前 Maven 依赖没有 JetLinks/SNAPSHOT 坐标；许可证元数据仍需与完整文本、文件范围和实际分发义务一起审阅。多许可组件不应仅凭名称判为不兼容；测试、构建、运行库和镜像分别处理。
 
 正式发行执行 `./mvnw -B -ntp clean verify -Prelease-audit`，按公共发布指南复核生成的第三方清单、SBOM、发行包内容和安全检查结果。离线缓存验证不等同于空缓存联网构建，旧漏洞扫描不证明当前依赖或镜像无漏洞。Redis/Elasticsearch 服务端及 JDK/镜像不属于 Maven 依赖许可证闭包。

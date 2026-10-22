@@ -14,27 +14,34 @@ import org.hswebframework.ezorm.rdb.metadata.RDBTableMetadata;
 import org.hswebframework.ezorm.rdb.metadata.dialect.Dialect;
 import org.hswebframework.ezorm.rdb.operator.builder.fragments.ddl.AlterRequest;
 import org.hswebframework.ezorm.rdb.operator.builder.fragments.ddl.CommonCreateTableSqlBuilder;
+import org.hswebframework.ezorm.rdb.supports.postgres.PostgresqlAlterTableSqlBuilder;
 import org.hswebframework.ezorm.rdb.supports.postgres.PostgresqlSchemaMetadata;
 import org.junit.jupiter.api.Test;
 
-class AdditivePostgresqlAlterTableSqlBuilderTest {
+class AdditiveAlterTableSqlBuilderTest {
     @Test
     void officialCreateAndAddPathsBothRetainThePartialUniquePredicate() {
         var schema = schema();
         var wanted = wanted(schema);
         assertInstanceOf(PartialIndexMetadata.class, wanted.clone().getIndexes().getFirst());
-        String created = statements(CommonCreateTableSqlBuilder.INSTANCE.build(wanted));
-        assertTrue(created.contains("IS NOT NULL AND"));
-        assertTrue(created.contains("<>''"));
+        String created =
+                statements(
+                        new DescribedCreateTableSqlBuilder(CommonCreateTableSqlBuilder.INSTANCE)
+                                .build(wanted));
+        assertTrue(created.toLowerCase(java.util.Locale.ROOT).contains("is not null and"));
+        assertTrue(created.contains("<> E''"), created);
         var existing = schema.newTable("fixture");
         column(existing, "code", 512);
         column(existing, "custom_data", 4000);
         String added =
                 statements(
-                        new AdditivePostgresqlAlterTableSqlBuilder()
+                        new AdditiveAlterTableSqlBuilder(new PostgresqlAlterTableSqlBuilder())
                                 .build(request(wanted, existing)));
         assertTrue(added.contains(" add ") && added.contains("new_text"), added);
-        assertTrue(added.contains("IS NOT NULL AND") && added.contains("<>''"), added);
+        assertTrue(
+                added.toLowerCase(java.util.Locale.ROOT).contains("is not null and")
+                        && added.contains("<> E''"),
+                added);
         assertFalse(added.contains("drop column"), added);
         assertFalse(added.contains("alter column"), added);
         assertFalse(added.contains("drop index"), added);
@@ -53,7 +60,7 @@ class AdditivePostgresqlAlterTableSqlBuilderTest {
         existing.addIndex(wanted.getIndexes().getFirst().clone());
         String added =
                 statements(
-                        new AdditivePostgresqlAlterTableSqlBuilder()
+                        new AdditiveAlterTableSqlBuilder(new PostgresqlAlterTableSqlBuilder())
                                 .build(request(wanted, existing)));
         assertFalse(added.contains("index"), added);
         assertTrue(added.contains("new_text"), added);
@@ -81,7 +88,9 @@ class AdditivePostgresqlAlterTableSqlBuilderTest {
         code.setColumn("code");
         code.setSort(RDBIndexMetadata.IndexSort.asc);
         index.setColumns(List.of(code));
-        table.addIndex(new PartialIndexMetadata(index, "\"code\" IS NOT NULL AND \"code\"<>''"));
+        table.addIndex(
+                new PartialIndexMetadata(
+                        index, "code", PartialIndexMetadata.Condition.NON_EMPTY_STRING));
         return table;
     }
 

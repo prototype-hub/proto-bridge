@@ -28,7 +28,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 | `GET /prototype-hub/projects/{id}/members` | owner/admin 查询成员，响应 `[{userId,name,username,role}]`，包含 owner |
 | `PUT /prototype-hub/projects/{id}/members/{userId}` | owner/admin 添加或调整 `{"role":"editor"}` / `{"role":"viewer"}`；目标须为有效用户 |
 | `DELETE /prototype-hub/projects/{id}/members/{userId}` | owner/admin 撤员；不能借成员接口改写或移除 owner |
-| `GET /prototype-hub/projects/{id}/member-candidates?keyword=…` | owner/admin 搜索有效用户，字面匹配且最多返回 20 个 `userId/name/username`，不返回密码或联系资料 |
+| `GET /prototype-hub/projects/{id}/member-candidates?keyword=…` | owner/admin 搜索有效用户，名称或用户名忽略大小写作字面包含匹配，`%`/`_` 不作通配符；按用户名、ID 稳定顺序最多返回 20 个 `userId/name/username`，不返回密码或联系资料 |
 | `POST /prototype-hub/projects/{id}/claim` | ADMIN + 项目 save；`{"userId":"…"}` 为无可用 owner 的项目指派有效用户，不覆盖活跃 owner |
 | `POST /prototype-hub/projects/_ownership-migration` | ADMIN + 项目 save；`{"apply":false}` 只预检，`true` 显式幂等回填；响应 `scanned/assigned/pending/unchanged` |
 

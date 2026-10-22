@@ -1,12 +1,19 @@
 package com.gaiys.proto.prototypehub.service.cleanup;
 
+import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectMemberService;
 import java.util.List;
+import java.util.Set;
+import java.util.stream.Collectors;
 import lombok.RequiredArgsConstructor;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
+import org.hswebframework.web.api.crud.entity.RecordModifierEntity;
 import org.hswebframework.web.system.authorization.api.event.UserDeletedEvent;
 import org.springframework.context.event.EventListener;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -19,9 +26,12 @@ import reactor.core.publisher.Mono;
 @Component
 @RequiredArgsConstructor
 public class PrototypeAccountAccessCleanup {
+    private static final int BATCH_SIZE = 100;
     private final PrototypeProjectAccessService access;
     private final PrototypeProjectMemberService members;
-    private final DatabaseClient database;
+    private final ReactiveRepository<PrototypeProjectEntity, String> projects;
+    private final ReactiveRepository<PrototypeProjectMemberEntity, String> bindings;
+    private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
 
     @EventListener
     public void deleted(UserDeletedEvent event) {
@@ -29,67 +39,124 @@ public class PrototypeAccountAccessCleanup {
     }
 
     private Mono<Void> revoke(String userId) {
-        return revokeBatch(userId, "")
+        return Mono.just("")
+                .expand(after -> revokeBatch(userId, after), 1)
+                .then()
                 .then(
-                        database.sql("delete from p_preview_session where user_id=:userId")
-                                .bind("userId", userId)
-                                .fetch()
-                                .rowsUpdated())
+                        sessions.createDelete()
+                                .where(PrototypePreviewSessionEntity::getUserId, userId)
+                                .execute())
                 .then();
     }
 
-    private Mono<Void> revokeBatch(String userId, String after) {
-        // 删除事务已锁用户行；所有绑定生产者也先锁用户，再锁项目，扫描后不会插入遗漏的新绑定。
-        // 稳定 ID 顺序、有界读取且不预取下一批，避免跨项目锁倒序及同事务连接上交叠查询。
-        return batch(userId, after)
+    private Mono<String> revokeBatch(String userId, String after) {
+        // 删除事务已锁用户行；绑定生产者也先锁用户，再锁项目，不会插入遗漏的新绑定。
+        // 有界读取释放游标后再串行锁项目，避免同事务连接上交叠查询，并始终推进扫描页的最后 ID。
+        return batch(after)
                 .flatMap(
-                        ids -> {
-                            if (ids.isEmpty()) return Mono.empty();
-                            return Flux.fromIterable(ids)
-                                    .concatMap(
-                                            projectId ->
-                                                    access.lockProject(projectId)
-                                                            .then(
-                                                                    database.sql(
-                                                                                    "update p_project set owner_id=null where id=:id and owner_id=:userId")
-                                                                            .bind("id", projectId)
-                                                                            .bind("userId", userId)
-                                                                            .fetch()
-                                                                            .rowsUpdated())
-                                                            .then(
-                                                                    database.sql(
-                                                                                    "delete from p_project_member where project_id=:id and user_id=:userId")
-                                                                            .bind("id", projectId)
-                                                                            .bind("userId", userId)
-                                                                            .fetch()
-                                                                            .rowsUpdated())
-                                                            // 非空 epoch
-                                                            // 记录已初始化授权谱系；显式迁移也不能给同名新账号复活旧所有权。
-                                                            .then(members.rotate(projectId)),
-                                            1)
-                                    .then(
-                                            Mono.defer(
-                                                    () ->
-                                                            revokeBatch(
-                                                                    userId,
-                                                                    ids.get(ids.size() - 1))));
+                        page -> {
+                            if (page.isEmpty()) return Mono.empty();
+                            List<String> ids =
+                                    page.stream().map(PrototypeProjectEntity::getId).toList();
+                            return bindings.createQuery()
+                                    .select(PrototypeProjectMemberEntity::getProjectId)
+                                    .where(PrototypeProjectMemberEntity::getUserId, userId)
+                                    .in(PrototypeProjectMemberEntity::getProjectId, ids)
+                                    .fetch()
+                                    .map(PrototypeProjectMemberEntity::getProjectId)
+                                    .collect(Collectors.toSet())
+                                    .flatMap(
+                                            bound ->
+                                                    sessions.createQuery()
+                                                            .select(
+                                                                    PrototypePreviewSessionEntity
+                                                                            ::getProjectId)
+                                                            .where(
+                                                                    PrototypePreviewSessionEntity
+                                                                            ::getUserId,
+                                                                    userId)
+                                                            .in(
+                                                                    PrototypePreviewSessionEntity
+                                                                            ::getProjectId,
+                                                                    ids)
+                                                            .fetch()
+                                                            .map(
+                                                                    PrototypePreviewSessionEntity
+                                                                            ::getProjectId)
+                                                            .collect(Collectors.toSet())
+                                                            .map(
+                                                                    previewed ->
+                                                                            page.stream()
+                                                                                    .filter(
+                                                                                            project ->
+                                                                                                    affected(
+                                                                                                            project,
+                                                                                                            userId,
+                                                                                                            bound,
+                                                                                                            previewed))
+                                                                                    .map(
+                                                                                            PrototypeProjectEntity
+                                                                                                    ::getId)
+                                                                                    .toList()))
+                                    .flatMap(
+                                            affected ->
+                                                    Flux.fromIterable(affected)
+                                                            .concatMap(
+                                                                    id -> revokeProject(id, userId),
+                                                                    1)
+                                                            .then())
+                                    .thenReturn(page.getLast().getId());
                         });
     }
 
-    private Mono<List<String>> batch(String userId, String after) {
-        return database.sql(
-                        """
-                select p.id from p_project p where p.id>:after and
-                (p.owner_id=:userId or exists(select 1 from p_project_member m where m.project_id=p.id and m.user_id=:userId)
-                or exists(select 1 from p_preview_session s where s.project_id=p.id and s.user_id=:userId)
-                or (p.creator_id=:userId and (p.owner_id is null or p.owner_id !~ '[^[:space:]]')
-                and (p.access_epoch is null or p.access_epoch !~ '[^[:space:]]')))
-                order by p.id limit 100
-                """)
-                .bind("after", after)
-                .bind("userId", userId)
-                .map((row, metadata) -> row.get("id", String.class))
-                .all()
+    /** 账号撤权只维护授权字段，官方标记保留项目编辑审计；其他实体事件照常执行。 */
+    private Mono<Void> revokeProject(String projectId, String userId) {
+        return access.lockProject(projectId)
+                .then(
+                        projects.createUpdate()
+                                .setNull(PrototypeProjectEntity::getOwnerId)
+                                .where(PrototypeProjectEntity::getId, projectId)
+                                .and(PrototypeProjectEntity::getOwnerId, userId)
+                                .execute()
+                                .contextWrite(RecordModifierEntity::markDoNotUpdate))
+                .then(
+                        bindings.createDelete()
+                                .where(PrototypeProjectMemberEntity::getProjectId, projectId)
+                                .and(PrototypeProjectMemberEntity::getUserId, userId)
+                                .execute())
+                // 非空 epoch 表示已分类的授权谱系；显式迁移也不能给同名新账号复活旧所有权。
+                .then(members.rotate(projectId));
+    }
+
+    private static boolean affected(
+            PrototypeProjectEntity project,
+            String userId,
+            Set<String> bound,
+            Set<String> previewed) {
+        return userId.equals(project.getOwnerId())
+                || bound.contains(project.getId())
+                || previewed.contains(project.getId())
+                || (userId.equals(project.getCreatorId())
+                        && !hasText(project.getOwnerId())
+                        && !hasText(project.getAccessEpoch()));
+    }
+
+    private Mono<List<PrototypeProjectEntity>> batch(String after) {
+        return projects.createQuery()
+                .select(
+                        PrototypeProjectEntity::getId,
+                        PrototypeProjectEntity::getOwnerId,
+                        PrototypeProjectEntity::getCreatorId,
+                        PrototypeProjectEntity::getAccessEpoch)
+                .where()
+                .gt(PrototypeProjectEntity::getId, after)
+                .orderBy(SortOrder.asc(PrototypeProjectEntity::getId))
+                .paging(0, BATCH_SIZE)
+                .fetch()
                 .collectList();
+    }
+
+    private static boolean hasText(String value) {
+        return value != null && !value.isBlank();
     }
 }

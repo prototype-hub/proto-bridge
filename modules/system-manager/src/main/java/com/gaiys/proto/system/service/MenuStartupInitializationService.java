@@ -11,7 +11,6 @@ import org.hswebframework.web.api.crud.entity.TransactionManagers;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.Resource;
-import org.springframework.r2dbc.core.DatabaseClient;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.ReactiveTransactionManager;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -22,10 +21,10 @@ import reactor.core.scheduler.Schedulers;
  * Imports the packaged default menu tree only when the entire menu table is empty after EasyORM
  * startup.
  *
- * <p>Every invocation locks and rechecks the table in the same reactive transaction as the existing
- * tree save. Any existing row, including disabled menus and previously initialized menus, prevents
- * import. Classpath I/O is bounded and isolated; this service never reads the source export or
- * local config.
+ * <p>Every invocation takes the shared initialization row lock and rechecks the table in the same
+ * reactive transaction as the existing tree save. Any existing row, including disabled menus and
+ * previously initialized menus, prevents import. Classpath I/O is bounded and isolated; this
+ * service never reads the source export or local config.
  */
 @Service
 public class MenuStartupInitializationService {
@@ -33,20 +32,20 @@ public class MenuStartupInitializationService {
     // 启动仅导入当前产品的内置资源；既有 iot 等归属由非空表保护保留，不做迁移或覆盖。
     static final String DEFAULT_OWNER = "proto";
     private static final int MAX_RESOURCE_BYTES = 1024 * 1024;
-    private final DatabaseClient database;
+    private final SystemInitializationLockService initializationLock;
     private final MenuService menus;
     private final MenuInitializationService initialization;
     private final ObjectMapper mapper;
     private final TransactionalOperator transactions;
 
     public MenuStartupInitializationService(
-            DatabaseClient database,
+            SystemInitializationLockService initializationLock,
             MenuService menus,
             MenuInitializationService initialization,
             ObjectMapper mapper,
             @Qualifier(TransactionManagers.reactiveTransactionManager)
                     ReactiveTransactionManager manager) {
-        this.database = database;
+        this.initializationLock = initializationLock;
         this.menus = menus;
         this.initialization = initialization;
         this.mapper = mapper;
@@ -61,17 +60,16 @@ public class MenuStartupInitializationService {
     Mono<Boolean> initializeIfEmpty(Resource resource) {
         return Mono.defer(
                         () ->
-                                database.sql("LOCK TABLE s_menu IN EXCLUSIVE MODE")
-                                        .fetch()
-                                        .rowsUpdated()
+                                initializationLock
+                                        .acquire()
                                         .then(menus.createQuery().count())
                                         .flatMap(
                                                 count ->
                                                         count == 0
                                                                 ? importMenus(resource)
                                                                 : Mono.just(false)))
-                // The nested replace() uses REQUIRED and joins this connection. The table lock
-                // lasts through commit/rollback, so another startup can only observe a final tree.
+                // The nested replace() uses REQUIRED and joins this connection. Every application
+                // startup follows the same row-lock protocol through commit/rollback.
                 .as(transactions::transactional);
     }
 

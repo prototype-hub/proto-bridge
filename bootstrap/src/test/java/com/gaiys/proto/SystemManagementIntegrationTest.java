@@ -917,6 +917,94 @@ class SystemManagementIntegrationTest {
     }
 
     @Test
+    void roleJsonFiltersPreserveNullEmptyCollectionDefaultGroupAndBoundTextSemantics() {
+        String enabled = key(),
+                disabled = key(),
+                missing = key(),
+                explicitNull = key(),
+                quoted = key();
+        String group = key();
+        List<String> scope = List.of(enabled, disabled, missing, explicitNull, quoted);
+        for (String id : scope)
+            call("POST", "/role", admin, Map.of("id", id, "name", "JSON property fixture"), 200);
+        // Existing installations can contain absent or explicit-null JSON properties. Queries must
+        // retain SQL null semantics and bind text rather than interpreting it as an expression.
+        Map<String, String> properties =
+                Map.of(
+                        enabled, "{\"state\":\"enabled\",\"groupId\":\"default\"}",
+                        disabled, "{\"state\":\"disabled\",\"groupId\":\"" + group + "\"}",
+                        missing, "{}",
+                        explicitNull, "{\"state\":null,\"groupId\":null}",
+                        quoted, "{\"state\":\"x' OR true --\",\"groupId\":\"quoted\"}");
+        properties.forEach(
+                (id, json) ->
+                        database.sql("UPDATE s_dimension SET properties=:properties WHERE id=:id")
+                                .bind("properties", json)
+                                .bind("id", id)
+                                .fetch()
+                                .rowsUpdated()
+                                .block());
+        assertEquals(
+                Set.of(enabled),
+                pageUserIds(
+                        queryRoleProperties(scope, condition("groupId", "eq", "default_group"))));
+        assertEquals(
+                Set.of(enabled),
+                pageUserIds(
+                        queryRoleProperties(
+                                scope, condition("groupId", "in", List.of("default_group")))));
+        assertEquals(
+                Set.of(),
+                pageUserIds(queryRoleProperties(scope, condition("state", "in", List.of()))));
+        assertEquals(
+                Set.of(enabled, disabled, quoted),
+                pageUserIds(queryRoleProperties(scope, condition("state", "nin", List.of()))));
+        assertEquals(
+                Set.of(missing, explicitNull),
+                pageUserIds(queryRoleProperties(scope, condition("state", "isnull", ""))));
+        assertEquals(
+                Set.of(enabled, disabled, quoted),
+                pageUserIds(queryRoleProperties(scope, condition("state", "notnull", ""))));
+        assertEquals(
+                Set.of(disabled, quoted),
+                pageUserIds(queryRoleProperties(scope, condition("state", "not", "enabled"))));
+        assertEquals(
+                Set.of(enabled, disabled),
+                pageUserIds(queryRoleProperties(scope, condition("state", "like", "%abled"))));
+        assertEquals(
+                Set.of(quoted),
+                pageUserIds(queryRoleProperties(scope, condition("state", "nlike", "%abled"))));
+        assertEquals(
+                Set.of(quoted),
+                pageUserIds(queryRoleProperties(scope, condition("state", "eq", "x' OR true --"))));
+        assertEquals(
+                Set.of(quoted),
+                pageUserIds(
+                        queryRoleProperties(scope, condition("state", "like", "%OR true --%"))));
+        assertEquals(
+                Set.of(enabled, disabled),
+                pageUserIds(
+                        queryRoleProperties(
+                                scope,
+                                Map.of(
+                                        "terms",
+                                        List.of(
+                                                condition("state", "eq", "enabled"),
+                                                Map.of(
+                                                        "column", "groupId",
+                                                        "termType", "eq",
+                                                        "value", group,
+                                                        "type", "or"))))));
+    }
+
+    private JsonNode queryRoleProperties(List<String> scope, Object... conditions) {
+        List<Object> filters = new ArrayList<>();
+        filters.add(condition("id", "in", scope));
+        filters.addAll(Arrays.asList(conditions));
+        return call("POST", "/role/_query", admin, Map.of("terms", filters), 200);
+    }
+
+    @Test
     void roleOptionsKeepNestedGroupsAndExposeOnlyTheirDirectRoles() {
         String parent = key(), child = key(), parentRole = key(), childRole = key();
         call("PATCH", "/role/group", admin, Map.of("id", parent, "name", "Parent group"), 200);

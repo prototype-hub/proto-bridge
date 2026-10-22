@@ -417,6 +417,41 @@ class PrototypeHubProjectAccessIntegrationTest {
     }
 
     @Test
+    void scopeListsMapOwnerAndAdministratorAndKeepWhitespaceOwnerProjectsPending() {
+        Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
+        String project = project(owner, "Whitespace legacy owner").path("id").asText();
+        String version =
+                upload(owner.token(), project, null, "scope mapping", null, 200)
+                        .path("id")
+                        .asText();
+        member(project, viewer, "viewer");
+        JsonNode ownerList = result(HttpMethod.GET, "/prototype-hub/projects", owner.token(), null);
+        assertEquals(1, ownerList.size());
+        assertEquals(owner.id(), ownerList.get(0).path("ownerId").asText());
+        assertEquals("owner", ownerList.get(0).path("role").asText());
+        assertFalse(ownerList.get(0).path("claimRequired").asBoolean());
+        database.sql("update p_project set owner_id=:owner where id=:id")
+                .bind("owner", " \t ")
+                .bind("id", project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(
+                result(HttpMethod.GET, "/prototype-hub/projects", owner.token(), null).isEmpty());
+        assertTrue(
+                result(HttpMethod.GET, "/prototype-hub/projects", viewer.token(), null).isEmpty());
+        assertTrue(
+                result(HttpMethod.GET, "/prototype-hub/versions", viewer.token(), null).isEmpty());
+        JsonNode adminProjects = result(HttpMethod.GET, "/prototype-hub/projects", admin, null);
+        assertEquals(1, adminProjects.size());
+        assertEquals(project, adminProjects.get(0).path("id").asText());
+        assertEquals("admin", adminProjects.get(0).path("role").asText());
+        assertTrue(adminProjects.get(0).path("claimRequired").asBoolean());
+        JsonNode adminVersions = result(HttpMethod.GET, "/prototype-hub/versions", admin, null);
+        assertEquals(List.of(version), adminVersions.findValuesAsText("id"));
+    }
+
+    @Test
     void membershipDoesNotGrantMissingGenericActionsAndUserTypeIsNotAdministratorAuthority() {
         Actor owner = actor(ALL_ACTIONS);
         Actor readOnly =
@@ -580,6 +615,65 @@ class PrototypeHubProjectAccessIntegrationTest {
                 owner.token(),
                 null);
         call(HttpMethod.GET, "/prototype-hub/projects/" + project, viewer.token(), null, 404);
+    }
+
+    @Test
+    void memberCandidatesUseLiteralCaseInsensitiveMatchingAcrossSparseHundredUserPages() {
+        Actor owner = actor(ALL_ACTIONS);
+        String project = project(owner, "Candidate paging").path("id").asText();
+        String marker = UUID.randomUUID().toString().replace("-", "");
+        String usernamePrefix = "000-candidate-" + marker + "-";
+        List<String> matches = new java.util.ArrayList<>();
+        for (int i = 0; i < 222; i++) {
+            String id = "candidate-" + marker + "-" + i;
+            boolean matched = i == 5 || i == 106 || i == 207;
+            if (matched) matches.add(id);
+            String name = matched || i == 221 ? "MiXeDneedle" + marker : "Fixture " + i;
+            if (i == 208) name = "literal%_' " + marker;
+            database.sql(
+                            "INSERT INTO s_user(id,username,name,password,salt,status,create_time)"
+                                    + " VALUES (:id,:username,:name,'fixture','fixture',:status,1)")
+                    .bind("id", id)
+                    .bind("username", usernamePrefix + String.format("%03d", i))
+                    .bind("name", name)
+                    .bind("status", i == 221 ? (byte) 0 : (byte) 1)
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        }
+        String endpoint = "/prototype-hub/projects/" + project + "/member-candidates?keyword=";
+        JsonNode sparse =
+                result(
+                        HttpMethod.GET,
+                        endpoint + "nEeDlE" + marker.toUpperCase(java.util.Locale.ROOT),
+                        owner.token(),
+                        null);
+        assertEquals(matches, sparse.findValuesAsText("userId"));
+        JsonNode literal =
+                response(
+                                client.get()
+                                        .uri(
+                                                builder ->
+                                                        builder.path(
+                                                                        "/prototype-hub/projects/{project}/member-candidates")
+                                                                .queryParam("keyword", "%_'")
+                                                                .build(project))
+                                        .header("X-Access-Token", owner.token())
+                                        .exchange(),
+                                200)
+                        .path("result");
+        assertEquals(List.of("candidate-" + marker + "-208"), literal.findValuesAsText("userId"));
+        JsonNode limited = result(HttpMethod.GET, endpoint + usernamePrefix, owner.token(), null);
+        assertEquals(20, limited.size());
+        assertEquals(
+                java.util.stream.IntStream.range(0, 20)
+                        .mapToObj(i -> "candidate-" + marker + "-" + i)
+                        .toList(),
+                limited.findValuesAsText("userId"));
+        for (JsonNode candidate : sparse) {
+            assertFalse(candidate.has("password"));
+            assertFalse(candidate.has("salt"));
+        }
     }
 
     @Test
@@ -796,6 +890,14 @@ class PrototypeHubProjectAccessIntegrationTest {
                         admin,
                         Map.of("apply", true));
         assertEquals(1, applied.path("assigned").asInt());
+        assertEquals(
+                creator.id(),
+                database.sql("select owner_id from p_project where id=:project")
+                        .bind("project", valid)
+                        .map((row, metadata) -> row.get("owner_id", String.class))
+                        .one()
+                        .block(TIMEOUT),
+                "Migration must persist the creator as owner before mapping the HTTP response");
         JsonNode assigned =
                 result(HttpMethod.GET, "/prototype-hub/projects/" + valid, creator.token(), null);
         assertEquals(creator.id(), assigned.path("ownerId").asText());
