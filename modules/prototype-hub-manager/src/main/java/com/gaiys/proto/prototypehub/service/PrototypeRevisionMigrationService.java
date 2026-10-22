@@ -137,6 +137,11 @@ public class PrototypeRevisionMigrationService {
                 .where(PrototypeShareEntity::getProjectId, version.getProjectId())
                 .and(PrototypeShareEntity::getVersionId, version.getId())
                 .isNull(PrototypeShareEntity::getRevisionId)
+                .nest(
+                        nest ->
+                                nest.isNull(PrototypeShareEntity::getRevisionMode)
+                                        .or()
+                                        .is(PrototypeShareEntity::getRevisionMode, "fixed"))
                 .execute()
                 .then(
                         receipts.createUpdate()
@@ -155,6 +160,11 @@ public class PrototypeRevisionMigrationService {
                 .where(PrototypeShareEntity::getProjectId, version.getProjectId())
                 .and(PrototypeShareEntity::getVersionId, version.getId())
                 .isNull(PrototypeShareEntity::getRevisionId)
+                .nest(
+                        nest ->
+                                nest.isNull(PrototypeShareEntity::getRevisionMode)
+                                        .or()
+                                        .is(PrototypeShareEntity::getRevisionMode, "fixed"))
                 .count()
                 .flatMap(
                         shareCount ->

@@ -8,6 +8,9 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_tabl
  AND EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
   AND table_name=:'prototype_hub_share_table' AND column_name='revision_id')
  AS prototype_hub_has_revision_structure \gset
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_share_table' AND column_name='revision_mode')
+ AS prototype_hub_has_share_mode \gset
 \if :prototype_hub_has_revision_structure
 WITH storage_references AS (
  SELECT id AS version_id,project_id,current_revision_id AS revision_id,storage_path
@@ -35,6 +38,10 @@ WITH storage_references AS (
  LEFT JOIN :"prototype_hub_project_table" p ON p.id=s.project_id
  LEFT JOIN :"prototype_hub_revision_table" r ON r.id=s.revision_id
  WHERE v.id IS NULL OR p.id IS NULL OR v.project_id<>s.project_id
+\if :prototype_hub_has_share_mode
+ OR coalesce(s.revision_mode,'fixed') NOT IN ('fixed','latest')
+ OR (s.revision_mode='latest' AND nullif(s.revision_id,'') IS NOT NULL)
+\endif
  OR (nullif(s.revision_id,'') IS NOT NULL
  AND (r.id IS NULL OR r.version_id<>s.version_id OR r.project_id<>s.project_id))
 )

@@ -23,8 +23,20 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @Schema(description = "原型版本分享链接及访问控制信息")
 public class PrototypeShareEntity extends GenericEntity<String> {
     @Column(name = "revision_id", length = 64)
-    @Schema(description = "固定内容快照标识；旧数据需显式迁移，短会话为空时拒绝访问")
+    @Schema(description = "固定模式绑定的不可变快照标识；跟随最新模式为空，旧固定分享为空时需显式迁移")
     private String revisionId;
+
+    @Column(name = "revision_mode", length = 16)
+    @Schema(description = "快照模式：fixed 固定快照，latest 跟随最新；旧数据为空时按 fixed 处理")
+    private String revisionMode;
+
+    @Column(name = "revoked")
+    @Schema(description = "是否永久撤销；旧数据为空时按未撤销处理，撤销后不可恢复")
+    private Boolean revoked;
+
+    @Column(name = "config_version")
+    @Schema(description = "分享配置并发版本；旧数据为空时按0处理，每次管理变更递增")
+    private Long configVersion;
 
     @Column(name = "project_id", length = 64, nullable = false)
     @Schema(description = "分享所属的原型项目标识")
@@ -44,7 +56,7 @@ public class PrototypeShareEntity extends GenericEntity<String> {
 
     @JsonIgnore
     @Column(name = "access_key", length = 128, nullable = false)
-    @Schema(description = "分享运行文件访问密钥")
+    @Schema(description = "分享凭据派生密钥；管理变更时轮换，不在响应中公开")
     private String accessKey;
 
     @JsonIgnore

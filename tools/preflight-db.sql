@@ -56,8 +56,20 @@ SELECT v.id AS invalid_current_revision FROM :"prototype_hub_version_table" v
 \endif
 SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
  AND table_name=:'prototype_hub_share_table' AND column_name='revision_id') AS prototype_hub_has_share_revision \gset
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_share_table' AND column_name='revision_mode') AS prototype_hub_has_share_mode \gset
 \if :prototype_hub_has_share_revision
+\if :prototype_hub_has_share_mode
+-- A latest share intentionally has no persisted snapshot; only fixed shares need binding.
+SELECT count(*) AS shares_pending_revision_binding FROM :"prototype_hub_share_table"
+ WHERE coalesce(revision_mode,'fixed')='fixed' AND nullif(revision_id,'') IS NULL;
+SELECT count(*) AS shares_following_latest FROM :"prototype_hub_share_table" WHERE revision_mode='latest';
+SELECT id AS invalid_share_mode FROM :"prototype_hub_share_table"
+ WHERE coalesce(revision_mode,'fixed') NOT IN ('fixed','latest')
+ OR (revision_mode='latest' AND nullif(revision_id,'') IS NOT NULL);
+\else
 SELECT count(*) AS shares_pending_revision_binding FROM :"prototype_hub_share_table" WHERE nullif(revision_id,'') IS NULL;
+\endif
 SELECT s.id AS invalid_share_revision FROM :"prototype_hub_share_table" s
  LEFT JOIN :"prototype_hub_revision_table" r ON r.id=s.revision_id
  WHERE nullif(s.revision_id,'') IS NOT NULL

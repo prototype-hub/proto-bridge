@@ -44,7 +44,11 @@ EasyORM 自动同步 `p_installation` 和 `p_creation_receipt`。应用在结构
 
 ## 不可变修订与旧内容迁移
 
-`p_version` 继续保存逻辑版本和 `current_revision_id`；`storage_path/entry_file` 是当前修订的兼容投影。`p_revision` 保存不可变文件路径、入口、上传时名称/说明、规范化清单 JSON/SHA-256、实际文件数/总字节和创建信息。`p_share`、`p_preview_session`、`p_creation_receipt` 增加 `revision_id`：分享和内部预览固定快照，创建回执重放原成功快照。数据库和原型文件必须联合保存全部历史；只备份当前 `p_version.storage_path` 会丢失历史和分享内容。
+`p_version` 继续保存逻辑版本和 `current_revision_id`；`storage_path/entry_file` 是当前修订的兼容投影。`p_revision` 保存不可变文件路径、入口、上传时名称/说明、规范化清单 JSON/SHA-256、实际文件数/总字节和创建信息。`p_share`、`p_preview_session`、`p_creation_receipt` 增加 `revision_id`：固定分享和内部预览固定快照，创建回执重放原成功快照。数据库和原型文件必须联合保存全部历史；只备份当前 `p_version.storage_path` 会丢失历史和分享内容。
+
+分享另外保存 `revision_mode/revoked/config_version`。EasyORM 为旧表增补这三个可空列，不重写既有记录；旧值 null 分别按 fixed、未撤销、配置版本 0 解释，首次成功管理变更才写入新状态。新建分享默认 fixed、未撤销、版本 1。latest 的持久 revision_id 为空，公开访问时派生明确修订的凭据；它与未绑定修订的旧 fixed 分享含义不同，不能将后者自动升级为跟随。`access_key` 是服务端派生密钥，成功配置变更就轮换；仅有新 token 或旧密码证明不能恢复已失效的密钥。
+
+升级需前后端一起发布并停止仍接受旧凭据的后端节点，先在恢复副本验证固定/跟随、启停与密码修改后的旧凭据失效。回滚到不识别 revoked 或新密钥协议的旧 JAR 可能重新开放已经撤销的访问，应停写并使用同一窗口备份恢复，不能仅替换二进制。
 
 清单按规范化相对路径排序，记录文件 `path/size/sha256/mediaType`、入口和页面树。字节数与 hash 对应 HTML 检查脚本注入后的实际服务文件；清单本身不含修订 ID/创建时间，同一实际内容可生成相同摘要。它不是原始 ZIP 字节摘要，不能据此反推原导出包。页面树保留 `pageId`，页面身份由修订 ID 和 pageId 共同确定。
 

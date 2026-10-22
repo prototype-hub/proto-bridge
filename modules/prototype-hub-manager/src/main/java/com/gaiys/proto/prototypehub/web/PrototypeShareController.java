@@ -3,6 +3,9 @@ package com.gaiys.proto.prototypehub.web;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
+import com.gaiys.proto.prototypehub.web.request.ShareEnabledRequest;
+import com.gaiys.proto.prototypehub.web.request.ShareMutationRequest;
+import com.gaiys.proto.prototypehub.web.request.ShareUpdateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.ShareResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -19,6 +22,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -67,6 +71,38 @@ public class PrototypeShareController {
     public Mono<Boolean> verifyPassword(
             @PathVariable String id, @Valid @RequestBody ShareVerifyRequest input) {
         return shares.verifyPassword(id, input.password());
+    }
+
+    @PutMapping("/shares/{id}")
+    @SaveAction
+    @Operation(summary = "编辑原型分享配置", description = "完整替换说明、有效期和快照模式，明确保留、替换或移除密码")
+    public Mono<ShareResponse> update(
+            @PathVariable String id, @Valid @RequestBody ShareUpdateRequest input) {
+        return shares.updateShare(id, input).map(ShareResponse::from);
+    }
+
+    @PutMapping("/shares/{id}/enabled")
+    @SaveAction
+    @Operation(summary = "启用或暂停原型分享", description = "每次变更使此前公开凭据失效；永久撤销的分享不可恢复")
+    public Mono<ShareResponse> enabled(
+            @PathVariable String id, @Valid @RequestBody ShareEnabledRequest input) {
+        return shares.setEnabled(id, input).map(ShareResponse::from);
+    }
+
+    @PostMapping("/shares/{id}/revoke")
+    @SaveAction
+    @Operation(summary = "永久撤销原型分享", description = "保留管理记录，撤销后不可恢复或修改")
+    public Mono<ShareResponse> revoke(
+            @PathVariable String id, @Valid @RequestBody ShareMutationRequest input) {
+        return shares.revoke(id, input.expectedVersion()).map(ShareResponse::from);
+    }
+
+    @PostMapping("/shares/{id}/rotate-link")
+    @SaveAction
+    @Operation(summary = "轮换原型分享链接", description = "旧链接和已授予的公开凭据同时失效")
+    public Mono<ShareResponse> rotate(
+            @PathVariable String id, @Valid @RequestBody ShareMutationRequest input) {
+        return shares.rotateLink(id, input.expectedVersion()).map(ShareResponse::from);
     }
 
     @DeleteMapping("/shares/{id}")

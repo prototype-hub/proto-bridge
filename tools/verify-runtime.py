@@ -164,7 +164,7 @@ class Api:
     def remember_secrets(self, value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl') and item:
+                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
         elif isinstance(value, list):
@@ -424,12 +424,101 @@ class RuntimeCheck:
                 'Incorrect share password was not rejected')
         granted = api.request('POST', path + '/verify', {'password': self.share_password})
         require(granted.get('accessKey'), 'Share access was not granted')
+        require('/revisions/' + granted['revisionId'] + '/runtime' in granted['runtimeBaseUrl'] and
+                '/revisions/' + granted['revisionId'] + '/pages' in granted.get('pagesUrl', ''),
+                'Public share did not provide revision-scoped runtime and pages URLs')
+        require(api.request('GET', granted['pagesUrl']), 'Public share pages are empty')
         if share.get('revisionId'):
             require(granted.get('revisionId') == share['revisionId'], 'Public share changed its fixed revision')
         current = self.preview(api, granted)
         if expected_preview:
             require(current == expected_preview, 'Share content changed after process/restore')
         return current
+
+    def verify_share_lifecycle(self, api, latest, first_grant, original, current,
+                               original_hashes, current_hashes):
+        """Exercise management revocation against anonymous requests to the packaged JAR."""
+        anonymous = Api(api.origin, self.secrets_seen)
+
+        def info(share, expected=200):
+            return anonymous.request('GET', '/api/prototype-hub/public/shares/' + share['token'],
+                                     expected=expected)
+
+        def changed(share, suffix, body):
+            method = 'POST' if suffix in ('/rotate-link', '/revoke') else 'PUT'
+            return api.request(method, '/api/prototype-hub/shares/' + share['id'] + suffix, body)
+
+        def denied(grant, expected):
+            for path in (grant['previewUrl'], grant['runtimeBaseUrl'] + '/assets/style.css',
+                         grant['pagesUrl']):
+                anonymous.request('GET', path, expected=expected)
+
+        current_grant = info(latest)
+        require(current_grant['revisionId'] == current['revisionId'],
+                'Latest share did not resolve the current revision')
+        require(self.preview(api, current_grant) == current_hashes and
+                self.preview(api, first_grant) == original_hashes,
+                'Previously granted latest-share snapshot drifted after an upload')
+        paused = changed(latest, '/enabled', {'expectedVersion': 1, 'enabled': False})
+        info(paused, 404)
+        denied(first_grant, 404)
+        resumed = changed(paused, '/enabled', {'expectedVersion': 2, 'enabled': True})
+        denied(first_grant, 403)
+        denied(current_grant, 403)
+        resumed_grant = info(resumed)
+        config = {'expectedVersion': 3, 'description': 'Runtime fixed snapshot', 'expiresAt': None,
+                  'revisionMode': 'fixed', 'revisionId': original['revisionId'],
+                  'passwordAction': 'replace', 'password': self.share_password}
+        protected = changed(resumed, '', config)
+        denied(resumed_grant, 403)
+        self.verify_share(api, protected, original_hashes)
+        protected_grant = anonymous.request('POST', '/api/prototype-hub/public/shares/' +
+                                           protected['token'] + '/verify',
+                                           {'password': self.share_password})
+        config.update(expectedVersion=4, passwordAction='remove')
+        config.pop('password')
+        unprotected = changed(protected, '', config)
+        denied(protected_grant, 403)
+        require(not info(unprotected)['passwordRequired'], 'Password removal did not take effect')
+        before_rotation = info(unprotected)
+        api.request('PUT', '/api/prototype-hub/shares/' + unprotected['id'] + '/enabled',
+                    {'expectedVersion': 4, 'enabled': False}, expected=409)
+        rotated = changed(unprotected, '/rotate-link', {'expectedVersion': 5})
+        require(rotated['id'] == latest['id'] and rotated['token'] != unprotected['token'],
+                'Link rotation did not preserve the record and replace its token')
+        info(unprotected, 404)
+        denied(before_rotation, 404)
+        final_grant = info(rotated)
+        require(self.preview(api, final_grant) == original_hashes,
+                'Link rotation changed the fixed snapshot')
+        revoked = changed(rotated, '/revoke', {'expectedVersion': 6})
+        require(revoked['revoked'] and revoked['configVersion'] == 7,
+                'Terminal revoke or configuration version did not persist')
+        info(revoked, 404)
+        denied(final_grant, 404)
+        api.request('PUT', '/api/prototype-hub/shares/' + revoked['id'] + '/enabled',
+                    {'expectedVersion': 7, 'enabled': True}, expected=409)
+        self.report['shareLifecycle'] = {
+            'fixedAndLatestSnapshots': True, 'oldHtmlAssetsAndPagesRejected': True,
+            'pauseResumeNeverRevivesKeys': True, 'passwordReplaceAndRemove': True,
+            'staleConfigRejected': True, 'linkRotated': True, 'terminalRevoke': True}
+        return revoked, final_grant
+
+    def verify_share_policy(self, api, share, *, grant=None, expected_preview=None):
+        rows = api.request('GET', '/api/prototype-hub/versions/' + share['versionId'] + '/shares')
+        row = next((item for item in rows if item['id'] == share['id']), None)
+        require(row is not None, 'Restored share management record is missing')
+        for field in ('revisionMode', 'revisionId', 'revoked', 'configVersion'):
+            require(row.get(field) == share.get(field), 'Restored share policy changed: ' + field)
+        anonymous = Api(api.origin, self.secrets_seen)
+        path = '/api/prototype-hub/public/shares/' + share['token']
+        if share['revoked']:
+            anonymous.request('GET', path, expected=404)
+            for target in (grant['previewUrl'], grant['pagesUrl']):
+                anonymous.request('GET', target, expected=404)
+        elif expected_preview is not None:
+            require(self.preview(api, anonymous.request('GET', path)) == expected_preview,
+                    'Restored latest-share content changed')
 
     def verify_revisions(self, api, project, original, current, zip_path, key,
                          original_hashes, current_hashes):
@@ -519,6 +608,12 @@ class RuntimeCheck:
                                 {'password': self.share_password,
                                  'expiresAt': int(time.time() * 1000) + 3600000})
             self.verify_share(api, share, preview_hashes)
+            latest_share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
+                                       '/shares', {'revisionMode': 'latest'})
+            latest_first_grant = Api(api.origin, self.secrets_seen).request(
+                'GET', '/api/prototype-hub/public/shares/' + latest_share['token'])
+            require(self.preview(api, latest_first_grant) == preview_hashes,
+                    'Initial latest share did not resolve the original snapshot')
             require(api.project('Runtime restore project', project_key)['id'] == project['id'],
                     'Project replay created a second resource')
             require(api.upload(project['id'], zip_path, version_key)['id'] == version['id'],
@@ -529,6 +624,10 @@ class RuntimeCheck:
             manifest_hashes = self.verify_revisions(api, project, version, current, zip_path,
                                                    version_key, preview_hashes, current_hashes)
             self.verify_share(api, share, preview_hashes)
+            retired_share, retired_grant = self.verify_share_lifecycle(
+                api, latest_share, latest_first_grant, version, current, preview_hashes, current_hashes)
+            following_share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
+                                          '/shares', {'revisionMode': 'latest'})
         with self.phase('full-process-restart'):
             self.stop(process)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
@@ -542,6 +641,8 @@ class RuntimeCheck:
             require(self.preview(api, version) == preview_hashes, 'Preview bytes changed on restart')
             self.verify_project_member(api, member, project, version, preview_hashes)
             self.verify_share(api, share, preview_hashes)
+            self.verify_share_policy(api, retired_share, grant=retired_grant)
+            self.verify_share_policy(api, following_share, expected_preview=current_hashes)
             require(self.verify_revisions(api, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
                     'Revision manifests changed on process restart')
@@ -623,6 +724,8 @@ class RuntimeCheck:
                         'Startup or replay changed restored project authorization')
             require(self.preview(restored, version) == preview_hashes, 'Restored preview differs')
             self.verify_share(restored, share, preview_hashes)
+            self.verify_share_policy(restored, retired_share, grant=retired_grant)
+            self.verify_share_policy(restored, following_share, expected_preview=current_hashes)
             self.verify_project_member(restored, member, project, version, preview_hashes)
             require(self.verify_revisions(restored, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
