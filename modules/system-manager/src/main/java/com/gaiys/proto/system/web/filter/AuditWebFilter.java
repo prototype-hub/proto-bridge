@@ -128,8 +128,11 @@ public class AuditWebFilter implements WebFilter {
     private static Action classify(String path, String method) {
         if (path.equals("/authorize/login") && method.equals("POST"))
             return new Action("login", "user", null);
-        // 管理侧密码确认只读，由访问日志记录，不能泛化为分享创建审计。
-        if (method.equals("POST") && path.matches("/prototype-hub/shares/[^/]+/verify-password"))
+        // 只读分页和管理侧密码确认由访问日志记录，不能泛化为资源创建审计。
+        if (method.equals("POST")
+                && (path.equals("/prototype-hub/projects/_query")
+                        || path.equals("/prototype-hub/versions/_query")
+                        || path.matches("/prototype-hub/shares/[^/]+/verify-password")))
             return null;
         if (!java.util.Set.of("POST", "PUT", "PATCH", "DELETE").contains(method)
                 || !path.startsWith("/prototype-hub/")) return null;

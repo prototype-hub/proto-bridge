@@ -7,12 +7,14 @@ import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.query.PrototypeScopeQuery;
+import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectCapabilities;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import java.util.Arrays;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.authorization.Authentication;
 import org.hswebframework.web.authorization.ReactiveAuthenticationManager;
 import org.hswebframework.web.authorization.exception.UnAuthorizedException;
@@ -209,6 +211,45 @@ public class PrototypeProjectAccessService {
                                         "Prototype administrator project scope query: actor={}",
                                         actor.userId());
                             return scope.projects(actor.userId(), actor.administrator());
+                        });
+    }
+
+    /** 分页查询复用相同活跃账号和 ADMIN 例外，项目角色只收窄已授予的查询动作。 */
+    public Mono<PagerResult<ProjectResponse>> readableProjects(PrototypeListQueryRequest request) {
+        return current()
+                .flatMap(
+                        actor -> {
+                            if (actor.administrator())
+                                log.info(
+                                        "Prototype administrator project scope query: actor={}",
+                                        actor.userId());
+                            return scope.projects(actor.userId(), actor.administrator(), request);
+                        });
+    }
+
+    /** 指定项目时先沿详情入口鉴权；全局查询仍在数据库按项目成员范围收窄。 */
+    public Mono<PagerResult<PrototypeVersionEntity>> readableVersions(
+            String projectId, PrototypeListQueryRequest request) {
+        return current()
+                .flatMap(
+                        actor -> {
+                            Mono<Void> parent =
+                                    projectId == null || projectId.isBlank()
+                                            ? Mono.empty()
+                                            : requireProject(actor, projectId, Action.READ, true)
+                                                    .then();
+                            if (actor.administrator())
+                                log.info(
+                                        "Prototype administrator version scope query: actor={}",
+                                        actor.userId());
+                            return parent.then(
+                                    Mono.defer(
+                                            () ->
+                                                    scope.versions(
+                                                            actor.userId(),
+                                                            actor.administrator(),
+                                                            projectId,
+                                                            request)));
                         });
     }
 
