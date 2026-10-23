@@ -178,6 +178,15 @@ class PrototypeHubRevisionIntegrationTest {
         assertEquals(0, count("p_file_cleanup"));
         assertTrue(runtime(oldSession).contains("R1"));
         assertFalse(runtime(oldSession).contains("R2"));
+        // 刷新固定修订深链会重新签发凭证，不能因 current 已变而漂移到 R2。
+        JsonNode reopenedR1 = result(HttpMethod.POST, revision(id, r1) + "/preview-session", null);
+        assertTrue(runtime(reopenedR1).contains("R1"));
+        assertFalse(runtime(reopenedR1).contains("R2"));
+        assertEquals(
+                r2,
+                result(HttpMethod.GET, version(id) + "/current-revision", null)
+                        .path("id")
+                        .asText());
         assertTrue(
                 runtime(result(HttpMethod.POST, revision(id, r2) + "/preview-session", null))
                         .contains("R2"));
@@ -302,6 +311,10 @@ class PrototypeHubRevisionIntegrationTest {
         String r2 = second.path("revisionId").asText();
         JsonNode other = upload(project, null, archive("other"), null, null, 200);
         String foreign = other.path("revisionId").asText();
+        String crossProject =
+                upload(project(), null, archive("another project"), null, null, 200)
+                        .path("revisionId")
+                        .asText();
         JsonNode page = result(HttpMethod.GET, version(id) + "/revisions?limit=1", null);
         assertEquals(r2, page.get(0).path("id").asText());
         assertEquals(
@@ -313,10 +326,25 @@ class PrototypeHubRevisionIntegrationTest {
         assertTrue(result(HttpMethod.GET, version(id) + "/revisions?after=" + r1, null).isEmpty());
         for (int limit : List.of(0, 101))
             call(HttpMethod.GET, version(id) + "/revisions?limit=" + limit, admin, null, 400);
-        call(HttpMethod.GET, version(id) + "/revisions?after=" + foreign, admin, null, 404);
-        for (String path : List.of(revision(id, foreign), revision(id, foreign) + "/pages"))
-            call(HttpMethod.GET, path, admin, null, 404);
-        call(HttpMethod.POST, revision(id, foreign) + "/preview-session", admin, null, 404);
+        for (String foreignRevision : List.of(foreign, crossProject)) {
+            call(
+                    HttpMethod.GET,
+                    version(id) + "/revisions?after=" + foreignRevision,
+                    admin,
+                    null,
+                    404);
+            for (String path :
+                    List.of(
+                            revision(id, foreignRevision),
+                            revision(id, foreignRevision) + "/pages"))
+                call(HttpMethod.GET, path, admin, null, 404);
+            call(
+                    HttpMethod.POST,
+                    revision(id, foreignRevision) + "/preview-session",
+                    admin,
+                    null,
+                    404);
+        }
         call(HttpMethod.GET, revision(id, r1), null, null, 401);
         // A different project member cannot turn a known immutable ID into project access.
         String username = "revision-outsider-" + UUID.randomUUID();

@@ -137,7 +137,8 @@ class PrototypeHubShareLifecycleIntegrationTest {
                         + fixedGrant.path("accessKey").asText();
         assertTrue(resource(derivedAlias + "/runtime/index.html").contains("R1"));
         call(HttpMethod.GET, derivedAlias + "/pages", null, null, 200);
-        assertSnapshot(publicInfo(latest), r2, "R2");
+        JsonNode grantedR2 = publicInfo(latest);
+        assertSnapshot(grantedR2, r2, "R2");
         for (String key :
                 List.of(
                         grantedR1.path("accessKey").asText(),
@@ -169,6 +170,11 @@ class PrototypeHubShareLifecycleIntegrationTest {
                         + r2;
         denied(signedWrongRevision + "/runtime/index.html", 403);
         call(HttpMethod.GET, signedWrongRevision + "/pages", null, null, 403);
+        // 跟随策略允许重新解析当前修订，但暂停必须同时阻断新授权和此前两个快照的凭据。
+        mutate(latest, "/enabled", Map.of("expectedVersion", 1, "enabled", false));
+        call(HttpMethod.GET, publicPath(latest), null, null, 404);
+        deniedGrant(grantedR1, 404);
+        deniedGrant(grantedR2, 404);
     }
 
     @Test
