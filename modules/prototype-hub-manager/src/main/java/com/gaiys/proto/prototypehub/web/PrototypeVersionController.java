@@ -9,6 +9,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
+import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.RevisionMigrationRequest;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
@@ -17,8 +18,10 @@ import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.validation.Valid;
 import java.util.List;
 import lombok.AllArgsConstructor;
+import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.authorization.Authentication;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.annotation.DeleteAction;
@@ -67,6 +70,16 @@ public class PrototypeVersionController {
         return access.readableVersions(projectId)
                 .sort((a, b) -> Long.compare(b.getCreateTime(), a.getCreateTime()))
                 .concatMap(versions::response);
+    }
+
+    /** 与版本详情共用项目范围和版本查询动作，修订数量只对当前页批量装配。 */
+    @PostMapping("/versions/_query")
+    @QueryAction
+    @Operation(summary = "按授权范围分页查询原型版本", description = "可选项目范围，支持名称字面包含和稳定排序；不返回永久预览凭证")
+    public Mono<PagerResult<VersionResponse>> query(
+            @RequestParam(required = false) String projectId,
+            @Valid @RequestBody PrototypeListQueryRequest input) {
+        return versions.responses(access.readableVersions(projectId, input));
     }
 
     /** 版本容量沿用版本查询权限；项目存在性由服务校验，不放宽为项目查询权限。 */

@@ -9,6 +9,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.mockito.ArgumentCaptor;
 import org.springframework.http.HttpMethod;
 import org.springframework.mock.http.server.reactive.MockServerHttpRequest;
@@ -16,8 +17,32 @@ import org.springframework.mock.web.server.MockServerWebExchange;
 import reactor.core.publisher.Mono;
 import reactor.test.StepVerifier;
 
-/** 验证只读密码确认不会成为写入审计，并保留分享创建、删除及请求体脱敏边界。 */
+/** 验证分页、密码确认不产生写入审计，并保留项目、版本、分享写入及请求体脱敏边界。 */
 class AuditWebFilterTest {
+    @ParameterizedTest
+    @ValueSource(strings = {"/prototype-hub/projects/_query", "/prototype-hub/versions/_query"})
+    void pagedReadsContinueWithRequestIdWithoutCreatingWriteAuditEvents(String path) {
+        var dispatcher = mock(AuditDispatcher.class);
+        var filter = new AuditWebFilter(dispatcher);
+        var exchange =
+                MockServerWebExchange.from(
+                        MockServerHttpRequest.post(path)
+                                .header("X-Request-ID", "paged-read")
+                                .body("{\"pageIndex\":0,\"pageSize\":20}"));
+        var calls = new AtomicInteger();
+        StepVerifier.create(
+                        filter.filter(
+                                exchange,
+                                e -> {
+                                    calls.incrementAndGet();
+                                    return Mono.empty();
+                                }))
+                .verifyComplete();
+        assertEquals(1, calls.get());
+        assertEquals("paged-read", exchange.getResponse().getHeaders().getFirst("X-Request-ID"));
+        verifyNoInteractions(dispatcher);
+    }
+
     @Test
     void managementPasswordCheckContinuesWithoutCreatingAnAuditEvent() {
         var dispatcher = mock(AuditDispatcher.class);
@@ -44,6 +69,8 @@ class AuditWebFilterTest {
 
     @ParameterizedTest
     @CsvSource({
+        "POST,/prototype-hub/projects,project.create,project,",
+        "POST,/prototype-hub/projects/project-id/versions,version.upload,version,",
         "POST,/prototype-hub/versions/version-id/shares,share.create,share,",
         "POST,/prototype-hub/versions/version-id/preview-session,preview.authorize,version,version-id",
         "POST,/prototype-hub/projects/_ownership-migration,project.ownership.migrate,project,",

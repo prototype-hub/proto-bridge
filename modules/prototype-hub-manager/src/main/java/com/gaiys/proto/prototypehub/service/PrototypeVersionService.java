@@ -6,8 +6,14 @@ import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
+import java.util.List;
+import java.util.Map;
 import lombok.AllArgsConstructor;
+import org.hswebframework.ezorm.rdb.executor.wrapper.ResultWrappers;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.ezorm.rdb.operator.dml.query.Selects;
+import org.hswebframework.web.api.crud.entity.PagerResult;
+import org.hswebframework.web.crud.query.QueryHelper;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
@@ -31,6 +37,44 @@ public class PrototypeVersionService
                 .where(PrototypeRevisionEntity::getVersionId, version.getId())
                 .count()
                 .map(count -> VersionResponse.from(version, count.longValue()));
+    }
+
+    /** 仅对已鉴权的有界页面批量统计修订，保留框架分页元信息，不逐条 COUNT 或读取清单正文。 */
+    public Mono<PagerResult<VersionResponse>> responses(
+            Mono<PagerResult<PrototypeVersionEntity>> page) {
+        return QueryHelper.transformPageResult(page, this::responses);
+    }
+
+    private Mono<List<VersionResponse>> responses(List<PrototypeVersionEntity> page) {
+        if (page.isEmpty()) return Mono.just(List.of());
+        List<String> ids = page.stream().map(PrototypeVersionEntity::getId).toList();
+        return revisionCounts(ids)
+                .map(
+                        counts ->
+                                page.stream()
+                                        .map(
+                                                version ->
+                                                        VersionResponse.from(
+                                                                version,
+                                                                counts.getOrDefault(
+                                                                        version.getId(), 0L)))
+                                        .toList());
+    }
+
+    private Mono<Map<String, Long>> revisionCounts(List<String> ids) {
+        // nativeQuery 是官方结构化 QueryOperator，不接收或构造原生 SQL 字符串。
+        return revisions
+                .nativeQuery()
+                .select(
+                        Selects.column("versionId").as("version_id"),
+                        Selects.count1().as("revision_count"))
+                .where(condition -> condition.in(PrototypeRevisionEntity::getVersionId, ids))
+                .groupBy(Selects.column("versionId").get())
+                .fetch(ResultWrappers.map())
+                .reactive()
+                .collectMap(
+                        row -> (String) row.get("version_id"),
+                        row -> ((Number) row.get("revision_count")).longValue());
     }
 
     public Mono<VersionUsageResponse> usage(String project) {

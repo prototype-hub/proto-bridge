@@ -10,6 +10,32 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 原型业务包括项目、逻辑版本、不可变修订、ZIP上传/更新、预览、页面树、Inspect与受控分享。分享/预览 URL 含能力密钥，禁止公开真实链接；错误与审计记录需脱敏。上传时验证 ZIP 大小/条目/深度、解压路径和内容类型，不执行包内安装脚本。
 
+## 项目与版本分页查询
+
+管理页使用 `POST /prototype-hub/projects/_query` 和 `POST /prototype-hub/versions/_query`。版本查询可附加 `?projectId=…`；指定的项目仍须在当前账号可读范围内，否则返回 404。两个入口分别要求项目、版本的 `query` 动作，不因已经登录或加入项目而免除动作校验。
+
+```json
+{
+  "pageIndex": 0,
+  "pageSize": 20,
+  "keyword": "首页",
+  "sortBy": "createTime",
+  "sortOrder": "desc"
+}
+```
+
+| 字段 | 默认值与约束 |
+| --- | --- |
+| `pageIndex` | 默认 0，范围 0–10000；从零计页 |
+| `pageSize` | 默认 20，范围 1–100 |
+| `keyword` | 可选，最长 128 字符；去除首尾空白后对项目名称或版本名称作字面包含匹配，空白表示不筛选。匹配区分大小写，`%`、`_`、`\` 均为普通字符 |
+| `sortBy` | 默认 `createTime`；仅接受 `createTime` 或 `name`，版本的 `name` 对应 `versionName` |
+| `sortOrder` | 默认 `desc`；仅接受 `asc` 或 `desc` |
+
+响应沿用统一封装，`result` 为 `{data,total,pageIndex,pageSize}`。`total` 只统计与 `data` 相同的当前项目授权范围和关键词条件；权限、空白 owner 的旧数据限制及筛选均在数据库计数和分页之前执行，不返回全局总量。排序同值时以 ID 升序保证稳定顺序。越界页保留请求页码与实际总量，`data` 为空；不会因客户端提供 `total`、`rePaging` 等值而改写范围或自动跳页。非法分页或排序参数返回 400。
+
+分页响应保留原有项目角色、能力及版本修订信息；版本 `revisionCount` 仅对本页最多 100 个版本作一次分组统计，不读取修订文件清单。发布过的 `GET /prototype-hub/projects`、`GET /prototype-hub/versions?projectId=…` 继续返回数组，供既有调用方兼容；需要有界查询的新调用方应使用分页入口。
+
 ## 项目成员与授权
 
 项目数据按持久化归属隔离。项目、版本、页面树、上传/替换、分享管理及内部预览均先由 hsweb 检查通用资源动作，再与当前项目角色取交集；前端按钮显示不能代替后端授权。关联版本、分享 ID 由后端回溯其真实项目，不信任客户端额外传入的 projectId。非成员按不存在返回 404，项目内角色不足返回 403。

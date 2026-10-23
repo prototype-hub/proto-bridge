@@ -6,6 +6,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
+import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import com.gaiys.proto.prototypehub.web.response.ProjectUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -13,6 +14,7 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.AllArgsConstructor;
+import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.authorization.Authentication;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.annotation.DeleteAction;
@@ -52,6 +54,15 @@ public class PrototypeProjectController {
     @Operation(summary = "查询原型项目列表")
     public Flux<ProjectResponse> list() {
         return access.readableProjects();
+    }
+
+    /** 已发布 GET 保留数组响应；分页、筛选和稳定排序由此入口在数据库内执行。 */
+    @PostMapping("/_query")
+    @QueryAction
+    @Operation(summary = "按授权范围分页查询原型项目", description = "支持名称字面包含和稳定排序；越界页返回真实总数及空列表")
+    public Mono<PagerResult<ProjectResponse>> query(
+            @Valid @RequestBody PrototypeListQueryRequest input) {
+        return access.readableProjects(input);
     }
 
     /** 沿用项目查询权限，统计整个安装实例，不新增菜单权限或按创建者缩小统计。 */
