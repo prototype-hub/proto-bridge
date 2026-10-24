@@ -790,6 +790,68 @@ class PrototypeHubProjectAccessIntegrationTest {
     }
 
     @Test
+    void comparisonRequiresCurrentVersionReadAndRejectsPublicProofRevokedOrDisabledActors() {
+        Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
+        Actor noVersionRead = actor(Map.of("prototype-hub-project", List.of("query")));
+        String project = project(owner, "Comparison scope").path("id").asText();
+        JsonNode first = upload(owner.token(), project, null, "R1", null, 200);
+        String id = first.path("id").asText(), rid = first.path("revisionId").asText();
+        String path =
+                "/prototype-hub/versions/"
+                        + id
+                        + "/revisions/_compare?leftRevisionId="
+                        + rid
+                        + "&rightRevisionId="
+                        + rid;
+        member(project, viewer, "viewer");
+        member(project, noVersionRead, "viewer");
+        assertEquals(
+                rid,
+                result(HttpMethod.GET, path, viewer.token(), null)
+                        .path("left")
+                        .path("id")
+                        .asText());
+        call(HttpMethod.GET, path, noVersionRead.token(), null, 403);
+        JsonNode share =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + id + "/shares",
+                        owner.token(),
+                        Map.of());
+        JsonNode publicInfo =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + share.path("token").asText(),
+                        null,
+                        null);
+        client.get()
+                .uri(path)
+                .header("X-Access-Token", publicInfo.path("accessKey").asText())
+                .exchange()
+                .expectStatus()
+                .isUnauthorized();
+        call(HttpMethod.GET, path, null, null, 401);
+        result(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + project + "/members/" + viewer.id(),
+                owner.token(),
+                null);
+        call(HttpMethod.GET, path, viewer.token(), null, 404);
+        member(project, viewer, "viewer");
+        grant(viewer.role(), "prototype-hub-version", List.of("save"));
+        call(HttpMethod.GET, path, viewer.token(), null, 403);
+        grant(viewer.role(), "prototype-hub-version", List.of("query", "save", "delete"));
+        users.changeState(Mono.just(viewer.id()), (byte) 0).block(TIMEOUT);
+        call(HttpMethod.GET, path, viewer.token(), null, 401);
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + id, owner.token(), null);
+        call(HttpMethod.GET, path, owner.token(), null, 404);
+        result(HttpMethod.POST, "/prototype-hub/versions/" + id + "/_restore", owner.token(), null);
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + id, owner.token(), null);
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + project, owner.token(), null);
+        call(HttpMethod.GET, path, owner.token(), null, 404);
+    }
+
+    @Test
     void previewPinsRevisionAndStopsAfterDisableOrGenericActionRevocationAndSessionsAreBounded() {
         Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
         String project = project(owner, "Preview lifecycle").path("id").asText();

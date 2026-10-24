@@ -90,6 +90,25 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 历史版本没有 `currentRevisionId` 时，列表和详情可显示 `migrationRequired=true`；当前修订、页面、更新及新建分享返回 409 / `PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED`。无修订绑定的旧公开分享不可用，旧内部会话不再授权。管理员在停写并完成联合备份后调用 `POST /prototype-hub/versions/{id}/revision-migration`，请求 `{"apply":false}` 预检、`true` 显式幂等迁移；需要有效 ADMIN 和版本 save。响应为 `versionId/migrationRequired/revisionId/manifestSha256/fileCount/totalBytes/sharesToBind/receiptsToBind/applied`，`migrationRequired` 表示操作完成后状态，两个数量表示操作前待绑定数量。详细升级步骤见[数据说明](DATA.md#不可变修订与旧内容迁移)。
 
+## 同版本修订比较
+
+`GET /prototype-hub/versions/{id}/revisions/_compare` 比较同一活动逻辑版本的两个明确修订。它沿用 `prototype-hub-version.query` 与当前项目读取权限，不增加菜单或权限项；公开分享不提供比较或额外历史授权。
+
+| 参数 | 默认值与约束 |
+| --- | --- |
+| `leftRevisionId`、`rightRevisionId` | 必填、非空且均属于路径中的版本；允许相同修订，不回退到 current |
+| `pagesPageIndex`、`filesPageIndex` | 分别从 0 计页，非负 |
+| `pagesPageSize`、`filesPageSize` | 分别默认 50，范围 1–100 |
+| `includeUnchanged` | 默认 false；true 时包含未变化项 |
+
+统一响应的 `result` 包含 `versionId`、`left/right` 修订元数据、`summary.pages/files` 的 `added/removed/changed/unchanged` 完整计数，以及 `pages/files` 两个独立的 `{data,total,pageIndex,pageSize}`。`total` 统计应用 includeUnchanged 后的行数，summary 始终统计全部路径；结果按区分大小写的相对路径升序，越界页为空，不自动重定位。
+
+变化方向为 left → right。文件以清单中的精确路径配对，同路径 SHA-256 或字节数不同为 changed；文件项两侧包含 `size/sha256/mediaType`，仅单侧存在时另一侧为 null。页面排除文件夹节点，但继续遍历其子节点及具有子节点的页面，同路径仅取第一个别名；名称或对应文件内容变化为 changed。页面项两侧保留 `pageId/name/path`，旧合法清单的 null pageId 不会被伪造补齐。它不识别重命名、不作语义或像素级比较，也不修改当前修订。
+
+两侧预览分别通过既有固定修订会话接口新取凭证，并保持各自选页、到期处理和 opaque sandbox。可分享的管理端比较定位只携带版本、修订及页面标识，不携带 token、accessKey 或预览 URL；定位本身不授予读取权限。
+
+非法参数或损坏清单返回 400，未登录返回 401，缺少通用动作或项目内角色不足沿既有规则返回 403；修订不存在、关联其他版本/项目或目标已软删返回 404，未迁移版本返回 409。每次比较重新校验当前授权和目标状态；保留数据及旧预览 URL 不扩大读取范围。
+
 ## 项目与版本软删除
 
 `DELETE /prototype-hub/versions/{id}` 保留逻辑版本、当前指针、全部修订、创建回执与文件，在原事务锁边界内写入 `deletedTime`（Unix 毫秒）。`DELETE /prototype-hub/projects/{id}` 同样保留项目与成员谱系；有活动版本时仍返回 409，只有已删除版本不阻止删除项目。重复访问已删除对象按不存在处理，不能用 ADMIN 例外读取已删除业务对象。

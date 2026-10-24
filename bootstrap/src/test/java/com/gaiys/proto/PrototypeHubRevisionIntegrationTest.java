@@ -181,6 +181,154 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     @Test
+    void comparisonPinsTwoExplicitRevisionsAfterCurrentChangesAndReadsNoRuntimeFiles()
+            throws Exception {
+        String project = project();
+        JsonNode first = upload(project, null, archive("R1", 203), null, null, 200);
+        String id = first.path("id").asText(), r1 = first.path("revisionId").asText();
+        String r2 =
+                upload(project, id, archive("R2", 203), null, r1, 200).path("revisionId").asText();
+        String r3 = upload(project, id, archive("R3"), null, r2, 200).path("revisionId").asText();
+        String before = databaseSnapshot();
+        String path = comparison(id, r1, r2);
+        JsonNode compared =
+                result(
+                        HttpMethod.GET,
+                        path
+                                + "&pagesPageSize=1&pagesPageIndex=1&filesPageSize=100&filesPageIndex=2",
+                        null);
+        assertEquals(r1, compared.path("left").path("id").asText());
+        assertEquals(r2, compared.path("right").path("id").asText());
+        assertEquals("R1", compared.path("left").path("versionName").asText());
+        assertEquals("R2", compared.path("right").path("versionName").asText());
+        assertEquals(2, compared.path("summary").path("pages").path("changed").asInt());
+        assertEquals(205, compared.path("summary").path("files").path("changed").asInt());
+        assertEquals(2, compared.path("pages").path("total").asInt());
+        assertEquals(1, compared.path("pages").path("data").size());
+        assertEquals(205, compared.path("files").path("total").asInt());
+        assertEquals(5, compared.path("files").path("data").size());
+        assertEquals(2, compared.path("files").path("pageIndex").asInt());
+        assertFalse(compared.path("left").has("storagePath"));
+        assertFalse(compared.path("left").has("manifestJson"));
+        assertFalse(compared.toString().contains("previewUrl"));
+        assertEquals(
+                r3,
+                result(HttpMethod.GET, version(id) + "/current-revision", null)
+                        .path("id")
+                        .asText());
+        JsonNode same = result(HttpMethod.GET, comparison(id, r1, r1), null);
+        assertEquals(0, same.path("files").path("total").asInt());
+        assertEquals(206, same.path("summary").path("files").path("unchanged").asInt());
+        assertEquals(2, same.path("summary").path("pages").path("unchanged").asInt());
+        JsonNode all =
+                result(
+                        HttpMethod.GET,
+                        path + "&includeUnchanged=true&filesPageSize=100&pagesPageSize=1",
+                        null);
+        assertEquals(206, all.path("files").path("total").asInt());
+        assertEquals(100, all.path("files").path("data").size());
+        JsonNode pastEnd =
+                result(
+                        HttpMethod.GET,
+                        path + "&pagesPageIndex=2147483647&filesPageIndex=2147483647",
+                        null);
+        assertTrue(pastEnd.path("pages").path("data").isEmpty());
+        assertTrue(pastEnd.path("files").path("data").isEmpty());
+        assertEquals(before, databaseSnapshot());
+        // 清单是已发布事实；磁盘暂不可用时对比仍可查阅，不触发重散列或逐文件访问。
+        SecureZipExtractor.deleteRecursively(FILES);
+        assertEquals(
+                compared,
+                result(
+                        HttpMethod.GET,
+                        path
+                                + "&pagesPageSize=1&pagesPageIndex=1&filesPageSize=100&filesPageIndex=2",
+                        null));
+        assertEquals(before, databaseSnapshot());
+    }
+
+    @Test
+    void comparisonRejectsWrongScopeInvalidParametersAndUnmigratedVersions() throws Exception {
+        String project = project();
+        JsonNode own = upload(project, null, archive("R1"), null, null, 200);
+        String id = own.path("id").asText(), rid = own.path("revisionId").asText();
+        String sameProject =
+                upload(project, null, archive("Other version"), null, null, 200)
+                        .path("revisionId")
+                        .asText();
+        String otherProject =
+                upload(project(), null, archive("Other project"), null, null, 200)
+                        .path("revisionId")
+                        .asText();
+        for (String foreign : List.of(sameProject, otherProject, "missing")) {
+            call(HttpMethod.GET, comparison(id, rid, foreign), admin, null, 404);
+            call(HttpMethod.GET, comparison(id, foreign, rid), admin, null, 404);
+        }
+        call(HttpMethod.GET, comparison(id, rid, rid), null, null, 401);
+        for (String invalid :
+                List.of(
+                        "pagesPageIndex=-1",
+                        "filesPageIndex=-1",
+                        "pagesPageSize=0",
+                        "filesPageSize=101",
+                        "pagesPageSize=oops",
+                        "includeUnchanged=oops"))
+            call(HttpMethod.GET, comparison(id, rid, rid) + "&" + invalid, admin, null, 400);
+        call(
+                HttpMethod.GET,
+                version(id) + "/revisions/_compare?rightRevisionId=" + rid,
+                admin,
+                null,
+                400);
+        call(HttpMethod.GET, comparison(id, "", rid), admin, null, 400);
+        makeLegacy(id);
+        JsonNode error = call(HttpMethod.GET, comparison(id, rid, rid), admin, null, 409);
+        assertEquals("PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED", error.path("code").asText());
+    }
+
+    @Test
+    void comparisonAcceptsLegacyNullPageIdentityButRejectsMalformedSavedManifest()
+            throws Exception {
+        JsonNode own = upload(project(), null, archive("Legacy IDs"), null, null, 200);
+        String id = own.path("id").asText(), rid = own.path("revisionId").asText();
+        var json = (com.fasterxml.jackson.databind.node.ObjectNode) manifest(rid);
+        ((com.fasterxml.jackson.databind.node.ObjectNode) json.withArray("pages").get(0))
+                .remove("pageId");
+        String legacyJson = mapper.writeValueAsString(json);
+        revisions
+                .createUpdate()
+                .set(PrototypeRevisionEntity::getManifestJson, legacyJson)
+                .set(
+                        PrototypeRevisionEntity::getManifestSha256,
+                        sha(legacyJson.getBytes(StandardCharsets.UTF_8)))
+                .where(PrototypeRevisionEntity::getId, rid)
+                .execute()
+                .block(TIMEOUT);
+        JsonNode compared =
+                result(HttpMethod.GET, comparison(id, rid, rid) + "&includeUnchanged=true", null);
+        assertTrue(compared.path("pages").path("data").get(0).path("left").path("pageId").isNull());
+        assertTrue(
+                compared.path("pages").path("data").get(0).path("right").path("pageId").isNull());
+        json.put("formatVersion", 2);
+        revisions
+                .createUpdate()
+                .set(PrototypeRevisionEntity::getManifestJson, json.toString())
+                .where(PrototypeRevisionEntity::getId, rid)
+                .execute()
+                .block(TIMEOUT);
+        JsonNode error = call(HttpMethod.GET, comparison(id, rid, rid), admin, null, 400);
+        assertEquals("PROTOTYPE_HUB_MANIFEST_INVALID", error.path("code").asText());
+        revisions
+                .createUpdate()
+                .set(PrototypeRevisionEntity::getManifestJson, "null")
+                .where(PrototypeRevisionEntity::getId, rid)
+                .execute()
+                .block(TIMEOUT);
+        error = call(HttpMethod.GET, comparison(id, rid, rid), admin, null, 400);
+        assertEquals("PROTOTYPE_HUB_MANIFEST_INVALID", error.path("code").asText());
+    }
+
+    @Test
     void replacementPreservesHistorySnapshotMetadataManifestPagesSharesAndCreationReceipt()
             throws Exception {
         String project = project();
@@ -1664,6 +1812,14 @@ class PrototypeHubRevisionIntegrationTest {
         return version(id) + "/revisions/" + rid;
     }
 
+    private String comparison(String id, String left, String right) {
+        return version(id)
+                + "/revisions/_compare?leftRevisionId="
+                + left
+                + "&rightRevisionId="
+                + right;
+    }
+
     private JsonNode call(HttpMethod method, String path, String token, Object body, int status) {
         WebTestClient.RequestBodySpec request = client.method(method).uri(path);
         if (token != null) request.header("X-Access-Token", token);
@@ -1867,6 +2023,10 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     private static byte[] archive(String content) throws IOException {
+        return archive(content, 0);
+    }
+
+    private static byte[] archive(String content, int extraFiles) throws IOException {
         var bytes = new ByteArrayOutputStream();
         try (var zip = new ZipOutputStream(bytes)) {
             for (var entry :
@@ -1878,6 +2038,11 @@ class PrototypeHubRevisionIntegrationTest {
                             Map.entry("assets/style.css", "body{color:#123456}"))) {
                 zip.putNextEntry(new ZipEntry(entry.getKey()));
                 zip.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+            for (int i = 0; i < extraFiles; i++) {
+                zip.putNextEntry(new ZipEntry("assets/%03d.txt".formatted(i)));
+                zip.write(content.getBytes(StandardCharsets.UTF_8));
                 zip.closeEntry();
             }
         }

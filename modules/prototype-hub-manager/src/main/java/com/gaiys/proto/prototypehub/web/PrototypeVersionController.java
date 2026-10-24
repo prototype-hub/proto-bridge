@@ -10,8 +10,10 @@ import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
+import com.gaiys.proto.prototypehub.web.request.RevisionComparisonRequest;
 import com.gaiys.proto.prototypehub.web.request.RevisionMigrationRequest;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
@@ -31,6 +33,7 @@ import org.hswebframework.web.authorization.annotation.SaveAction;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.ModelAttribute;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -148,6 +151,16 @@ public class PrototypeVersionController {
         return access.requireVersion(id, Action.READ)
                 .flatMapMany(version -> revisions.history(version, after, limit))
                 .map(RevisionResponse::from);
+    }
+
+    /** 沿用版本查询动作和项目读取边界，不授予历史预览或公开分享额外权限。 */
+    @GetMapping("/versions/{id}/revisions/_compare")
+    @QueryAction
+    @Operation(summary = "对比同一版本的两个固定修订", description = "按保存清单比较页面与文件；两类结果独立分页，不读取磁盘、不推断视觉变化")
+    public Mono<RevisionComparisonResponse> compare(
+            @PathVariable String id, @Valid @ModelAttribute RevisionComparisonRequest input) {
+        return access.requireVersion(id, Action.READ)
+                .flatMap(version -> revisions.compare(version, input));
     }
 
     @GetMapping("/versions/{id}/revisions/{rid}")
