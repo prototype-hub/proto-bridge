@@ -163,7 +163,8 @@ class DatabaseDescriptionIntegrationTest {
                         "p_review_rate"),
                 tables);
         // 包含邮箱身份、短会话/验证码与限频字段，以及分享默认关闭的身份开关。
-        assertEquals(191, describedColumns);
+        assertEquals(193, describedColumns);
+        assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
                         "retention_deleted_time",

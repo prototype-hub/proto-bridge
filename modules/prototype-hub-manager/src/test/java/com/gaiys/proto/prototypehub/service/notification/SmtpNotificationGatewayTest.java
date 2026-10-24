@@ -65,6 +65,28 @@ class SmtpNotificationGatewayTest {
     }
 
     @Test
+    void blankOptionalFromUsesUsernameAndCannotProduceAnEmptyEnvelope() {
+        var sender = new JavaMailSenderImpl();
+        sender.getJavaMailProperties().setProperty("mail.smtp.from", "");
+        try (var work = new FileWork()) {
+            new SmtpNotificationGateway(
+                    provider(sender),
+                    new MockEnvironment()
+                            .withProperty("spring.mail.host", "localhost")
+                            .withProperty("spring.mail.username", "sender@example.invalid")
+                            .withProperty("spring.mail.properties.mail.smtp.from", ""),
+                    work,
+                    ObservationRegistry.NOOP);
+            assertEquals(
+                    "sender@example.invalid",
+                    sender.getJavaMailProperties().getProperty("mail.smtp.from"));
+            assertEquals(
+                    "sender@example.invalid",
+                    sender.getJavaMailProperties().getProperty("mail.from"));
+        }
+    }
+
+    @Test
     void defaultEhloBypassesLocalReverseDnsAndPreservesExplicitNames() throws Exception {
         for (String configured : new String[] {"", "mail.platform.example"}) {
             var sender = new JavaMailSenderImpl();

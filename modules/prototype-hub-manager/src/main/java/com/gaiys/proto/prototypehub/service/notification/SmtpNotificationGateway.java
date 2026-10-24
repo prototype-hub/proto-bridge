@@ -29,14 +29,20 @@ public class SmtpNotificationGateway implements NotificationGateway {
                 environment.getProperty("spring.mail.host", "").isBlank()
                         ? null
                         : senders.getIfAvailable();
+        String configuredFrom =
+                environment.getProperty("spring.mail.properties.mail.smtp.from", "");
+        String username = environment.getProperty("spring.mail.username", "");
         this.from =
-                environment.getProperty(
-                        "spring.mail.properties.mail.smtp.from",
-                        environment.getProperty("spring.mail.username", "prototype-hub@localhost"));
+                !configuredFrom.isBlank()
+                        ? configuredFrom
+                        : !username.isBlank() ? username : "prototype-hub@localhost";
         this.work = work;
         this.observations = observations;
         if (sender instanceof JavaMailSenderImpl implementation) {
             var properties = implementation.getJavaMailProperties();
+            // YAML空值表示未配置；协议层不能把空字符串当作有效MAIL FROM。
+            if (properties.getProperty("mail.smtp.from", "").isBlank())
+                properties.setProperty("mail.smtp.from", from);
             // Message-ID默认另走InternetAddress本机DNS；显式本地身份覆盖该分支，保留用户配置。
             properties.putIfAbsent("mail.from", from);
             for (String protocol : new String[] {"smtp", "smtps"}) {

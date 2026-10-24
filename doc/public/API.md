@@ -208,6 +208,21 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 未知、错误、过期、已用或不匹配的challenge统一400 / `PROTOTYPE_HUB_REVIEW_CODE_INVALID`。非法输入400，分享证明/Origin/CSRF不符403，分享不可用404，限频429，SMTP未配置或失败503。分享修改、停用、撤销、到期或软删均逐请求阻断旧身份，重新启用不复活旧授权；会话到期需重新验证。
 
+### 项目邮箱访客管理
+
+项目详情提供已验证访客管理，不创建平台用户或新的全局菜单。以下接口分别要求 `prototype-hub-share:query/save`，并同时检查当前项目的 SHARE 能力；项目所有者、编辑者和有效管理员按现有能力操作，只读成员不能查询或修改。跨项目替换 guestId 返回404，不能仅凭访客ID访问。
+
+| 请求 | 输入/结果 |
+| --- | --- |
+| `POST /prototype-hub/projects/{projectId}/review-guests/_query` | `{pageIndex:0,pageSize:20}`；返回标准分页 `result`，含真实total和data |
+| `PUT /prototype-hub/projects/{projectId}/review-guests/{guestId}/enabled` | `{enabled,expectedVersion}`；返回当前访客状态 |
+
+页码0–10000，每页1–100；按最近验证/状态修改时间降序、ID升序排序。越界页保留真实total并返回空data，不回退最后一页；不接收任意查询表达式。列表与修改结果仅含 `{id,displayName,company,maskedEmail,verificationLevel:'email',enabled,configVersion,createTime,modifyTime}`，不提供完整邮箱、会话或验证码摘要。
+
+旧行的enabled空值视为true、configVersion空值视为0。修改必须提交刚读取的版本；陈旧版本返回409，刷新后由操作者重新确认，不自动重试。相同版本和相同状态为无副作用操作；实际转换才增加版本和修改时间，同时在项目锁事务中移除该项目访客的全部会话及邮箱验证码。
+
+停用后已打开设备不能恢复身份或请求验证码，公开context返回session:null；原型匿名预览仍依分享自身策略。重新启用不会恢复旧Cookie或旧验证码，访客必须重新OTP验证；新验证保留原guestId和管理状态版本。发送中的邮件可能已经被SMTP受理，但状态切换会阻止该旧验证码用于验证，平台不能撤回已投递邮件。停用不删除访客身份和其他访客/项目的数据，也不退还发送限额。
+
 ## HTML 文件夹上传
 
 可以上传已有 ZIP，也可以选择已从 Axure 等工具导出的 HTML 文件夹。文件夹在浏览器 Worker 中打包为 ZIP，保留全部所选文件及中文、空格、嵌套子路径，只剥离所选目录本身这一层；打包完成后仍需确认上传。空目录不由浏览器文件列表表示，零字节文件会保留。此功能不读取 `.rp`，不监听目录变化，也不自动采集本地预览。

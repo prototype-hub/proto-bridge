@@ -28,6 +28,10 @@ Redis 使用专用受信数据库、限制网络与写权限；多实例需要�
 
 Docker Compose 使用 `.env.example` 指定的必要变量插值，不自动读取宿主机本地 YAML。保留 `- "属性路径=值"` 的覆盖方式；同栈容器使用服务名/内部端口，外部模式填写可达的地址和认证，详见 [运维指南](OPERATIONS.md)。
 
+## 邮件验证客户端
+
+标准 `spring.mail.*` 及SMTP/SMTPS传输属性集中在application.yml，默认host为空，不影响无邮件部署；保持application-default.yml中的已有变量分层。可用 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`SMTP_FROM`，其他属性按主配置声明的变量或精确属性路径覆盖。默认SMTP587要求认证及STARTTLS，SMTPS需显式选择协议/端口；连接、读、写默认各五秒。发件凭据放环境或私密配置，不提交源码；仅loopback测试允许显式关闭认证/TLS。具体Origin、Cookie、本机身份和超时边界见[运维说明](OPERATIONS.md#邮箱身份与smtp)。
+
 ## 日志与公开展示
 
 `logging.level` 是 logger 名称到级别的映射，`logging.level.io.r2dbc=WARN` 无需预先在 YAML 中声明同名字段。`logging.pattern.dateformat` 控制时间/时区；包级别、控制台/文件阈值与系统日志采集门槛需共同核对。运行时级别修改只影响当前进程，持久策略应改配置后部署。详见 [日志指南](LOGGING.md)。

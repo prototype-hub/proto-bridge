@@ -54,6 +54,10 @@ import org.testcontainers.junit.jupiter.Testcontainers;
             "proto.security.login-encryption-enabled=false",
             "prototype-hub.cleanup.interval-ms=3600000",
             "prototype-hub.review.trusted-origin=https://review.example.invalid",
+            "spring.mail.properties.mail.smtp.auth=false",
+            "spring.mail.properties.mail.smtp.starttls.enable=false",
+            "spring.mail.properties.mail.smtp.starttls.required=false",
+            "spring.mail.properties.mail.smtp.ssl.enable=false",
             "spring.mail.properties.mail.smtp.connectiontimeout=2000",
             "spring.mail.properties.mail.smtp.timeout=2000",
             "spring.mail.properties.mail.smtp.writetimeout=2000"
@@ -526,6 +530,367 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         "p_review_challenge",
                         "p_review_session",
                         "p_review_rate")) assertEquals(0, count(table));
+    }
+
+    @Test
+    void guestManagementUsesProjectShareAndMenuPermissionsWithBoundedMaskedPagination()
+            throws Exception {
+        Fixture fixture = fixture(true, false);
+        Browser verified =
+                verify(fixture, context(fixture, null), "listed@example.invalid", "访客", "自述公司");
+        // F22a旧行没有状态/版本；升级不能无意停用已有邮箱身份。
+        sql(
+                "update p_review_guest set enabled=null,config_version=null where id=:id",
+                verified.guest());
+        long now = System.currentTimeMillis();
+        for (int i = 0; i < 4; i++)
+            database.sql(
+                            "insert into p_review_guest(id,project_id,email,display_name,company,create_time,modify_time) select :id,project_id,:email,:name,company,create_time,:modified from p_review_guest where id=:source")
+                    .bind("id", "page-" + i)
+                    .bind("email", "page-" + i + "@example.invalid")
+                    .bind("name", "访客" + i)
+                    .bind("modified", now + i)
+                    .bind("source", verified.guest())
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        Fixture foreign = fixture(true, false);
+        Browser otherProject =
+                verify(foreign, context(foreign, null), "listed@example.invalid", "其他项目", null);
+        JsonNode first = guestPage(fixture, admin, 0, 2, 200);
+        JsonNode second = guestPage(fixture, admin, 1, 2, 200);
+        assertEquals(5, first.path("total").asInt());
+        assertEquals("page-3", first.path("data").get(0).path("id").asText());
+        assertEquals("page-2", first.path("data").get(1).path("id").asText());
+        assertEquals("page-1", second.path("data").get(0).path("id").asText());
+        JsonNode last = guestPage(fixture, admin, 2, 2, 200).path("data").get(0);
+        assertEquals(verified.guest(), last.path("id").asText());
+        assertTrue(last.path("enabled").asBoolean());
+        assertEquals(0, last.path("configVersion").asLong());
+        assertEquals("email", last.path("verificationLevel").asText());
+        var fields = new java.util.HashSet<String>();
+        last.fieldNames().forEachRemaining(fields::add);
+        assertEquals(
+                java.util.Set.of(
+                        "id",
+                        "displayName",
+                        "company",
+                        "maskedEmail",
+                        "verificationLevel",
+                        "enabled",
+                        "configVersion",
+                        "createTime",
+                        "modifyTime"),
+                fields);
+        for (String rawEmail :
+                List.of(
+                        "page-3@example.invalid",
+                        "page-2@example.invalid",
+                        "listed@example.invalid")) assertFalse(first.toString().contains(rawEmail));
+        assertNotEquals("listed@example.invalid", last.path("maskedEmail").asText());
+        JsonNode beyond = guestPage(fixture, admin, 10000, 2, 200);
+        assertEquals(5, beyond.path("total").asInt());
+        assertEquals(10000, beyond.path("pageIndex").asInt());
+        assertTrue(beyond.path("data").isEmpty());
+        for (Map<String, Integer> invalid :
+                List.of(
+                        Map.of("pageIndex", -1),
+                        Map.of("pageSize", 101),
+                        Map.of("pageSize", 0),
+                        Map.of("pageIndex", 10001)))
+            management(HttpMethod.POST, guestPath(fixture) + "/_query", admin, invalid, 400);
+        guestPage(fixture, null, 0, 20, 401);
+        Actor editor = actor(List.of("query", "save"));
+        Actor viewer = actor(List.of("query", "save"));
+        Actor outsider = actor(List.of("query", "save"));
+        Actor noSave = actor(List.of("query"));
+        Actor noQuery = actor(List.of("save"));
+        for (Actor actor : List.of(editor, viewer, noSave, noQuery))
+            management(
+                    HttpMethod.PUT,
+                    "/prototype-hub/projects/" + fixture.project + "/members/" + actor.id,
+                    admin,
+                    Map.of("role", actor.equals(viewer) ? "viewer" : "editor"),
+                    200);
+        guestPage(fixture, editor.token, 0, 20, 200);
+        guestPage(fixture, viewer.token, 0, 20, 403);
+        guestPage(fixture, outsider.token, 0, 20, 404);
+        guestPage(fixture, noQuery.token, 0, 20, 403);
+        guestEnabled(fixture, verified.guest(), noSave.token, false, 0, 403);
+        guestEnabled(fixture, verified.guest(), noQuery.token, true, 0, 200);
+        management(
+                HttpMethod.PUT,
+                guestPath(fixture) + "/" + verified.guest() + "/enabled",
+                admin,
+                Map.of("enabled", false),
+                400);
+        management(
+                HttpMethod.PUT,
+                guestPath(fixture) + "/" + verified.guest() + "/enabled",
+                admin,
+                Map.of("enabled", false, "expectedVersion", -1),
+                400);
+        guestEnabled(fixture, verified.guest(), viewer.token, false, 0, 403);
+        guestEnabled(fixture, verified.guest(), outsider.token, false, 0, 404);
+        guestEnabled(fixture, otherProject.guest(), admin, false, 0, 404);
+        JsonNode noOp = guestEnabled(fixture, verified.guest(), editor.token, true, 0, 200);
+        assertEquals(0, noOp.path("configVersion").asLong());
+        assertNotNull(context(fixture, verified.cookie).guest());
+        // 所有者与编辑者沿现有SHARE能力，不另建客户账号/角色。
+        database.sql("update p_project set owner_id=:owner where id=:id")
+                .bind("owner", editor.id)
+                .bind("id", fixture.project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        guestPage(fixture, editor.token, 0, 20, 200);
+        JsonNode disabled = guestEnabled(fixture, verified.guest(), editor.token, false, 0, 200);
+        assertFalse(disabled.path("enabled").asBoolean());
+        assertEquals(1, disabled.path("configVersion").asLong());
+        guestEnabled(fixture, verified.guest(), editor.token, true, 0, 409);
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + fixture.version.path("id").asText(),
+                admin,
+                null,
+                200);
+        management(
+                HttpMethod.DELETE, "/prototype-hub/projects/" + fixture.project, admin, null, 200);
+        guestPage(fixture, admin, 0, 20, 404);
+        guestEnabled(fixture, verified.guest(), admin, true, 1, 404);
+    }
+
+    @Test
+    void disablingGuestRevokesAllProjectDevicesAndCodesWithoutAffectingPreviewOrOtherGuests()
+            throws Exception {
+        Fixture fixture = fixture(true, false);
+        Browser first =
+                verify(fixture, context(fixture, null), "revoke@example.invalid", "访客", null);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser second =
+                verify(fixture, context(fixture, null), "revoke@example.invalid", "访客", null);
+        Browser unrelated =
+                verify(fixture, context(fixture, null), "unrelated@example.invalid", "其他访客", null);
+        Fixture foreign = fixture(true, false);
+        Browser foreignSession =
+                verify(foreign, context(foreign, null), "revoke@example.invalid", "跨项目", null);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser pendingBrowser = context(fixture, null);
+        JsonNode pending =
+                challenge(fixture, pendingBrowser, "revoke@example.invalid", "访客", null, 200);
+        String oldCode = MAILBOX.receive().code();
+        long ratesBefore = count("p_review_rate");
+        guestEnabled(fixture, first.guest(), admin, false, 0, 200);
+        assertNull(context(fixture, first.cookie).guest());
+        assertNull(context(fixture, second.cookie).guest());
+        assertNotNull(context(fixture, unrelated.cookie).guest());
+        assertNotNull(context(foreign, foreignSession.cookie).guest());
+        challenge(fixture, pendingBrowser, "REVOKE@EXAMPLE.INVALID", "访客", null, 403);
+        assertEquals(0, MAILBOX.pendingMessages());
+        code(fixture, pendingBrowser, pending, oldCode, 400);
+        assertEquals(ratesBefore, count("p_review_rate"));
+        client.get()
+                .uri(fixture.grant.path("previewUrl").asText())
+                .exchange()
+                .expectStatus()
+                .isOk();
+        JsonNode restored = guestEnabled(fixture, first.guest(), admin, true, 1, 200);
+        assertEquals(2, restored.path("configVersion").asLong());
+        assertNull(context(fixture, first.cookie).guest());
+        assertNull(context(fixture, second.cookie).guest());
+        code(fixture, pendingBrowser, pending, oldCode, 400);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser fresh =
+                verify(fixture, context(fixture, null), "revoke@example.invalid", "访客", null);
+        assertEquals(first.guest(), fresh.guest());
+        JsonNode row = guestPage(fixture, admin, 0, 20, 200).path("data").get(0);
+        assertEquals(2, row.path("configVersion").asLong());
+    }
+
+    @Test
+    void mailAcceptedDuringDisableAndRestoreCannotResurrectTheDeletedChallenge() throws Exception {
+        Fixture fixture = fixture(true, false);
+        Browser verified =
+                verify(fixture, context(fixture, null), "delayed@example.invalid", "访客", null);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser browser = context(fixture, null);
+        MAILBOX.pauseDelivery();
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            Future<JsonNode> pending =
+                    pool.submit(
+                            () ->
+                                    challenge(
+                                            fixture,
+                                            browser,
+                                            "delayed@example.invalid",
+                                            "访客",
+                                            null,
+                                            400));
+            String oldCode = MAILBOX.receive().code();
+            String challengeId =
+                    database.sql("select id from p_review_challenge where email=:email")
+                            .bind("email", "delayed@example.invalid")
+                            .map((r, m) -> r.get("id", String.class))
+                            .one()
+                            .block(TIMEOUT);
+            assertNotNull(challengeId);
+            guestEnabled(fixture, verified.guest(), admin, false, 0, 200);
+            guestEnabled(fixture, verified.guest(), admin, true, 1, 200);
+            MAILBOX.deliver();
+            pending.get(30, TimeUnit.SECONDS);
+            var old =
+                    com.fasterxml.jackson.databind.node.JsonNodeFactory.instance
+                            .objectNode()
+                            .put("challengeId", challengeId);
+            code(fixture, browser, old, oldCode, 400);
+            assertNull(context(fixture, verified.cookie).guest());
+            assertEquals(0, count("p_review_session"));
+            assertEquals(0, count("p_review_challenge"));
+        } finally {
+            MAILBOX.deliver();
+        }
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser fresh =
+                verify(fixture, context(fixture, null), "delayed@example.invalid", "访客", null);
+        assertEquals(verified.guest(), fresh.guest());
+    }
+
+    @Test
+    void guestDisableIsAtomicAndStaleConcurrentWritesCannotRestoreAccess() throws Exception {
+        Fixture fixture = fixture(true, false);
+        Browser verified =
+                verify(fixture, context(fixture, null), "rollback@example.invalid", "访客", null);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser browser = context(fixture, null);
+        JsonNode pending = challenge(fixture, browser, "rollback@example.invalid", "访客", null, 200);
+        String code = MAILBOX.receive().code();
+        long challengesBefore = count("p_review_challenge");
+        sql(
+                "create function reject_review_session_delete() returns trigger language plpgsql as $$ begin raise exception 'fixture rejection'; end $$");
+        sql(
+                "create trigger reject_review_session_delete before delete on p_review_session for each row execute function reject_review_session_delete()");
+        try {
+            guestEnabled(fixture, verified.guest(), admin, false, 0, 500);
+            JsonNode row = guestPage(fixture, admin, 0, 20, 200).path("data").get(0);
+            assertTrue(row.path("enabled").asBoolean());
+            assertEquals(0, row.path("configVersion").asLong());
+            assertEquals(challengesBefore, count("p_review_challenge"));
+            assertEquals(verified.guest(), context(fixture, verified.cookie).guest());
+        } finally {
+            sql("drop trigger reject_review_session_delete on p_review_session");
+            sql("drop function reject_review_session_delete()");
+        }
+        Browser accepted = code(fixture, browser, pending, code, 200);
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var results = new ArrayList<Future<Integer>>();
+            for (int i = 0; i < 2; i++)
+                results.add(
+                        pool.submit(
+                                () -> {
+                                    barrier.await(10, TimeUnit.SECONDS);
+                                    return client.put()
+                                            .uri(
+                                                    guestPath(fixture)
+                                                            + "/"
+                                                            + verified.guest()
+                                                            + "/enabled")
+                                            .header("X-Access-Token", admin)
+                                            .contentType(MediaType.APPLICATION_JSON)
+                                            .bodyValue(
+                                                    Map.of("enabled", false, "expectedVersion", 0))
+                                            .exchange()
+                                            .expectBody(JsonNode.class)
+                                            .returnResult()
+                                            .getStatus()
+                                            .value();
+                                }));
+            var statuses = new ArrayList<Integer>();
+            for (var result : results) statuses.add(result.get(30, TimeUnit.SECONDS));
+            statuses.sort(Integer::compareTo);
+            assertEquals(List.of(200, 409), statuses);
+        }
+        assertNull(context(fixture, accepted.cookie).guest());
+        assertEquals(
+                1,
+                guestPage(fixture, admin, 0, 20, 200)
+                        .path("data")
+                        .get(0)
+                        .path("configVersion")
+                        .asLong());
+    }
+
+    @Test
+    void concurrentCorrectOtpCannotLeaveALiveSessionAfterGuestDisableCommits() throws Exception {
+        Fixture fixture = fixture(true, false);
+        Browser original =
+                verify(fixture, context(fixture, null), "race@example.invalid", "访客", null);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser browser = context(fixture, null);
+        JsonNode pending = challenge(fixture, browser, "race@example.invalid", "访客", null, 200);
+        String value = MAILBOX.receive().code();
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            Future<Browser> verification =
+                    pool.submit(
+                            () -> {
+                                barrier.await(10, TimeUnit.SECONDS);
+                                return exchange(
+                                        fixture,
+                                        "verify",
+                                        Map.of(
+                                                "challengeId",
+                                                pending.path("challengeId").asText(),
+                                                "code",
+                                                value),
+                                        browser.cookie,
+                                        browser.csrf(),
+                                        ORIGIN,
+                                        200,
+                                        400);
+                            });
+            Future<JsonNode> disabling =
+                    pool.submit(
+                            () -> {
+                                barrier.await(10, TimeUnit.SECONDS);
+                                return guestEnabled(
+                                        fixture, original.guest(), admin, false, 0, 200);
+                            });
+            Browser outcome = verification.get(30, TimeUnit.SECONDS);
+            assertFalse(disabling.get(30, TimeUnit.SECONDS).path("enabled").asBoolean());
+            assertNull(context(fixture, original.cookie).guest());
+            assertNull(context(fixture, outcome.cookie).guest());
+            assertEquals(0, count("p_review_session"));
+            assertEquals(0, count("p_review_challenge"));
+        }
+    }
+
+    private String guestPath(Fixture fixture) {
+        return "/prototype-hub/projects/" + fixture.project + "/review-guests";
+    }
+
+    private JsonNode guestPage(Fixture fixture, String token, int page, int size, int status) {
+        return management(
+                HttpMethod.POST,
+                guestPath(fixture) + "/_query",
+                token,
+                Map.of("pageIndex", page, "pageSize", size),
+                status);
+    }
+
+    private JsonNode guestEnabled(
+            Fixture fixture,
+            String guest,
+            String token,
+            boolean enabled,
+            long version,
+            int status) {
+        return management(
+                HttpMethod.PUT,
+                guestPath(fixture) + "/" + guest + "/enabled",
+                token,
+                Map.of("enabled", enabled, "expectedVersion", version),
+                status);
     }
 
     private record Fixture(String project, JsonNode version, JsonNode share, JsonNode grant) {}

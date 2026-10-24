@@ -24,7 +24,7 @@
 
 邮箱身份默认关闭，由分享管理员逐条开启。无SMTP时原型预览仍可用，身份验证显示不可用，不自动跳过验证；邮件仅发必要验证码，不提供邀请或业务提醒。
 
-私有配置填写标准 `spring.mail.host/port/username/password`，按服务商要求设置 `spring.mail.properties.mail.smtp.auth`、`starttls.enable/starttls.required`，使用真实TLS信任链。发件地址使用 `spring.mail.properties.mail.smtp.from`，缺省取username。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
+SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml`：`spring.mail.host` 默认为空，未配置时不启用发送，也不在启动时连接服务商。填写标准 `spring.mail.host/port/username/password`，默认SMTP端口587、认证及STARTTLS启用且要求升级TLS，服务端身份校验开启；按服务商要求覆盖真实属性并使用有效TLS信任链。SMTPS需明确设置protocol为smtps及端口465，使用同一properties中的mail.smtps配置。发件地址使用 `spring.mail.properties.mail.smtp.from`，非空配置优先，空值取非空username，仍为空才取本机身份prototype-hub@localhost；实际对外服务应显式配置服务商许可的发件地址。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
 
 会话的 `spring.mail.properties.mail.from` 缺省复用上述发件地址，让MIME Message-ID直接取得发件域，避免生成邮件标识时反查本机DNS；显式填写的值会保留。该属性与SMTP的EHLO主机名职责不同，真实邮件服务仍需正确的服务端DNS、TLS及认证配置。
 
@@ -32,9 +32,13 @@ HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.tru
 
 `prototype-hub.review.cookie-secure` 默认true，仅本机HTTP测试设false。生产使用HTTPS；Cookie固定Path要求保留现有 `/api` 公开前缀及代理剥离语义，不能改为根路径解决代理问题。Cookie只发往review子路径，runtime与iframe不携带访客身份。
 
-原生环境变量为 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN`、`PROTOTYPEHUB_REVIEW_COOKIESECURE`，也可沿Compose现有格式填写 `- "prototype-hub.review.trusted-origin=https://your-platform.example"`。TLS map参数建议使用私有YAML或精确命令行属性，不提交真实密码；模板见 `application-local.yml.example`。
+原生环境变量为 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN`、`PROTOTYPEHUB_REVIEW_COOKIESECURE`，也可沿Compose现有格式填写 `- "prototype-hub.review.trusted-origin=https://your-platform.example"`。主配置同时声明SMTP/SMTPS的认证、STARTTLS/SSL、服务端身份校验、连接/读/写超时及EHLO身份，发件地址可用 `SMTP_FROM`；TLS等map参数建议使用私有YAML或精确命令行属性，不提交真实密码，完整可用项以application.yml为准。模板见 `application-local.yml.example`。只有隔离的loopback测试接收端显式关闭认证/TLS，不沿用到生产。
 
 备份全部 `p_review_*` 与分享配置及密钥，恢复副本核验未过期身份与旧撤销状态。自动化只用隔离本地SMTP和 `example.invalid` 夹具，不向真实客户发送测试邮件。
+
+项目详情的访客管理沿分享查询/保存动作与项目SHARE权限，列表仅显示脱敏邮箱。停用立即阻断旧身份并删除旧会话/验证码，重新启用要求新OTP；不改变分享本身的匿名预览策略。更新服务前停止忽略guest状态的旧后端节点，配套发布前后端，避免混跑使停用失效；备份/恢复须保留enabled/config_version。旧版本JAR会忽略这些状态，不能直接换回作为安全回滚。
+
+当前通知传输仍位于原型模块，仅提供身份验证用途。邮件与短信传输后续会抽离为独立通知模块，复用同一NotificationGateway与配置；短信、通知管理界面和业务投递尚未实现。基础OTP保持独立可用，业务通知仍需各自的权限与用途检查，不把任意业务内容伪装验证码。
 
 日志只收集白名单元数据并在落盘前脱敏；网关/CDN/错误日志同样不能记录完整分享URL、认证头或密码，也不得记录邮箱请求体、完整邮箱、验证码、Cookie或CSRF。安全事件按 [SECURITY](../../SECURITY.md) 私密报告。
 

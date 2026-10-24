@@ -9,7 +9,7 @@ import lombok.Getter;
 import lombok.Setter;
 import org.hswebframework.web.api.crud.entity.GenericEntity;
 
-/** 邮箱验证的项目访客身份，不属于平台内部用户。 */
+/** 邮箱验证的项目访客身份；项目管理侧可停用，不属于平台内部用户。 */
 @Getter
 @Setter
 @Table(
@@ -35,6 +35,14 @@ public class PrototypeReviewGuestEntity extends GenericEntity<String> {
     @Column(name = "company", length = 200)
     @Schema(description = "访客自述公司名称")
     private String company;
+
+    @Column(name = "enabled")
+    @Schema(description = "是否启用访客身份，历史空值视为启用")
+    private Boolean enabled;
+
+    @Column(name = "config_version")
+    @Schema(description = "访客状态配置版本，历史空值视为零")
+    private Long configVersion;
 
     @Column(name = "create_time", nullable = false)
     @Schema(description = "首次验证时间（Unix毫秒）")

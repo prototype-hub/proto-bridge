@@ -9,7 +9,10 @@ import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import com.gaiys.proto.prototypehub.web.request.ReviewChallengeRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewGuestEnabledRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewGuestQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewVerifyRequest;
+import com.gaiys.proto.prototypehub.web.response.ReviewGuestResponse;
 import jakarta.validation.Validation;
 import org.junit.jupiter.api.Test;
 
@@ -134,5 +137,46 @@ class PrototypeReviewBoundaryTest {
         guest.setEmail("secret@example.com");
         guest.setDisplayName("Private Name");
         assertFalse(mapper.writeValueAsString(guest).contains("secret@example.com"));
+    }
+
+    @Test
+    void managementViewKeepsHistoricalGuestActiveButNeverExposesFullEmailOrProject()
+            throws Exception {
+        var guest = new PrototypeReviewGuestEntity();
+        guest.setId("guest");
+        guest.setProjectId("private-project");
+        guest.setEmail("visitor@example.invalid");
+        guest.setDisplayName("Self-declared name");
+        var response = ReviewGuestResponse.from(guest);
+        assertTrue(response.enabled());
+        assertEquals(0, response.configVersion());
+        assertNull(response.company());
+        assertEquals("email", response.verificationLevel());
+        String json = new ObjectMapper().writeValueAsString(response);
+        assertFalse(json.contains("visitor@example.invalid"));
+        assertFalse(json.contains("private-project"));
+        assertFalse(json.contains("\"email\":"));
+        guest.setEnabled(false);
+        guest.setConfigVersion(2L);
+        assertFalse(ReviewGuestResponse.from(guest).enabled());
+        assertEquals(2, ReviewGuestResponse.from(guest).configVersion());
+    }
+
+    @Test
+    void managementInputsHaveBoundedPagesAndRequireExplicitStateAndVersion() {
+        try (var factory = Validation.buildDefaultValidatorFactory()) {
+            var validator = factory.getValidator();
+            var request = new ReviewGuestQueryRequest();
+            assertTrue(validator.validate(request).isEmpty());
+            request.setPageIndex(10001);
+            request.setPageSize(101);
+            assertEquals(2, validator.validate(request).size());
+            request.setPageIndex(-1);
+            request.setPageSize(0);
+            assertEquals(2, validator.validate(request).size());
+            assertEquals(2, validator.validate(new ReviewGuestEnabledRequest(null, null)).size());
+            assertFalse(validator.validate(new ReviewGuestEnabledRequest(false, -1L)).isEmpty());
+            assertTrue(validator.validate(new ReviewGuestEnabledRequest(false, 0L)).isEmpty());
+        }
     }
 }

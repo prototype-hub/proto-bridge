@@ -87,12 +87,14 @@ EasyORM增加 `p_share.review_enabled`，旧空值按关闭处理，不自动改
 
 | 表 | 职责 |
 | --- | --- |
-| `p_review_guest` | 项目与规范邮箱确定的稳定访客ID、邮箱与自填姓名/公司 |
+| `p_review_guest` | 项目与规范邮箱确定的稳定访客ID、邮箱与自填姓名/公司，以及enabled/config_version管理状态 |
 | `p_review_challenge` | OTP的BCrypt摘要、投递/尝试/消费状态，以及Cookie、分享、项目、版本、修订、配置代次绑定 |
 | `p_review_session` | 随机Cookie的SHA-256主键、访客与范围，最长八小时，不存原始Cookie |
 | `p_review_rate` | 项目与邮箱发送窗口、计数、冷却期，跨副本共用 |
 
 BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。
+
+EasyORM为已有guest补充可空的 `enabled/config_version`，旧空值分别按有效/版本0处理；不会回填猜测的状态。新身份有效且版本为0，重新OTP只更新自述资料，不重置管理状态或版本。项目级启停和OTP事务共用项目锁，状态真正切换时增加版本，并同事务删除该项目guest所有会话、该项目规范邮箱的所有challenge；任一步失败全部回滚。重新启用需新OTP，不能恢复旧邮件或Cookie；限频台账保留，停用不是永久删除。
 
 四表与分享配置/密钥一并备份，不加入原型manifest或匿名存储导出。表内邮箱、自填资料及可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。稳定guest随项目保留，不按短会话期限删除身份；身份不等于永久访问权。
 
