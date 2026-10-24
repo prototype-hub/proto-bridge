@@ -44,6 +44,7 @@ public class PrototypeRetentionService {
     private final TransactionalOperator transactions;
     private final ObservationRegistry observations;
     private final QueryHelper queries;
+    private final PrototypeReviewService review;
 
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
@@ -61,6 +62,15 @@ public class PrototypeRetentionService {
                                     error.getClass().getSimpleName());
                             return Mono.empty();
                         })
+                .then(
+                        review.cleanupExpired()
+                                .onErrorResume(
+                                        error -> {
+                                            log.warn(
+                                                    "Prototype review cleanup pending: errorType={}",
+                                                    error.getClass().getSimpleName());
+                                            return Mono.empty();
+                                        }))
                 .then(cleanup.retryPending());
     }
 
@@ -369,9 +379,11 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return sessions.createDelete()
-                .where(PrototypePreviewSessionEntity::getVersionId, id)
-                .execute()
+        return review.purgeVersion(id)
+                .then(
+                        sessions.createDelete()
+                                .where(PrototypePreviewSessionEntity::getVersionId, id)
+                                .execute())
                 .then(shares.createDelete().where(PrototypeShareEntity::getVersionId, id).execute())
                 .then(
                         receipts.createDelete()
@@ -427,6 +439,7 @@ public class PrototypeRetentionService {
                                                                         ::getResourceId,
                                                                 id)
                                                         .execute())
+                                        .then(review.purgeProject(id))
                                         .then(projects.deleteById(id))
                                         .thenReturn(true))
                 .defaultIfEmpty(false)

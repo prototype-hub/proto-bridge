@@ -22,6 +22,10 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型版本分享链接及访问控制信息")
 public class PrototypeShareEntity extends GenericEntity<String> {
+    @Column(name = "review_enabled")
+    @Schema(description = "是否允许邮箱访客身份，旧数据为空时按关闭处理")
+    private Boolean reviewEnabled;
+
     @Column(name = "revision_id", length = 64)
     @Schema(description = "固定模式绑定的不可变快照标识；跟随最新模式为空，旧固定分享为空时需显式迁移")
     private String revisionId;

@@ -7,11 +7,13 @@ import com.gaiys.proto.prototypehub.enums.SharePasswordAction;
 import com.gaiys.proto.prototypehub.enums.ShareRevisionMode;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeShareKeys;
+import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareEnabledRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareUpdateRequest;
 import com.gaiys.proto.prototypehub.web.response.PublicShareResponse;
+import com.gaiys.proto.prototypehub.web.response.ReviewPolicyResponse;
 import com.gaiys.proto.prototypehub.web.urls.PrototypeUrls;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -42,6 +44,24 @@ public class PrototypeShareService
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
     private final PrototypeRevisionService revisions;
+    private final NotificationGateway notifications;
+
+    public Mono<ReviewPolicyResponse> reviewPolicy(String id) {
+        return access.requireShare(id, PrototypeProjectAccessService.Action.SHARE)
+                .map(this::reviewPolicy);
+    }
+
+    public Mono<ReviewPolicyResponse> reviewPolicy(String id, ShareEnabledRequest input) {
+        return mutate(id, input.expectedVersion(), share -> share.setReviewEnabled(input.enabled()))
+                .map(this::reviewPolicy);
+    }
+
+    private ReviewPolicyResponse reviewPolicy(PrototypeShareEntity share) {
+        return new ReviewPolicyResponse(
+                Boolean.TRUE.equals(share.getReviewEnabled()),
+                notifications.available(),
+                share.getConfigVersion() == null ? 0 : share.getConfigVersion());
+    }
 
     public Flux<PrototypeShareEntity> findByVersionId(String id) {
         return createQuery().where(PrototypeShareEntity::getVersionId, id).fetch();
@@ -102,6 +122,7 @@ public class PrototypeShareService
         share.setToken(random());
         share.setAccessKey(random());
         share.setEnabled(true);
+        share.setReviewEnabled(false);
         share.setRevoked(false);
         share.setConfigVersion(1L);
         share.setRevisionMode(mode.name());
@@ -282,6 +303,9 @@ public class PrototypeShareService
                         .set(PrototypeShareEntity::getAccessKey, share.getAccessKey())
                         .set(PrototypeShareEntity::getEnabled, share.getEnabled())
                         .set(
+                                PrototypeShareEntity::getReviewEnabled,
+                                Boolean.TRUE.equals(share.getReviewEnabled()))
+                        .set(
                                 PrototypeShareEntity::getRevoked,
                                 Boolean.TRUE.equals(share.getRevoked()))
                         .set(PrototypeShareEntity::getConfigVersion, share.getConfigVersion())
@@ -315,7 +339,9 @@ public class PrototypeShareService
     public Mono<PrototypeShareEntity> requireActive(String token) {
         return createQuery()
                 .where(PrototypeShareEntity::getToken, token)
-                .fetchOne()
+                // 后续可能进入邮箱BCrypt或文件工作，等待正常完成并归还查询连接。
+                .fetch()
+                .singleOrEmpty()
                 .filter(
                         s ->
                                 Boolean.TRUE.equals(s.getEnabled())
@@ -434,7 +460,11 @@ public class PrototypeShareService
                                             : null,
                                     revision.getId(),
                                     mode(share).name(),
-                                    grant ? prefix + "/pages" : null);
+                                    grant ? prefix + "/pages" : null,
+                                    grant && Boolean.TRUE.equals(share.getReviewEnabled()),
+                                    grant
+                                            && Boolean.TRUE.equals(share.getReviewEnabled())
+                                            && notifications.available());
                         });
     }
 

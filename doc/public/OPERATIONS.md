@@ -20,7 +20,23 @@
 
 升级软删版本前必须停止全部旧写入/清理节点，在副本核对 nullable `deleted_time`、活动占用及保留引用，再配套发布前后端。禁止混跑忽略软删标志或仍立即物理删除的旧版本；历史已经清理的内容无法从增列恢复。回收站恢复使用当前权限和容量，先恢复项目，再按需逐项恢复其版本，保留原 ID 与全部修订；恢复失败先检查30天期限、授权、父项目状态和名额，不手改删除标记。旧内部会话与旧分享仍无效，需重新申请预览或新建分享。未满30天的保留文件仍占用磁盘，到期文件由持久化队列在无引用后异步清理；不将人工删除目录当作释放业务额度。
 
-日志只收集白名单元数据并在落盘前脱敏；网关/CDN/错误日志同样不能记录完整分享URL、认证头或密码。安全事件按 [SECURITY](../../SECURITY.md) 私密报告。
+## 邮箱身份与SMTP
+
+邮箱身份默认关闭，由分享管理员逐条开启。无SMTP时原型预览仍可用，身份验证显示不可用，不自动跳过验证；邮件仅发必要验证码，不提供邀请或业务提醒。
+
+私有配置填写标准 `spring.mail.host/port/username/password`，按服务商要求设置 `spring.mail.properties.mail.smtp.auth`、`starttls.enable/starttls.required`，使用真实TLS信任链。发件地址使用 `spring.mail.properties.mail.smtp.from`，缺省取username。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
+
+会话的 `spring.mail.properties.mail.from` 缺省复用上述发件地址，让MIME Message-ID直接取得发件域，避免生成邮件标识时反查本机DNS；显式填写的值会保留。该属性与SMTP的EHLO主机名职责不同，真实邮件服务仍需正确的服务端DNS、TLS及认证配置。
+
+HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.trusted-origin=https://your-platform.example`；本地Vite通常为 `http://localhost:5173`，以浏览器实际地址为准，localhost与127.0.0.1不同。该值只能是单一完整HTTP/HTTPS origin，不含路径、查询、片段或账号；设置后仅接受它，不同时放开后台地址。缺省严格比较请求URI，不为此新增任意Forwarded信任或凭据CORS。
+
+`prototype-hub.review.cookie-secure` 默认true，仅本机HTTP测试设false。生产使用HTTPS；Cookie固定Path要求保留现有 `/api` 公开前缀及代理剥离语义，不能改为根路径解决代理问题。Cookie只发往review子路径，runtime与iframe不携带访客身份。
+
+原生环境变量为 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN`、`PROTOTYPEHUB_REVIEW_COOKIESECURE`，也可沿Compose现有格式填写 `- "prototype-hub.review.trusted-origin=https://your-platform.example"`。TLS map参数建议使用私有YAML或精确命令行属性，不提交真实密码；模板见 `application-local.yml.example`。
+
+备份全部 `p_review_*` 与分享配置及密钥，恢复副本核验未过期身份与旧撤销状态。自动化只用隔离本地SMTP和 `example.invalid` 夹具，不向真实客户发送测试邮件。
+
+日志只收集白名单元数据并在落盘前脱敏；网关/CDN/错误日志同样不能记录完整分享URL、认证头或密码，也不得记录邮箱请求体、完整邮箱、验证码、Cookie或CSRF。安全事件按 [SECURITY](../../SECURITY.md) 私密报告。
 
 见 [配置](CONFIGURATION.md)、[数据库](DATA.md)、[日志](LOGGING.md) 和 [发布指南](RELEASE.md)。
 

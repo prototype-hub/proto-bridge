@@ -81,6 +81,23 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 完整清单需同时具有 `referencesComplete=true`、`receiptReferencesChecked=true` 和 `integrityErrors=0`。旧数组、缺结构的 current-only 清单以及尚未核验回执关联的旧清单只允许只读诊断，不授权 `--delete-unreferenced`。缺失引用目录或异常符号链接会使审计失败并阻止任何修复；目录审计不替代全量文件路径/内容 hash 核对。离线修复还必须显式提供 `--offline --confirm /path/to/snapshot`，仅在联合备份的隔离副本审查后使用；不要手改清单完整性标志绕过检查，软删目录仍属于被引用数据。
 
+## 分享邮箱身份数据
+
+EasyORM增加 `p_share.review_enabled`，旧空值按关闭处理，不自动改变现有分享。身份使用以下四表，不关联或创建 `s_user`：
+
+| 表 | 职责 |
+| --- | --- |
+| `p_review_guest` | 项目与规范邮箱确定的稳定访客ID、邮箱与自填姓名/公司 |
+| `p_review_challenge` | OTP的BCrypt摘要、投递/尝试/消费状态，以及Cookie、分享、项目、版本、修订、配置代次绑定 |
+| `p_review_session` | 随机Cookie的SHA-256主键、访客与范围，最长八小时，不存原始Cookie |
+| `p_review_rate` | 项目与邮箱发送窗口、计数、冷却期，跨副本共用 |
+
+BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。
+
+四表与分享配置/密钥一并备份，不加入原型manifest或匿名存储导出。表内邮箱、自填资料及可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。稳定guest随项目保留，不按短会话期限删除身份；身份不等于永久访问权。
+
+既有保留期调度每次清理过期challenge/session/rate各最多50行。软删保留业务行但撤销分享；版本永久清理在原图事务移除该版本challenge/session，项目永久清理移除全部guest/challenge/session/rate。文件继续按原30天回收策略处理，不新建后台线程。
+
 ## 项目归属迁移与认领
 
 EasyORM 补齐 `p_project.owner_id/access_epoch`、`p_project_member` 和 `p_preview_session` 的结构与描述，**不自动推断或回填旧项目 owner**。创建者 ID 保留为历史审计字段；新建项目在创建事务内绑定 owner，普通查询以当前 owner/成员为准。`p_project_member` 保存编辑者和只读成员，owner 由项目字段唯一表示。owner 字段为空的待认领项目仅有效 ADMIN 可见，不能作为共享项目向全员兜底；owner 停用时允许管理员重新认领，其他有效成员仍按原角色访问。

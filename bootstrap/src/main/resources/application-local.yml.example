@@ -134,3 +134,28 @@ FRONT_POLICE_RECORD_NUMBER: ''
 # 版权信息
 FRONT_COPYRIGHT: ''
 
+
+# 可选：公开分享邮箱身份的验证邮件（默认不配置，不影响原型分享/预览）。
+# 设置 host 后才启用；只发送用户主动请求的一次性验证码，不发送业务通知。
+spring:
+  mail:
+    host: ''
+    port: 587
+    username: ''
+    password: '' # 仅本地私密文件/环境变量填写，严禁提交实际密码
+    protocol: smtp
+    default-encoding: UTF-8
+    properties:
+      mail.smtp.auth: true
+      mail.smtp.starttls.enable: true
+      mail.smtp.starttls.required: true
+      mail.smtp.ssl.checkserveridentity: true
+      mail.smtp.connectiontimeout: 5000
+      mail.smtp.timeout: 5000
+      mail.smtp.writetimeout: 5000
+      mail.smtp.from: 'verification@example.com'
+
+prototype-hub:
+  review:
+    cookie-secure: true # 生产 HTTPS 必须 true；仅 localhost HTTP 测试可显式 false
+    trusted-origin: '' # 完整可信前端Origin，如 https://prototype.example.com 或 http://localhost:5173

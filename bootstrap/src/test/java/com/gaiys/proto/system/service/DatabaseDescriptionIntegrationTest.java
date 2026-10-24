@@ -117,7 +117,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(17, localTypes.size());
+        assertEquals(21, localTypes.size());
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -156,10 +156,14 @@ class DatabaseDescriptionIntegrationTest {
                         "p_creation_receipt",
                         "p_file_cleanup",
                         "p_project_member",
-                        "p_preview_session"),
+                        "p_preview_session",
+                        "p_review_guest",
+                        "p_review_challenge",
+                        "p_review_session",
+                        "p_review_rate"),
                 tables);
-        // 包含修订/分享绑定、软删时间和4个持久保留期扫描游标。
-        assertEquals(150, describedColumns);
+        // 包含邮箱身份、短会话/验证码与限频字段，以及分享默认关闭的身份开关。
+        assertEquals(191, describedColumns);
         for (String name :
                 Set.of(
                         "retention_deleted_time",
