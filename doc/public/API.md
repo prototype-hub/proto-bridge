@@ -90,6 +90,16 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 历史版本没有 `currentRevisionId` 时，列表和详情可显示 `migrationRequired=true`；当前修订、页面、更新及新建分享返回 409 / `PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED`。无修订绑定的旧公开分享不可用，旧内部会话不再授权。管理员在停写并完成联合备份后调用 `POST /prototype-hub/versions/{id}/revision-migration`，请求 `{"apply":false}` 预检、`true` 显式幂等迁移；需要有效 ADMIN 和版本 save。响应为 `versionId/migrationRequired/revisionId/manifestSha256/fileCount/totalBytes/sharesToBind/receiptsToBind/applied`，`migrationRequired` 表示操作完成后状态，两个数量表示操作前待绑定数量。详细升级步骤见[数据说明](DATA.md#不可变修订与旧内容迁移)。
 
+## 修订页面深链
+
+平台内预览路由为 `/preview/{projectId}/{versionId}?revisionId={rid}&pageId={pageId}`。未指定修订的旧链接只在进入时解析一次当前修订，随后将实际修订和选中页面写入地址；刷新会重新校验当前身份并换取该固定修订的短期凭证，后续上传不会让链接悄悄切到新内容。浏览器前进、后退只切换同一已授权修订内的页面，切换修订则重新鉴权。显式错误、重复或不存在的定位参数不可自动退回当前修订或首页。
+
+`pageId` 必须精确匹配本次授权修订页面树中的唯一页面，运行路径取自该节点，不接受地址栏传入任意文件路径；目录不能作为页面目标。页面名称和路径查找只在已授权树内进行，不扩大数据范围。页面树中没有稳定标识的旧节点可以展示，但不能生成声称固定页面的链接。页面身份始终是 `(revisionId,pageId)`，不能仅凭相同路径跨修订定位。
+
+公开预览路由为 `/share/{token}?revisionId={rid}&pageId={pageId}`，仍按原分享策略重新获取授权；查询参数不授予历史修订访问权。`latest` 分享发布 R2 后，原来固定 R1 的页面深链重新打开时会显示目标已变化或不可用，不能自动展示 R2，也不能据此重新获取 R1 的授权；原先已经签发的 R1 凭据仍按分享生命周期规则校验。需要长期固定 R1 的公开链接时，应使用绑定 R1 的 `fixed` 分享。分享密码、派生访问密钥、短期内部凭证和平台登录令牌均不写入深链或复制结果。
+
+无成员范围的内部定位请求返回 404，项目内角色或通用动作不足维持原 403；已签内部运行凭证到期、撤权也维持原 403。公开分享过期、暂停、撤销或删除后返回原有不可用错误，深链不能绕过这些校验。错误时清除旧预览，不继续显示上一次目标。
+
 ## 分享生命周期
 
 管理接口沿用 `prototype-hub-share` 的 `query/save/delete` 动作，并与项目的分享管理范围取交集；owner、editor 和有效 ADMIN 例外可管理，viewer 不能借通用 save 权限获得分享管理能力。管理响应增加 `revisionMode/revisionId/revoked/configVersion`，不返回派生密钥、密码散列或密码明文。公开信息中的 `revisionId` 始终为本次实际授权的修订。
