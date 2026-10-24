@@ -65,6 +65,6 @@ python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --fro
 
 ## 已知产品边界
 
-原型资源以 opaque sandbox 隔离，不能恢复 `allow-same-origin` 来让上传 HTML 读取管理平台存储。复杂 Axure 依赖原生父子 iframe 对象共享的同步能力可能受限，包括播放器页名和初始目录选中；不能声称所有导出包完全兼容。项目成员级数据权限、完整 SSO/应用/资产集成不作为已完成能力提供。
+原型资源以 opaque sandbox 隔离，不能恢复 `allow-same-origin` 来让上传 HTML 读取管理平台存储。复杂 Axure 依赖原生父子 iframe 对象共享的同步能力可能受限，包括播放器页名和初始目录选中；不能声称所有导出包完全兼容。项目成员级数据权限已提供，仍须与通用资源动作取交集；完整 SSO/应用/资产集成不作为已完成能力提供。
 
 贡献步骤见 [CONTRIBUTING](../../CONTRIBUTING.md)，常规验证见 [开发指南](DEVELOPMENT.md)。

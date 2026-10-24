@@ -2,6 +2,7 @@
 
 import argparse
 import contextlib
+import copy
 import importlib.util
 import io
 import json
@@ -338,6 +339,102 @@ class RuntimeSafetyTest(unittest.TestCase):
             with self.assertRaises(runtime.VerificationFailure):
                 runtime.storage_manifest(unsafe)
         self.assertEqual(b'unrelated', (outside / 'keep.png').read_bytes())
+
+class RevisionComparisonVerificationTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='runtime-comparison-test-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        jar = root / 'fixture.jar'
+        jar.write_bytes(b'never launched')
+        self.check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), root)
+        self.api = runtime.Api('http://127.0.0.1:1', self.check.secrets_seen)
+        self.api.token = 'private-platform-token'
+        self.original = {'id': 'logical', 'revisionId': 'r1'}
+        self.current = {'id': 'logical', 'revisionId': 'r2'}
+        self.before = {'entry': 'a' * 64, 'child': 'b' * 64, 'css': 'c' * 64}
+        self.after = {'entry': 'd' * 64, 'child': 'e' * 64, 'css': 'c' * 64}
+        names = {'index.html': 'Runtime fixture home',
+                 'nested/child.html': 'Runtime fixture nested page',
+                 'nested/detail.html': 'Runtime fixture detail'}
+        self.rows = {'pages': [], 'files': []}
+        for path, name in names.items():
+            changed = path != 'nested/detail.html'
+            page = {'path': path, 'pageId': runtime.hashlib.sha256(path.encode()).hexdigest(), 'name': name}
+            self.rows['pages'].append({'path': path, 'status': 'changed' if changed else 'unchanged',
+                                       'left': page, 'right': dict(page, name=name + (' revision two' if changed else ''))})
+        for path, key in (('assets/icon.svg', None), ('assets/style.css', 'css'), ('index.html', 'entry'),
+                          ('nested/child.html', 'child'), ('nested/detail.html', None)):
+            metadata = {'size': 100, 'sha256': self.before[key] if key else 'f' * 64, 'mediaType': 'text/plain'}
+            self.rows['files'].append({'path': path, 'status': 'changed' if key in ('entry', 'child') else 'unchanged',
+                                       'left': metadata, 'right': dict(metadata, sha256=self.after[key] if key else 'f' * 64)})
+
+    def responder(self, fault=None):
+        def request(identity, method, path, payload=None, expected=200, **options):
+            self.assertEqual('GET', method)
+            if expected in (401, 404):
+                self.assertEqual(401 if identity.token is None else 404, expected)
+                return {}
+            if path.endswith('/current-revision'):
+                return {'id': 'r1' if fault == 'current-pointer' else 'r2'}
+            query = runtime.urllib.parse.parse_qs(runtime.urllib.parse.urlsplit(path).query)
+            self.assertEqual(['r1'], query['leftRevisionId'])
+            same = query['rightRevisionId'] == ['r1']
+            result = {'versionId': 'logical', 'left': {'id': 'r1'},
+                      'right': {'id': 'r1' if same else 'r2'}, 'summary': {}}
+            for kind, source in self.rows.items():
+                rows = copy.deepcopy(source)
+                if same:
+                    for row in rows:
+                        row.update(status='unchanged', right=copy.deepcopy(row['left']))
+                result['summary'][kind] = {status: sum(row['status'] == status for row in rows)
+                                           for status in ('added', 'removed', 'changed', 'unchanged')}
+                if query.get('includeUnchanged') != ['true']:
+                    rows = [row for row in rows if row['status'] != 'unchanged']
+                index, size = int(query.get(kind + 'PageIndex', ['0'])[0]), int(query.get(kind + 'PageSize', ['50'])[0])
+                result[kind] = {'data': rows[index * size:(index + 1) * size],
+                                'total': len(rows), 'pageIndex': index, 'pageSize': size}
+            if fault == 'pair': result['right']['id'] = 'another'
+            if fault == 'counts': result['summary']['files']['changed'] += 1
+            if not same and 'pagesPageSize' not in query and 'filesPageSize' not in query:
+                if fault == 'classification': result['pages']['data'][0]['status'] = 'unchanged'
+                if fault == 'page-name': result['pages']['data'][0]['right']['name'] = 'current fallback'
+                if fault == 'page-id': result['pages']['data'][0]['left']['pageId'] = 'invented'
+                if fault == 'file-sha':
+                    next(row for row in result['files']['data'] if row['path'] == 'index.html')['right']['sha256'] = '0' * 64
+                if query.get('includeUnchanged') != ['true']:
+                    if fault == 'filtered-total': result['files']['total'] = 5
+                    if fault == 'unchanged-leak': result['pages']['data'].append(copy.deepcopy(self.rows['pages'][-1]))
+            if 'pagesPageSize' in query:
+                if fault == 'paging': result['pages']['data'] = copy.deepcopy(self.rows['pages'])
+                if fault == 'coupled-pagers': result['files']['data'] = []
+            if same and fault == 'historical-fallback': result['right']['id'] = 'r2'
+            return result
+        return request
+
+    def verify(self, fault=None):
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=self.responder(fault)) as calls:
+            self.check.verify_revision_comparison(self.api, self.original, self.current,
+                                                   self.before, self.after, 'another-project-rid')
+        return calls
+
+    def test_comparison_verifies_independent_pagers_and_anonymous_and_foreign_scope_denials(self):
+        calls = self.verify()
+        self.assertTrue(self.check.report['revisionComparison']['foreignRevisionRejected'])
+        denials = [call for call in calls.call_args_list if call.kwargs.get('expected') in (401, 404)]
+        self.assertEqual([404, 404, 401], [call.kwargs['expected'] for call in denials])
+        self.assertIn('rightRevisionId=another-project-rid', denials[1].args[2])
+        self.assertIsNone(denials[-1].args[0].token)
+        self.assertNotIn('private-platform-token', json.dumps(self.check.report))
+
+    def test_wrong_metadata_filter_counts_paging_or_current_fallback_never_passes(self):
+        for fault in ('pair', 'counts', 'classification', 'page-name', 'page-id', 'file-sha',
+                      'filtered-total', 'unchanged-leak', 'paging', 'coupled-pagers',
+                      'historical-fallback', 'current-pointer'):
+            with self.subTest(fault=fault), self.assertRaises(runtime.VerificationFailure):
+                self.verify(fault)
+            self.assertNotIn('revisionComparison', self.check.report)
+
 
 class RetainedDeletionVerificationTest(unittest.TestCase):
     def setUp(self):

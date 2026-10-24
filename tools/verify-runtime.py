@@ -25,6 +25,7 @@ import tempfile
 from threading import Barrier
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 import uuid
 import zipfile
@@ -526,7 +527,7 @@ class RuntimeCheck:
                     'Restored latest-share content changed')
 
     def verify_revisions(self, api, project, original, current, zip_path, key,
-                         original_hashes, current_hashes):
+                         original_hashes, current_hashes, foreign_revision=None):
         path = '/api/prototype-hub/versions/' + original['id']
         require(original['revisionId'] != current['revisionId'], 'Replacement reused mutable revision identity')
         head = api.request('GET', path + '/current-revision')
@@ -549,7 +550,90 @@ class RuntimeCheck:
         require(self.preview(api, current) == current_hashes, 'Current revision preview bytes changed')
         occupancy = api.request('GET', '/api/prototype-hub/versions/_usage?projectId=' + project['id'])
         require(occupancy['versions']['used'] == 1, 'Revision replacement consumed a logical version slot')
+        self.verify_revision_comparison(api, original, current, original_hashes, current_hashes,
+                                        foreign_revision)
         return sorted(item['manifestSha256'] for item in (first[0], second[0]))
+
+    def verify_revision_comparison(self, api, original, current, original_hashes, current_hashes,
+                                   foreign_revision=None):
+        """Compare persisted snapshots against this run's independently read preview bytes."""
+        base = '/api/prototype-hub/versions/' + original['id']
+        pair = {'leftRevisionId': original['revisionId'], 'rightRevisionId': current['revisionId']}
+
+        def url(**options):
+            return base + '/revisions/_compare?' + urllib.parse.urlencode(dict(pair, **options))
+
+        summary = {'pages': {'added': 0, 'removed': 0, 'changed': 2, 'unchanged': 1},
+                   'files': {'added': 0, 'removed': 0, 'changed': 2, 'unchanged': 3}}
+        complete = api.request('GET', url(includeUnchanged='true'))
+        filtered = api.request('GET', url())
+        expected_paths = {'pages': ['index.html', 'nested/child.html', 'nested/detail.html'],
+                          'files': ['assets/icon.svg', 'assets/style.css', 'index.html',
+                                    'nested/child.html', 'nested/detail.html']}
+        changed = ['index.html', 'nested/child.html']
+        names = {'index.html': 'Runtime fixture home',
+                 'nested/child.html': 'Runtime fixture nested page',
+                 'nested/detail.html': 'Runtime fixture detail'}
+        byte_keys = {'index.html': 'entry', 'nested/child.html': 'child', 'assets/style.css': 'css'}
+        for result in (complete, filtered):
+            require(result['versionId'] == original['id'] and
+                    result['left']['id'] == original['revisionId'] and
+                    result['right']['id'] == current['revisionId'], 'Comparison changed its explicit revision pair')
+            require(result['summary'] == summary, 'Comparison complete counts differ from the original fixture')
+        for kind, paths in expected_paths.items():
+            rows = complete[kind]['data']
+            require(complete[kind]['total'] == len(paths) and
+                    [row['path'] for row in rows] == paths, 'Comparison omitted or reordered fixture ' + kind)
+            require(filtered[kind]['total'] == len(changed) and
+                    filtered[kind]['data'] == [row for row in rows if row['path'] in changed],
+                    'Comparison unchanged filtering changed rows or total')
+            for row in rows:
+                path = row['path']
+                require(row['status'] == ('changed' if path in changed else 'unchanged'),
+                        'Comparison misclassified fixture ' + kind)
+                for side, hashes in (('left', original_hashes), ('right', current_hashes)):
+                    value = row[side]
+                    if kind == 'pages':
+                        expected_name = names[path] + (' revision two' if side == 'right' and path in changed else '')
+                        require(value['path'] == path and value['name'] == expected_name and
+                                value['pageId'] == hashlib.sha256(path.encode()).hexdigest(),
+                                'Comparison changed saved page identity or primary name')
+                    else:
+                        require(type(value['size']) is int and value['size'] > 0 and
+                                isinstance(value['mediaType'], str) and value['mediaType'] and
+                                re.fullmatch('[0-9a-f]{64}', value['sha256']) is not None,
+                                'Comparison returned invalid file metadata')
+                        if path in byte_keys:
+                            require(value['sha256'] == hashes[byte_keys[path]],
+                                    'Comparison file SHA differs from independently served bytes')
+            for index in (0, 1, len(paths)):
+                # Vary only one pager: the other must keep its complete, independent page.
+                page = api.request('GET', url(includeUnchanged='true',
+                                             **{kind + 'PageIndex': index, kind + 'PageSize': 1}))
+                require(page['summary'] == summary and page[kind]['total'] == len(paths) and
+                        page[kind]['pageIndex'] == index and page[kind]['pageSize'] == 1 and
+                        page[kind]['data'] == rows[index:index + 1], 'Comparison pagination changed rows or counts')
+                other = 'files' if kind == 'pages' else 'pages'
+                require(page[other] == complete[other], 'Comparison coupled independent page and file pagers')
+        same = api.request('GET', url(rightRevisionId=original['revisionId']))
+        require(same['left']['id'] == same['right']['id'] == original['revisionId'] and
+                same['summary'] == {kind: {'added': 0, 'removed': 0, 'changed': 0, 'unchanged': len(paths)}
+                                    for kind, paths in expected_paths.items()} and
+                all(same[kind]['total'] == 0 and same[kind]['data'] == [] for kind in expected_paths),
+                'Comparison silently replaced an explicit historical revision with current')
+        require(api.request('GET', base + '/current-revision')['id'] == current['revisionId'],
+                'Read-only comparison changed the current revision pointer')
+        api.request('GET', url(rightRevisionId=uuid.uuid4().hex), expected=404)
+        if foreign_revision:
+            api.request('GET', url(rightRevisionId=foreign_revision), expected=404)
+        Api(api.origin, self.secrets_seen).request('GET', url(), expected=401)
+        self.report['revisionComparison'] = {
+            'summary': summary, 'explicitHistoricalPairVerified': True,
+            'sameRevisionDoesNotResolveCurrent': True, 'independentPaginationVerified': True,
+            'filteredTotalsVerified': True, 'shaMatchesServedBytes': True,
+            'missingRevisionAndAnonymousRejected': True,
+            'foreignRevisionRejected': bool(foreign_revision) or
+                self.report.get('revisionComparison', {}).get('foreignRevisionRejected', False)}
 
     def create_deleted_fixture(self, api, member, zip_path, replacement_zip, storage):
         """Exercise deletion through HTTP; keep its graph and files for joint restore."""
@@ -681,7 +765,9 @@ SELECT json_build_object(
                            '/api/prototype-hub/projects/' + fixture['emptyProject']['id'],
                            '/api/prototype-hub/projects/' + project + '/members', path,
                            path + '/pages', path + '/current-revision', path + '/revisions',
-                           path + '/shares'):
+                           path + '/shares', path + '/revisions/_compare?' + urllib.parse.urlencode({
+                               'leftRevisionId': fixture['original']['revisionId'],
+                               'rightRevisionId': fixture['current']['revisionId']})):
                 identity.request('GET', target, expected=404)
             identity.request('POST', path + '/preview-session', expected=404)
             for revision in (fixture['original']['revisionId'], fixture['current']['revisionId']):
@@ -813,14 +899,14 @@ SELECT json_build_object(
         require(state['invalidReferences'] == 0, 'Recovered fixture broke a receipt revision binding')
         return state
 
-    def verify_restored_fixture(self, api, fixture, zip_path, storage, database):
+    def verify_restored_fixture(self, api, fixture, zip_path, storage, database, foreign_revision=None):
         project, original, current = fixture['project'], fixture['original'], fixture['current']
         path = '/api/prototype-hub/versions/' + original['id']
         project_usage = api.usage()['projects']['used']
         require(api.project(fixture['projectName'], fixture['projectKey'])['id'] == project['id'],
                 'Recovered project creation replay changed its identity')
         self.verify_revisions(api, project, original, current, zip_path, fixture['versionKey'],
-                              fixture['originalHashes'], fixture['currentHashes'])
+                              fixture['originalHashes'], fixture['currentHashes'], foreign_revision)
         require(api.usage()['projects']['used'] == project_usage,
                 'Recovered creation replay consumed project capacity')
         anonymous = Api(api.origin, self.secrets_seen)
@@ -1038,7 +1124,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
-            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
+                                         version['revisionId'])
             expired = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
         with self.phase('full-process-restart'):
             self.stop(process)
@@ -1057,7 +1144,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'unrelatedFileHashesUnchanged': True}
             self.verify_system_files(api, system_files)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
-            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
+                                         version['revisionId'])
             require(api.usage()['installationId'] == installation_id,
                     'Installation identity changed on restart')
             require(api.project('Runtime restore project', project_key)['id'] == project['id'],
@@ -1076,7 +1164,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
             self.verify_system_files(other, system_files)
             self.verify_deleted_fixture(other, deleted, zip_path, storage, 'runtime_source')
-            self.verify_restored_fixture(other, recovered, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(other, recovered, zip_path, storage, 'runtime_source',
+                                         version['revisionId'])
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
             contested = api.project('Runtime contested recovery')
@@ -1151,7 +1240,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                                           before_files, pending_restore)
             system_hashes = self.verify_system_files(restored, system_files)
             self.verify_deleted_fixture(restored, deleted, zip_path, restored_storage, 'runtime_restored')
-            self.verify_restored_fixture(restored, recovered, zip_path, restored_storage, 'runtime_restored')
+            self.verify_restored_fixture(restored, recovered, zip_path, restored_storage, 'runtime_restored',
+                                         version['revisionId'])
             require(restored.usage()['installationId'] == installation_id,
                     'Installation identity changed after restore')
             require(restored.usage()['projects']['used'] == 5, 'Restored occupancy differs')

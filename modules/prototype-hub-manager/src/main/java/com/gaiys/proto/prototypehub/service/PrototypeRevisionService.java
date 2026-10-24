@@ -3,9 +3,14 @@ package com.gaiys.proto.prototypehub.service;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.comparison.PrototypeRevisionComparison;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
+import com.gaiys.proto.prototypehub.web.request.RevisionComparisonRequest;
+import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationRegistry;
 import java.util.List;
 import java.util.Objects;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +26,7 @@ import reactor.core.publisher.Mono;
 public class PrototypeRevisionService
         extends GenericReactiveCrudService<PrototypeRevisionEntity, String> {
     private final FileWork work;
+    private final ObservationRegistry observations;
 
     public PrototypeRevisionEntity candidate(
             PrototypeVersionEntity version,
@@ -55,16 +61,47 @@ public class PrototypeRevisionService
 
     public Mono<PrototypeRevisionEntity> require(
             PrototypeVersionEntity version, String revisionId) {
+        return require(version, revisionId, false);
+    }
+
+    private Mono<PrototypeRevisionEntity> require(
+            PrototypeVersionEntity version, String revisionId, boolean includeManifest) {
         if (version.getCurrentRevisionId() == null || revisionId == null)
             return Mono.error(migrationRequired());
-        // 所有资源鉴权、分享信息和元数据请求均不传输大清单；撤权仍逐请求查库，不缓存权限。
-        return createQuery()
-                .selectExcludes(PrototypeRevisionEntity::getManifestJson)
-                .where(PrototypeRevisionEntity::getId, revisionId)
-                .and(PrototypeRevisionEntity::getVersionId, version.getId())
-                .and(PrototypeRevisionEntity::getProjectId, version.getProjectId())
-                .fetchOne()
+        var query =
+                createQuery()
+                        .where(PrototypeRevisionEntity::getId, revisionId)
+                        .and(PrototypeRevisionEntity::getVersionId, version.getId())
+                        .and(PrototypeRevisionEntity::getProjectId, version.getProjectId());
+        // 常规资源与元数据请求不传大清单；只有显式对比读取两份有界清单，不缓存权限。
+        if (!includeManifest) query.selectExcludes(PrototypeRevisionEntity::getManifestJson);
+        return query.fetchOne()
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("revision")));
+    }
+
+    /** 调用入口先验当前版本 READ；固定两修订完成数据库读取后，才在 FileWork 解析及比较。 */
+    public Mono<RevisionComparisonResponse> compare(
+            PrototypeVersionEntity version, RevisionComparisonRequest input) {
+        return Flux.concat(
+                        require(version, input.getLeftRevisionId(), true),
+                        require(version, input.getRightRevisionId(), true))
+                // 严格两条不可变行，顺序完成读取，单连接池也不会与大清单计算互相占用。
+                .collectList()
+                .flatMap(
+                        pair ->
+                                work.call(
+                                        () ->
+                                                Observation.createNotStarted(
+                                                                "prototype.revision.compare",
+                                                                observations)
+                                                        .observe(
+                                                                () ->
+                                                                        PrototypeRevisionComparison
+                                                                                .compare(
+                                                                                        pair.get(0),
+                                                                                        pair.get(1),
+                                                                                        input))))
+                .checkpoint("prototype-hub/revision/compare");
     }
 
     public Flux<PrototypeRevisionEntity> history(
