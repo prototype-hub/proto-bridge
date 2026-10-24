@@ -5,10 +5,12 @@ import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.comparison.PrototypeRevisionComparison;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
+import com.gaiys.proto.prototypehub.storage.scanner.PrototypePackageQualityScanner;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.RevisionComparisonRequest;
 import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionQualityResponse;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import java.util.List;
@@ -27,6 +29,7 @@ public class PrototypeRevisionService
         extends GenericReactiveCrudService<PrototypeRevisionEntity, String> {
     private final FileWork work;
     private final ObservationRegistry observations;
+    private final PrototypePackageQualityScanner qualityScanner;
 
     public PrototypeRevisionEntity candidate(
             PrototypeVersionEntity version,
@@ -73,10 +76,12 @@ public class PrototypeRevisionService
                         .where(PrototypeRevisionEntity::getId, revisionId)
                         .and(PrototypeRevisionEntity::getVersionId, version.getId())
                         .and(PrototypeRevisionEntity::getProjectId, version.getProjectId());
-        // 常规资源与元数据请求不传大清单；只有显式对比读取两份有界清单，不缓存权限。
+        // 常规资源与元数据请求不传大清单；仅显式对比和质量检查读取有界清单，不缓存权限。
         if (!includeManifest) query.selectExcludes(PrototypeRevisionEntity::getManifestJson);
-        return query.fetchOne()
-                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("revision")));
+        // EasyORM fetchOne 使用 take(1) 取消源；重文本入口须等待 fetch 正常完成及异步连接归还。
+        Mono<PrototypeRevisionEntity> row =
+                includeManifest ? query.fetch().singleOrEmpty() : query.fetchOne();
+        return row.switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("revision")));
     }
 
     /** 调用入口先验当前版本 READ；固定两修订完成数据库读取后，才在 FileWork 解析及比较。 */
@@ -102,6 +107,24 @@ public class PrototypeRevisionService
                                                                                         pair.get(1),
                                                                                         input))))
                 .checkpoint("prototype-hub/revision/compare");
+    }
+
+    /** 固定修订完成数据库读取后才检查文件，不在连接租用期间进行解析或磁盘 I/O。 */
+    public Mono<RevisionQualityResponse> quality(
+            PrototypeVersionEntity version, String revisionId) {
+        return require(version, revisionId, true)
+                .flatMap(
+                        revision ->
+                                work.call(
+                                        () ->
+                                                Observation.createNotStarted(
+                                                                "prototype.revision.quality",
+                                                                observations)
+                                                        .observe(
+                                                                () ->
+                                                                        qualityScanner.scan(
+                                                                                revision))))
+                .checkpoint("prototype-hub/revision/quality");
     }
 
     public Flux<PrototypeRevisionEntity> history(

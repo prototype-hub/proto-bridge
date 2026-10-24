@@ -340,6 +340,77 @@ class RuntimeSafetyTest(unittest.TestCase):
                 runtime.storage_manifest(unsafe)
         self.assertEqual(b'unrelated', (outside / 'keep.png').read_bytes())
 
+class RevisionQualityVerificationTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='runtime-quality-test-')
+        self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        jar = root / 'fixture.jar'
+        jar.write_bytes(b'never launched')
+        self.check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), root)
+        self.api = runtime.Api('http://127.0.0.1:1', self.check.secrets_seen)
+        self.api.token = 'private-platform-token'
+        self.original, self.current = ({'id': 'logical', 'revisionId': rid} for rid in ('r1', 'r2'))
+
+    def responder(self, fault=None):
+        reports = {}
+
+        def request(identity, method, path, payload=None, expected=200, **options):
+            self.assertEqual('GET', method)
+            if expected in (401, 404):
+                self.assertEqual(401 if identity.token is None else 404, expected)
+                return {}
+            if path.endswith('/current-revision'):
+                return {'id': 'r1' if fault == 'pointer' else 'r2'}
+            rid = path.split('/revisions/')[1].split('/')[0]
+            if not path.endswith('/quality'):
+                return {'manifestSha256': ('a' if rid == 'r1' else 'b') * 64}
+            report = {'versionId': 'logical', 'revisionId': rid,
+                      'manifestSha256': ('a' if rid == 'r1' else 'b') * 64, 'entryFile': 'index.html',
+                      'complete': True, 'findings': [],
+                      'limits': {'maxTextBytes': 2 * 1024 * 1024, 'maxTotalTextBytes': 32 * 1024 * 1024,
+                                 'maxReferences': 100000, 'maxFindings': 1000},
+                      'summary': {'files': 5, 'scannedDocuments': 4, 'scannedBytes': 1000,
+                                  'checkedReferences': 9, 'errors': 0, 'warnings': 0, 'findingsTotal': 0,
+                                  'omittedFindings': 0, 'skippedDocuments': 0,
+                                  'uncheckedReferences': dict(external=0, rootAbsolute=0, fragment=0,
+                                                              unsupportedScheme=0)}}
+            if fault == 'fixed': report['revisionId'] = 'r2'
+            if fault == 'manifest': report['manifestSha256'] = 'f' * 64
+            if fault == 'bounds': report['limits']['maxReferences'] += 1
+            if fault == 'partial': report['complete'] = False
+            if fault == 'files': report['summary']['files'] -= 1
+            if fault == 'references': report['summary']['checkedReferences'] -= 1
+            if fault == 'unchecked': report['summary']['uncheckedReferences']['rootAbsolute'] = 3
+            if fault == 'findings': report['summary']['findingsTotal'] = 1
+            if fault == 'private': report['storagePath'] = '/private/internal'
+            if fault == 'unstable' and rid in reports: report['summary']['scannedBytes'] += 1
+            reports[rid] = report
+            return report
+        return request
+
+    def verify(self, fault=None):
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=self.responder(fault)) as calls:
+            self.check.verify_revision_quality(self.api, self.original, self.current, 'another-project-rid')
+        return calls
+
+    def test_quality_verifies_fixed_reports_and_anonymous_and_foreign_scope_denials(self):
+        calls = self.verify()
+        self.assertTrue(self.check.report['revisionQuality']['foreignRevisionRejected'])
+        denials = [call for call in calls.call_args_list if call.kwargs.get('expected') in (401, 404)]
+        self.assertEqual([404, 404, 401], [call.kwargs['expected'] for call in denials])
+        self.assertIn('/revisions/another-project-rid/quality', denials[1].args[2])
+        self.assertIsNone(denials[-1].args[0].token)
+        self.assertNotIn('private-platform-token', json.dumps(self.check.report))
+
+    def test_wrong_identity_bounds_counts_completeness_or_current_fallback_never_passes(self):
+        for fault in ('fixed', 'manifest', 'bounds', 'partial', 'files', 'references', 'unchecked',
+                      'findings', 'private', 'unstable', 'pointer'):
+            with self.subTest(fault=fault), self.assertRaises(runtime.VerificationFailure):
+                self.verify(fault)
+            self.assertNotIn('revisionQuality', self.check.report)
+
+
 class RevisionComparisonVerificationTest(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix='runtime-comparison-test-')

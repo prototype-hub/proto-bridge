@@ -15,6 +15,7 @@ import com.gaiys.proto.prototypehub.web.request.RevisionMigrationRequest;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionQualityResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
@@ -170,6 +171,18 @@ public class PrototypeVersionController {
         return access.requireVersion(id, Action.READ)
                 .flatMap(version -> revisions.require(version, rid))
                 .map(RevisionResponse::from);
+    }
+
+    /** 沿用版本查询动作和当前项目 READ，不接受默认 current 或公开分享凭证。 */
+    @GetMapping("/versions/{id}/revisions/{rid}/quality")
+    @QueryAction
+    @Operation(
+            summary = "检查固定修订的静态交付包质量",
+            description = "只读检查入口、文件及 HTML/CSS 字面引用，返回有界可导出的报告；不执行脚本或请求外网")
+    public Mono<RevisionQualityResponse> quality(
+            @PathVariable String id, @PathVariable String rid) {
+        return access.requireVersion(id, Action.READ)
+                .flatMap(version -> revisions.quality(version, rid));
     }
 
     @GetMapping("/versions/{id}/revisions/{rid}/pages")
