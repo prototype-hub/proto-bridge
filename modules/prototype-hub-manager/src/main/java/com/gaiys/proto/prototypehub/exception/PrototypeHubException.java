@@ -34,6 +34,11 @@ public class PrototypeHubException extends BusinessException {
                 "PROTOTYPE_HUB_" + resource.toUpperCase(java.util.Locale.ROOT) + "_NOT_FOUND");
     }
 
+    public static PrototypeHubException resourceActive() {
+        return new PrototypeHubException(
+                "error.prototype-hub.resource_active", "PROTOTYPE_HUB_RESOURCE_ACTIVE", 409);
+    }
+
     public static PrototypeHubException invalidPath() {
         return forbidden(
                 "error.prototype-hub.storage_path_invalid", "PROTOTYPE_HUB_STORAGE_PATH_INVALID");

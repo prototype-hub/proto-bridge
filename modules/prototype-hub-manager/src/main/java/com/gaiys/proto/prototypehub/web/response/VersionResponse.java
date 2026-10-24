@@ -19,7 +19,8 @@ public record VersionResponse(
         @Schema(description = "版本创建者用户标识") String createdBy,
         @Schema(description = "版本创建时间（Unix 毫秒）") Long createdAt,
         @Schema(description = "已停用的永久运行地址，固定为空；请获取短期预览会话") String runtimeBaseUrl,
-        @Schema(description = "已停用的永久预览地址，固定为空；请获取短期预览会话") String previewUrl) {
+        @Schema(description = "已停用的永久预览地址，固定为空；请获取短期预览会话") String previewUrl,
+        @Schema(description = "软删除时间（Unix 毫秒），活动版本为空") Long deletedTime) {
     public static VersionResponse from(PrototypeVersionEntity v) {
         return from(v, v.getCurrentRevisionId() == null ? 0 : 1);
     }
@@ -41,6 +42,7 @@ public record VersionResponse(
                 v.getCreatorId(),
                 v.getCreateTime(),
                 null,
-                null);
+                null,
+                v.getDeletedTime());
     }
 }

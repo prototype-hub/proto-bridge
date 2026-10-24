@@ -132,6 +132,8 @@ public class AuditWebFilter implements WebFilter {
         if (method.equals("POST")
                 && (path.equals("/prototype-hub/projects/_query")
                         || path.equals("/prototype-hub/versions/_query")
+                        || path.equals("/prototype-hub/projects/_deleted/_query")
+                        || path.equals("/prototype-hub/versions/_deleted/_query")
                         || path.matches("/prototype-hub/shares/[^/]+/verify-password")))
             return null;
         if (!java.util.Set.of("POST", "PUT", "PATCH", "DELETE").contains(method)
@@ -153,6 +155,13 @@ public class AuditWebFilter implements WebFilter {
                 && parts[2].equals("projects")
                 && parts[4].equals("claim")
                 && method.equals("POST")) return new Action("project.claim", "project", parts[3]);
+        if (parts.length == 5
+                && parts[4].equals("_restore")
+                && method.equals("POST")
+                && (parts[2].equals("projects") || parts[2].equals("versions"))) {
+            String resource = parts[2].equals("projects") ? "project" : "version";
+            return new Action(resource + ".restore", resource, parts[3]);
+        }
         if (parts.length == 6 && parts[2].equals("projects") && parts[4].equals("members"))
             return new Action(
                     "project.members." + (method.equals("DELETE") ? "delete" : "update"),

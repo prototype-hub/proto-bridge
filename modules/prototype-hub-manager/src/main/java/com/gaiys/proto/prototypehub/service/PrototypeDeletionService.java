@@ -17,6 +17,7 @@ import reactor.core.publisher.Mono;
 public class PrototypeDeletionService {
     private final PrototypeProjectService projects;
     private final PrototypeVersionService versions;
+    private final PrototypeInstallationService installations;
     private final PrototypeShareService shares;
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
@@ -96,6 +97,73 @@ public class PrototypeDeletionService {
                                                                                                     deletedTime));
                                                         })))
                 .as(transactions::transactional);
+    }
+
+    /** 按创建相同锁序恢复项目，只恢复父行；历史版本仍须逐项恢复。 */
+    public Mono<PrototypeProjectEntity> restoreProject(String id) {
+        SafePaths.id(id);
+        return access.current()
+                .flatMap(
+                        actor ->
+                                access.lockActiveUsers(actor.userId())
+                                        .then(installations.lock())
+                                        .then(access.lockProject(id))
+                                        .then(access.requireDeletedProject(id)))
+                .map(PrototypeProjectAccessService.Grant::project)
+                .flatMap(this::restoreProjectWithinCapacity)
+                .as(transactions::transactional);
+    }
+
+    private Mono<PrototypeProjectEntity> restoreProjectWithinCapacity(
+            PrototypeProjectEntity project) {
+        return projects.requireCapacity()
+                .then(
+                        projects.createUpdate()
+                                .setNull(PrototypeProjectEntity::getDeletedTime)
+                                .where(PrototypeProjectEntity::getId, project.getId())
+                                .execute())
+                .thenReturn(project)
+                .doOnNext(restored -> restored.setDeletedTime(null));
+    }
+
+    /** 恢复占用一个当前版本额度；被撤销分享和已删除预览会话保持失效。 */
+    public Mono<PrototypeVersionEntity> restoreVersion(String id) {
+        SafePaths.id(id);
+        return access.current()
+                .flatMap(
+                        actor ->
+                                versions.findById(id)
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "version")))
+                                        .flatMap(
+                                                found ->
+                                                        access.lockActiveUsers(actor.userId())
+                                                                .then(
+                                                                        access.lockProject(
+                                                                                found
+                                                                                        .getProjectId()))
+                                                                .then(access.lockVersion(id))
+                                                                .then(
+                                                                        access
+                                                                                .requireDeletedVersion(
+                                                                                        id))))
+                .flatMap(this::restoreVersionWithinCapacity)
+                .as(transactions::transactional);
+    }
+
+    private Mono<PrototypeVersionEntity> restoreVersionWithinCapacity(
+            PrototypeVersionEntity version) {
+        return versions.requireCapacity(version.getProjectId())
+                .then(
+                        versions.createUpdate()
+                                .setNull(PrototypeVersionEntity::getDeletedTime)
+                                .where(PrototypeVersionEntity::getId, version.getId())
+                                .execute())
+                .thenReturn(version)
+                .doOnNext(restored -> restored.setDeletedTime(null));
     }
 
     /** 项目锁与上传互斥；软删版本不再占用额度或阻止删除项目，但其引用和目录仍保留。 */

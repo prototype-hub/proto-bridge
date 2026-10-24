@@ -279,6 +279,104 @@ class PrototypeHubCapacityIntegrationTest {
     }
 
     @Test
+    void projectRestoreSharesCapacityLockWithCreateAndRetainsTheOriginalReceipt() {
+        String id =
+                asAdmin(projects.create(input("retained project"), actor, "restore-project"))
+                        .block(TIMEOUT)
+                        .getId();
+        asAdmin(deletion.deleteProject(id)).block(TIMEOUT);
+        createProjects(5);
+        expectCode(asAdmin(deletion.restoreProject(id)), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertNotNull(projects.findById(id).block(TIMEOUT).getDeletedTime());
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+        String active = projects.activeQuery().fetchOne().block(TIMEOUT).getId();
+        asAdmin(deletion.deleteProject(active)).block(TIMEOUT);
+        var restored = asAdmin(deletion.restoreProject(id)).block(TIMEOUT);
+        assertEquals(id, restored.getId());
+        assertNull(restored.getDeletedTime());
+        assertEquals(
+                id,
+                asAdmin(projects.create(input("retained project"), actor, "restore-project"))
+                        .block(TIMEOUT)
+                        .getId());
+        expectCode(asAdmin(deletion.restoreProject(id)), "PROTOTYPE_HUB_RESOURCE_ACTIVE");
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(1, count("p_creation_receipt"));
+    }
+
+    @Test
+    void independentCreateAndRestoreCannotBothTakeTheLastProjectSlot() {
+        String id = project();
+        asAdmin(deletion.deleteProject(id)).block(TIMEOUT);
+        createProjects(4);
+        var replica =
+                context.getAutowireCapableBeanFactory().createBean(PrototypeDeletionService.class);
+        assertLastSlot(
+                concurrent(
+                        List.of(
+                                asAdmin(replica.restoreProject(id)),
+                                asAdmin(projects.create(input("competing create"), otherActor)))),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+    }
+
+    @Test
+    void versionRestoreSharesCapacityLockWithUploadAndKeepsReceiptAndRevision() throws Exception {
+        String project = project();
+        byte[] zip = zip("retained");
+        var original = upload(project, "retained version", zip, "restore-version").block(TIMEOUT);
+        String id = original.getId();
+        asAdmin(deletion.deleteVersion(id)).block(TIMEOUT);
+        for (int index = 0; index < 5; index++)
+            upload(project, "active-" + index, zip, null).block(TIMEOUT);
+        expectCode(asAdmin(deletion.restoreVersion(id)), "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
+        assertNotNull(versions.findById(id).block(TIMEOUT).getDeletedTime());
+        var active =
+                versions.activeQuery()
+                        .where(PrototypeVersionEntity::getProjectId, project)
+                        .fetchOne()
+                        .block(TIMEOUT);
+        asAdmin(deletion.deleteVersion(active.getId())).block(TIMEOUT);
+        var replica =
+                context.getAutowireCapableBeanFactory().createBean(PrototypeDeletionService.class);
+        assertLastSlot(
+                concurrent(
+                        List.of(
+                                asAdmin(replica.restoreVersion(id)),
+                                asAdmin(
+                                        uploads.upload(
+                                                project,
+                                                "competing upload",
+                                                null,
+                                                file(zip),
+                                                otherActor)))),
+                "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
+        assertEquals(5, versions.usage(project).block(TIMEOUT).versions().used());
+        var retained = versions.findById(id).block(TIMEOUT);
+        if (retained.getDeletedTime() != null) {
+            var extra =
+                    versions.activeQuery()
+                            .where(PrototypeVersionEntity::getProjectId, project)
+                            .fetchOne()
+                            .block(TIMEOUT);
+            asAdmin(deletion.deleteVersion(extra.getId())).block(TIMEOUT);
+            retained = asAdmin(deletion.restoreVersion(id)).block(TIMEOUT);
+        }
+        assertEquals(original.getCurrentRevisionId(), retained.getCurrentRevisionId());
+        assertEquals(original.getStoragePath(), retained.getStoragePath());
+        assertNull(retained.getDeletedTime());
+        assertEquals(
+                id,
+                upload(project, "retained version", zip, "restore-version").block(TIMEOUT).getId());
+        expectCode(asAdmin(deletion.restoreVersion(id)), "PROTOTYPE_HUB_RESOURCE_ACTIVE");
+        assertEquals(5, versions.usage(project).block(TIMEOUT).versions().used());
+        assertEquals(1, count("p_creation_receipt"));
+        assertTrue(
+                Files.isRegularFile(
+                        FILES.resolve(original.getStoragePath()).resolve("index.html")));
+    }
+
+    @Test
     void versionRetriesBindZipBytesAndProjectAndCleanSuccessfulReplayDirectories()
             throws Exception {
         String project = project();

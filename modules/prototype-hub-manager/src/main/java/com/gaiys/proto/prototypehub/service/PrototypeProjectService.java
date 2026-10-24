@@ -98,29 +98,37 @@ public class PrototypeProjectService
 
     private Mono<PrototypeProjectEntity> createWithinCapacity(
             ProjectRequest input, String actor, PrototypeCreationReceiptService.Request request) {
+        return requireCapacity()
+                .then(
+                        Mono.defer(
+                                () -> {
+                                    PrototypeProjectEntity project = new PrototypeProjectEntity();
+                                    project.setId(UUID.randomUUID().toString().replace("-", ""));
+                                    project.setCreatorId(actor);
+                                    project.setOwnerId(actor);
+                                    project.setAccessEpoch(UUID.randomUUID().toString());
+                                    project.setCreateTime(System.currentTimeMillis());
+                                    apply(project, input, actor);
+                                    return insert(project)
+                                            .then(receipts.record(request, project.getId()))
+                                            .thenReturn(project);
+                                }));
+    }
+
+    /** 创建与恢复共用安装行锁内的实际活动项目额度。 */
+    public Mono<Void> requireCapacity() {
         return activeQuery()
                 .count()
                 .flatMap(
-                        used -> {
-                            if (used.longValue() >= CapacityUsage.LIMIT) {
-                                return Mono.error(
-                                        new PrototypeHubException(
-                                                "error.prototype-hub.project_limit_reached",
-                                                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED",
-                                                409,
-                                                CapacityUsage.LIMIT));
-                            }
-                            PrototypeProjectEntity project = new PrototypeProjectEntity();
-                            project.setId(UUID.randomUUID().toString().replace("-", ""));
-                            project.setCreatorId(actor);
-                            project.setOwnerId(actor);
-                            project.setAccessEpoch(UUID.randomUUID().toString());
-                            project.setCreateTime(System.currentTimeMillis());
-                            apply(project, input, actor);
-                            return insert(project)
-                                    .then(receipts.record(request, project.getId()))
-                                    .thenReturn(project);
-                        });
+                        used ->
+                                used.longValue() < CapacityUsage.LIMIT
+                                        ? Mono.empty()
+                                        : Mono.error(
+                                                new PrototypeHubException(
+                                                        "error.prototype-hub.project_limit_reached",
+                                                        "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED",
+                                                        409,
+                                                        CapacityUsage.LIMIT)));
     }
 
     public Mono<PrototypeProjectEntity> update(String id, ProjectRequest input, String actor) {

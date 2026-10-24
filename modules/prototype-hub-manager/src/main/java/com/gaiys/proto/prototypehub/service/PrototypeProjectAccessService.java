@@ -169,6 +169,88 @@ public class PrototypeProjectAccessService {
                         });
     }
 
+    /** 回收站项目仅由当前所有者或有效 ADMIN 操作，不放宽普通项目入口。 */
+    public Mono<Grant> requireDeletedProject(String id) {
+        return current()
+                .flatMap(
+                        actor ->
+                                projects.findById(id)
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "project")))
+                                        .flatMap(
+                                                project ->
+                                                        role(actor, project)
+                                                                .map(
+                                                                        role ->
+                                                                                new Grant(
+                                                                                        project,
+                                                                                        role)))
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "project")))
+                                        .flatMap(
+                                                grant -> {
+                                                    if (!allows(grant.role(), Action.DELETE))
+                                                        return Mono.error(roleDenied());
+                                                    if (grant.project().getDeletedTime() == null)
+                                                        return Mono.error(
+                                                                PrototypeHubException
+                                                                        .resourceActive());
+                                                    return Mono.just(grant);
+                                                }));
+    }
+
+    /** 版本恢复先重验活动父项目的编辑权限；父项目必须单独先恢复。 */
+    public Mono<PrototypeVersionEntity> requireDeletedVersion(String id) {
+        return versions.findById(id)
+                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("version")))
+                .flatMap(
+                        version ->
+                                requireProject(version.getProjectId(), Action.EDIT)
+                                        .then(
+                                                Mono.defer(
+                                                        () ->
+                                                                version.getDeletedTime() == null
+                                                                        ? Mono.error(
+                                                                                PrototypeHubException
+                                                                                        .resourceActive())
+                                                                        : Mono.just(version))));
+    }
+
+    public Mono<PagerResult<ProjectResponse>> deletedProjects(PrototypeListQueryRequest request) {
+        return current()
+                .flatMap(
+                        actor ->
+                                scope.deletedProjects(
+                                        actor.userId(), actor.administrator(), request));
+    }
+
+    public Mono<PagerResult<PrototypeVersionEntity>> deletedVersions(
+            String projectId, PrototypeListQueryRequest request) {
+        return current()
+                .flatMap(
+                        actor -> {
+                            Mono<Void> parent =
+                                    projectId == null || projectId.isBlank()
+                                            ? Mono.empty()
+                                            : requireProject(actor, projectId, Action.EDIT, true)
+                                                    .then();
+                            return parent.then(
+                                    Mono.defer(
+                                            () ->
+                                                    scope.deletedVersions(
+                                                            actor.userId(),
+                                                            actor.administrator(),
+                                                            projectId,
+                                                            request)));
+                        });
+    }
+
     public Mono<PrototypeVersionEntity> requireVersion(String id, Action action) {
         return current().flatMap(actor -> requireVersion(actor, id, action, true));
     }

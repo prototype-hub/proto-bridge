@@ -503,6 +503,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         result(HttpMethod.POST, "/role/ADMIN/users/_bind", admin, List.of(administrator.id()));
         // 先缓存带 ADMIN 的真实 Authentication；禁用角色后仍保留另一个角色的通用动作。
         result(HttpMethod.GET, "/prototype-hub/projects/" + project, administrator.token(), null);
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + project, owner.token(), null);
+        assertEquals(1, deletedProjects(administrator.token(), Map.of()).path("total").asInt());
         String original =
                 database.sql("select properties from s_dimension where id='ADMIN'")
                         .map((row, metadata) -> row.get("properties", String.class))
@@ -517,6 +519,13 @@ class PrototypeHubProjectAccessIntegrationTest {
             call(
                     HttpMethod.GET,
                     "/prototype-hub/projects/" + project,
+                    administrator.token(),
+                    null,
+                    404);
+            assertEquals(0, deletedProjects(administrator.token(), Map.of()).path("total").asInt());
+            call(
+                    HttpMethod.POST,
+                    "/prototype-hub/projects/" + project + "/_restore",
                     administrator.token(),
                     null,
                     404);
@@ -1084,6 +1093,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         member(shared, deleted, "viewer");
         JsonNode ownerCredential = preview(deleted.token(), ownedVersion);
         JsonNode memberCredential = preview(deleted.token(), memberVersion);
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + ownedVersion, deleted.token(), null);
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + owned, deleted.token(), null);
         String before = authorizationSnapshot();
         result(HttpMethod.DELETE, "/user/" + deleted.id(), admin, null);
         assertEquals(
@@ -1128,6 +1139,8 @@ class PrototypeHubProjectAccessIntegrationTest {
         call(HttpMethod.GET, "/prototype-hub/projects/" + shared, token, null, 404);
         runtime(ownerCredential, "index.html", 403);
         runtime(memberCredential, "index.html", 403);
+        assertEquals(0, deletedProjects(token, Map.of()).path("total").asInt());
+        call(HttpMethod.POST, "/prototype-hub/projects/" + owned + "/_restore", token, null, 404);
         String beforeMigration = authorizationSnapshot();
         JsonNode migration =
                 result(
@@ -1140,6 +1153,310 @@ class PrototypeHubProjectAccessIntegrationTest {
         assertEquals(beforeMigration, authorizationSnapshot());
         call(HttpMethod.GET, "/prototype-hub/projects/" + owned, token, null, 404);
         call(HttpMethod.GET, "/prototype-hub/projects/" + legacy, token, null, 404);
+    }
+
+    private JsonNode deletedProjects(String token, Object input) {
+        return result(HttpMethod.POST, "/prototype-hub/projects/_deleted/_query", token, input);
+    }
+
+    private JsonNode deletedVersions(String token, String project, Object input) {
+        return result(
+                HttpMethod.POST,
+                "/prototype-hub/versions/_deleted/_query"
+                        + (project == null ? "" : "?projectId=" + project),
+                token,
+                input);
+    }
+
+    @Test
+    void deletedQueriesApplyCurrentRoleAndStateBeforeCountsKeywordAndPaging() {
+        Actor owner = actor(ALL_ACTIONS),
+                editor = actor(ALL_ACTIONS),
+                viewer = actor(ALL_ACTIONS),
+                other = actor(ALL_ACTIONS);
+        String first = project(owner, "中文回收A").path("id").asText();
+        String second = project(owner, "中文回收B").path("id").asText();
+        String hidden = project(other, "中文回收C").path("id").asText();
+        member(first, editor, "editor");
+        member(first, viewer, "viewer");
+        String version =
+                upload(owner.token(), first, null, "retained", null, 200).path("id").asText();
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + version, owner.token(), null);
+        for (String token : List.of(owner.token(), editor.token(), admin)) {
+            JsonNode page = deletedVersions(token, first, Map.of("pageSize", 1));
+            assertEquals(1, page.path("total").asInt());
+            assertEquals(version, page.path("data").get(0).path("id").asText());
+            assertTrue(page.path("data").get(0).path("deletedTime").asLong() > 0);
+        }
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/_deleted/_query?projectId=" + first,
+                viewer.token(),
+                Map.of(),
+                403);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/_deleted/_query?projectId=" + first,
+                other.token(),
+                Map.of(),
+                404);
+        assertEquals(0, deletedVersions(viewer.token(), null, Map.of()).path("total").asInt());
+        result(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + first + "/members/" + editor.id(),
+                owner.token(),
+                null);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + version + "/_restore",
+                editor.token(),
+                null,
+                404);
+        for (String id : List.of(first, second, hidden))
+            result(HttpMethod.DELETE, "/prototype-hub/projects/" + id, admin, null);
+        JsonNode page =
+                deletedProjects(
+                        owner.token(),
+                        Map.of(
+                                "keyword",
+                                "中文回收",
+                                "sortBy",
+                                "name",
+                                "sortOrder",
+                                "asc",
+                                "pageSize",
+                                1));
+        assertEquals(2, page.path("total").asInt());
+        assertEquals(first, page.path("data").get(0).path("id").asText());
+        assertEquals("owner", page.path("data").get(0).path("role").asText());
+        assertTrue(page.path("data").get(0).path("capabilities").path("deleteProject").asBoolean());
+        assertTrue(page.path("data").get(0).path("deletedTime").asLong() > 0);
+        JsonNode empty = deletedProjects(owner.token(), Map.of("pageIndex", 5, "pageSize", 1));
+        assertEquals(2, empty.path("total").asInt());
+        assertEquals(0, empty.path("data").size());
+        assertEquals(3, deletedProjects(admin, Map.of()).path("total").asInt());
+        assertEquals(0, deletedProjects(editor.token(), Map.of()).path("total").asInt());
+        assertEquals(0, deletedProjects(viewer.token(), Map.of()).path("total").asInt());
+        assertEquals(0, deletedVersions(admin, null, Map.of()).path("total").asInt());
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + first + "/_restore",
+                viewer.token(),
+                null,
+                403);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + first + "/_restore",
+                other.token(),
+                null,
+                404);
+        call(HttpMethod.POST, "/prototype-hub/projects/missing/_restore", admin, null, 404);
+        call(HttpMethod.POST, "/prototype-hub/versions/missing/_restore", admin, null, 404);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/_deleted/_query",
+                admin,
+                Map.of("pageSize", 101),
+                400);
+    }
+
+    @Test
+    void restoreRechecksActiveAccountAndCannotGrantMissingGenericSaveAction() {
+        Actor owner = actor(ALL_ACTIONS);
+        Actor queryOnly =
+                actor(
+                        Map.of(
+                                "prototype-hub-project",
+                                List.of("query"),
+                                "prototype-hub-version",
+                                List.of("query")));
+        String project = project(owner, "Current restore authorization").path("id").asText();
+        member(project, queryOnly, "editor");
+        String version =
+                upload(owner.token(), project, null, "retained", null, 200).path("id").asText();
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + version, owner.token(), null);
+        assertEquals(
+                1, deletedVersions(queryOnly.token(), project, Map.of()).path("total").asInt());
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + version + "/_restore",
+                queryOnly.token(),
+                null,
+                403);
+        sql("update s_user set status=0 where id='" + owner.id() + "'");
+        try {
+            call(
+                    HttpMethod.POST,
+                    "/prototype-hub/versions/" + version + "/_restore",
+                    owner.token(),
+                    null,
+                    403);
+            call(
+                    HttpMethod.POST,
+                    "/prototype-hub/versions/_deleted/_query?projectId=" + project,
+                    owner.token(),
+                    Map.of(),
+                    403);
+            assertEquals(
+                    1,
+                    count(
+                            "select count(*) as count from p_version where deleted_time is not null"));
+        } finally {
+            sql("update s_user set status=1 where id='" + owner.id() + "'");
+        }
+        result(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + version + "/_restore",
+                owner.token(),
+                null);
+    }
+
+    @Test
+    void restoringProjectAndVersionKeepsIdentityAndRequiresNewSharesAndPreviewGrants()
+            throws IOException {
+        Actor owner = actor(ALL_ACTIONS), editor = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
+        String project = project(owner, "Restore retained content").path("id").asText();
+        member(project, editor, "editor");
+        member(project, viewer, "viewer");
+        JsonNode first = upload(owner.token(), project, null, "R1", "restore-original-key", 200);
+        String version = first.path("id").asText();
+        JsonNode oldInternal = preview(viewer.token(), version);
+        JsonNode share =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/shares",
+                        owner.token(),
+                        Map.of());
+        JsonNode oldPublic =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + share.path("token").asText(),
+                        null,
+                        null);
+        String current =
+                upload(owner.token(), project, version, "R2", null, 200)
+                        .path("currentRevisionId")
+                        .asText();
+        Map<Path, String> retained;
+        try (var files = Files.walk(FILES)) {
+            retained =
+                    files.filter(Files::isRegularFile)
+                            .collect(
+                                    Collectors.toMap(
+                                            path -> path,
+                                            path -> {
+                                                try {
+                                                    return Files.readString(
+                                                            path, StandardCharsets.ISO_8859_1);
+                                                } catch (IOException error) {
+                                                    throw new UncheckedIOException(error);
+                                                }
+                                            }));
+        }
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + version, editor.token(), null);
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + project, owner.token(), null);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + version + "/_restore",
+                editor.token(),
+                null,
+                404);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + project + "/_restore",
+                editor.token(),
+                null,
+                403);
+        JsonNode restoredProject =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/projects/" + project + "/_restore",
+                        owner.token(),
+                        null);
+        assertEquals(project, restoredProject.path("id").asText());
+        assertTrue(restoredProject.path("deletedTime").isNull());
+        call(HttpMethod.GET, "/prototype-hub/versions/" + version, owner.token(), null, 404);
+        assertEquals(1, deletedVersions(editor.token(), project, Map.of()).path("total").asInt());
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + version + "/_restore",
+                viewer.token(),
+                null,
+                403);
+        JsonNode restored =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/_restore",
+                        editor.token(),
+                        null);
+        assertEquals(version, restored.path("id").asText());
+        assertEquals(current, restored.path("currentRevisionId").asText());
+        assertEquals(2, restored.path("revisionCount").asInt());
+        assertTrue(restored.path("deletedTime").isNull());
+        assertEquals(0, deletedVersions(editor.token(), project, Map.of()).path("total").asInt());
+        assertEquals(
+                "PROTOTYPE_HUB_RESOURCE_ACTIVE",
+                call(
+                                HttpMethod.POST,
+                                "/prototype-hub/versions/" + version + "/_restore",
+                                owner.token(),
+                                null,
+                                409)
+                        .path("code")
+                        .asText());
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + project + "/_restore",
+                owner.token(),
+                null,
+                409);
+        runtime(oldInternal, "index.html", 403);
+        runtime(oldPublic, "index.html", 404);
+        call(
+                HttpMethod.GET,
+                "/prototype-hub/public/shares/" + share.path("token").asText(),
+                null,
+                null,
+                404);
+        call(
+                HttpMethod.PUT,
+                "/prototype-hub/shares/" + share.path("id").asText() + "/enabled",
+                owner.token(),
+                Map.of("enabled", true, "expectedVersion", 1),
+                409);
+        runtime(preview(viewer.token(), version), "index.html", 200);
+        JsonNode newShare =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/shares",
+                        owner.token(),
+                        Map.of());
+        JsonNode newGrant =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + newShare.path("token").asText(),
+                        null,
+                        null);
+        runtime(newGrant, "index.html", 200);
+        JsonNode replay = upload(owner.token(), project, null, "R1", "restore-original-key", 200);
+        assertEquals(version, replay.path("id").asText());
+        assertEquals(first.path("revisionId").asText(), replay.path("revisionId").asText());
+        assertEquals(current, replay.path("currentRevisionId").asText());
+        assertEquals(1, count("select count(*) as count from p_creation_receipt"));
+        assertEquals(
+                1,
+                result(
+                                HttpMethod.GET,
+                                "/prototype-hub/versions/_usage?projectId=" + project,
+                                owner.token(),
+                                null)
+                        .path("versions")
+                        .path("used")
+                        .asInt());
+        for (var entry : retained.entrySet())
+            assertEquals(
+                    entry.getValue(),
+                    Files.readString(entry.getKey(), StandardCharsets.ISO_8859_1));
     }
 
     @Test
