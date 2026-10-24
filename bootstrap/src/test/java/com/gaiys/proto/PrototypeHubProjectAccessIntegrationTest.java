@@ -1143,6 +1143,266 @@ class PrototypeHubProjectAccessIntegrationTest {
     }
 
     @Test
+    void softDeletionRetainsLineageWhileAllRolesOldGrantsAndDirectEntrypointsAreBlocked()
+            throws IOException {
+        Actor owner = actor(ALL_ACTIONS), editor = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
+        String project = project(owner, "Retained deletion").path("id").asText();
+        member(project, editor, "editor");
+        member(project, viewer, "viewer");
+        JsonNode first = upload(owner.token(), project, null, "R1", "retained-version", 200);
+        String version = first.path("id").asText(), rid = first.path("revisionId").asText();
+        JsonNode internal = preview(viewer.token(), version);
+        JsonNode fixed =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/shares",
+                        owner.token(),
+                        Map.of("revisionMode", "fixed"));
+        JsonNode latest =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + "/shares",
+                        owner.token(),
+                        Map.of("revisionMode", "latest"));
+        JsonNode fixedGrant =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + fixed.path("token").asText(),
+                        null,
+                        null);
+        JsonNode latestGrant =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + latest.path("token").asText(),
+                        null,
+                        null);
+        upload(owner.token(), project, version, "R2", null, 200);
+        Set<Path> retained;
+        try (var files = Files.walk(FILES)) {
+            retained = files.filter(Files::isRegularFile).collect(Collectors.toSet());
+        }
+        call(HttpMethod.DELETE, "/prototype-hub/projects/" + project, owner.token(), null, 409);
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + version, editor.token(), null);
+        for (String token : List.of(owner.token(), editor.token(), viewer.token(), admin)) {
+            assertEquals(0, result(HttpMethod.GET, "/prototype-hub/versions", token, null).size());
+            assertEquals(
+                    0,
+                    result(
+                                    HttpMethod.GET,
+                                    "/prototype-hub/versions?projectId=" + project,
+                                    token,
+                                    null)
+                            .size());
+            assertEquals(
+                    0,
+                    result(
+                                    HttpMethod.POST,
+                                    "/prototype-hub/versions/_query",
+                                    token,
+                                    Map.of("pageSize", 1))
+                            .path("total")
+                            .asInt());
+            for (String suffix :
+                    List.of(
+                            "",
+                            "/pages",
+                            "/current-revision",
+                            "/revisions",
+                            "/revisions/" + rid,
+                            "/revisions/" + rid + "/pages",
+                            "/shares")) {
+                call(
+                        HttpMethod.GET,
+                        "/prototype-hub/versions/" + version + suffix,
+                        token,
+                        null,
+                        404);
+            }
+            for (String suffix :
+                    List.of("/preview-session", "/revisions/" + rid + "/preview-session"))
+                call(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + version + suffix,
+                        token,
+                        null,
+                        404);
+            upload(token, project, version, "cannot resurrect", null, 404);
+        }
+        runtime(internal, "index.html", 403);
+        for (JsonNode grant : List.of(fixedGrant, latestGrant)) {
+            String base = "/prototype-hub/public/shares/" + grant.path("token").asText();
+            call(HttpMethod.GET, base, null, null, 404);
+            call(HttpMethod.POST, base + "/verify", null, Map.of("password", "irrelevant"), 404);
+            call(HttpMethod.GET, grant.path("pagesUrl").asText().substring(4), null, null, 404);
+            runtime(grant, "index.html", 404);
+        }
+        assertEquals(2, count("select count(*) as count from p_revision"));
+        assertEquals(
+                2,
+                count(
+                        "select count(*) as count from p_share where revoked=true and enabled=false"));
+        assertEquals(2, count("select count(*) as count from p_project_member"));
+        assertEquals(1, count("select count(*) as count from p_creation_receipt"));
+        assertEquals(
+                1, count("select count(*) as count from p_version where deleted_time is not null"));
+        assertEquals(0, count("select count(*) as count from p_preview_session"));
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + project, owner.token(), null);
+        for (String token : List.of(owner.token(), editor.token(), viewer.token(), admin)) {
+            assertEquals(0, result(HttpMethod.GET, "/prototype-hub/projects", token, null).size());
+            assertEquals(
+                    0,
+                    result(
+                                    HttpMethod.POST,
+                                    "/prototype-hub/projects/_query",
+                                    token,
+                                    Map.of("pageSize", 1))
+                            .path("total")
+                            .asInt());
+            for (String suffix : List.of("", "/members", "/member-candidates"))
+                call(
+                        HttpMethod.GET,
+                        "/prototype-hub/projects/" + project + suffix,
+                        token,
+                        null,
+                        404);
+            call(HttpMethod.GET, "/prototype-hub/versions?projectId=" + project, token, null, 404);
+            call(
+                    HttpMethod.GET,
+                    "/prototype-hub/versions/_usage?projectId=" + project,
+                    token,
+                    null,
+                    404);
+            upload(token, project, null, "new denied", null, 404);
+        }
+        assertEquals(
+                1, count("select count(*) as count from p_project where deleted_time is not null"));
+        assertEquals(2, count("select count(*) as count from p_project_member"));
+        assertEquals(0, count("select count(*) as count from p_file_cleanup"));
+        try (var files = Files.walk(FILES)) {
+            assertEquals(retained, files.filter(Files::isRegularFile).collect(Collectors.toSet()));
+        }
+    }
+
+    @Test
+    void retainedVersionAndShareCannotBypassADeletedParentFromAnIncompleteRestore() {
+        Actor owner = actor(ALL_ACTIONS);
+        String project = project(owner, "Incomplete restored graph").path("id").asText();
+        JsonNode version = upload(owner.token(), project, null, "Retained child", null, 200);
+        String id = version.path("id").asText();
+        JsonNode internal = preview(owner.token(), id);
+        JsonNode share =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + id + "/shares",
+                        owner.token(),
+                        Map.of());
+        JsonNode grant =
+                result(
+                        HttpMethod.GET,
+                        "/prototype-hub/public/shares/" + share.path("token").asText(),
+                        null,
+                        null);
+        // 模拟部分恢复的父删除状态；仍活动的子投影和未撤销的分享也不能绕过父资源边界。
+        sql("update p_project set deleted_time=1 where id='" + project + "'");
+        for (String token : List.of(owner.token(), admin)) {
+            assertEquals(0, result(HttpMethod.GET, "/prototype-hub/versions", token, null).size());
+            assertEquals(
+                    0,
+                    result(HttpMethod.POST, "/prototype-hub/versions/_query", token, Map.of())
+                            .path("total")
+                            .asInt());
+            call(HttpMethod.GET, "/prototype-hub/versions/" + id, token, null, 404);
+            call(
+                    HttpMethod.POST,
+                    "/prototype-hub/versions/" + id + "/preview-session",
+                    token,
+                    null,
+                    404);
+        }
+        runtime(internal, "index.html", 403);
+        call(
+                HttpMethod.GET,
+                "/prototype-hub/public/shares/" + share.path("token").asText(),
+                null,
+                null,
+                404);
+        call(HttpMethod.GET, grant.path("pagesUrl").asText().substring(4), null, null, 404);
+        runtime(grant, "index.html", 404);
+        call(
+                HttpMethod.PUT,
+                "/prototype-hub/shares/" + share.path("id").asText() + "/enabled",
+                owner.token(),
+                Map.of("expectedVersion", share.path("configVersion").asLong(), "enabled", true),
+                404);
+    }
+
+    @Test
+    void replacementAndCreationCannotCommitAfterTheirVersionOrProjectWasSoftDeleted()
+            throws IOException {
+        Actor owner = actor(ALL_ACTIONS);
+        String project = project(owner, "Delete during upload").path("id").asText();
+        String version =
+                upload(owner.token(), project, null, "retained", null, 200).path("id").asText();
+        for (boolean replacement : List.of(true, false)) {
+            Sinks.One<Void> entered = Sinks.one(), release = Sinks.one();
+            FilePart file = mock(FilePart.class);
+            when(file.filename()).thenReturn("delete-race.zip");
+            when(file.content())
+                    .thenAnswer(
+                            ignored ->
+                                    Flux.defer(
+                                            () -> {
+                                                entered.tryEmitEmpty();
+                                                return release.asMono()
+                                                        .thenMany(
+                                                                Flux.just(
+                                                                        new DefaultDataBufferFactory()
+                                                                                .wrap(
+                                                                                        archive(
+                                                                                                "late upload"))));
+                                            }));
+            Mono<?> operation =
+                    replacement
+                            ? uploads.update(version, "late replacement", null, file)
+                            : uploads.upload(project, "late creation", null, file, owner.id());
+            var future =
+                    operation
+                            .contextWrite(
+                                    context ->
+                                            context.put(
+                                                    ParsedToken.class,
+                                                    SimpleParsedToken.of(
+                                                            "default",
+                                                            owner.token(),
+                                                            (headers, token) ->
+                                                                    headers.set(
+                                                                            "X-Access-Token",
+                                                                            token))))
+                            .toFuture();
+            try {
+                entered.asMono().block(TIMEOUT);
+                result(
+                        HttpMethod.DELETE,
+                        replacement
+                                ? "/prototype-hub/versions/" + version
+                                : "/prototype-hub/projects/" + project,
+                        owner.token(),
+                        null);
+            } finally {
+                release.tryEmitEmpty();
+            }
+            CompletionException failure = assertThrows(CompletionException.class, future::join);
+            assertTrue(failure.getCause() instanceof PrototypeHubException);
+            assertEquals(404, ((PrototypeHubException) failure.getCause()).getStatus());
+            assertEquals(1, count("select count(*) as count from p_version"));
+            assertEquals(1, count("select count(*) as count from p_revision"));
+            try (var paths = Files.list(FILES.resolve("projects/" + project + "/versions"))) {
+                assertEquals(1, paths.count());
+            }
+        }
+    }
+
+    @Test
     void replacementRechecksRevokedMembershipBeforeCommittingAndCleansTheCandidate()
             throws IOException {
         Actor owner = actor(ALL_ACTIONS), editor = actor(ALL_ACTIONS);

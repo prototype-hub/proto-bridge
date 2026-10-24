@@ -67,6 +67,7 @@ public class PrototypePreviewSessionService {
                 .flatMap(
                         grant ->
                                 versions.findById(found.getId())
+                                        .filter(version -> version.getDeletedTime() == null)
                                         .switchIfEmpty(
                                                 Mono.error(
                                                         () ->
@@ -203,10 +204,13 @@ public class PrototypePreviewSessionService {
                                                         versions.findById(versionId)
                                                                 .filter(
                                                                         version ->
-                                                                                session.getProjectId()
-                                                                                        .equals(
-                                                                                                version
-                                                                                                        .getProjectId()))
+                                                                                version
+                                                                                                        .getDeletedTime()
+                                                                                                == null
+                                                                                        && session.getProjectId()
+                                                                                                .equals(
+                                                                                                        version
+                                                                                                                .getProjectId()))
                                                                 .flatMap(
                                                                         version ->
                                                                                 revisions.require(

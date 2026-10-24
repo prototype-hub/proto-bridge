@@ -19,6 +19,10 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型项目版本及上传文件信息")
 public class PrototypeVersionEntity extends GenericEntity<String> {
+    @Column(name = "deleted_time")
+    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动逻辑版本；不可变修订和文件继续保留")
+    private Long deletedTime;
+
     @Column(name = "current_revision_id", length = 64)
     @Schema(description = "当前不可变快照标识；为空时必须显式迁移旧内容")
     private String currentRevisionId;

@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.service.FileCleanupService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import java.nio.file.Files;
@@ -346,6 +347,8 @@ class SystemIntegrationTest {
                         "/prototype-hub/versions/" + id,
                         token,
                         zip("replacement"));
+        String replacementPath =
+                versions.requireById(id).block(Duration.ofSeconds(10)).getStoragePath();
         assertTrue(version.path("previewUrl").isNull());
         assertTrue(updated.path("previewUrl").isNull());
         // 内部凭证与公开分享固定 R1；R2 只改变逻辑当前指针，不重写已发布快照。
@@ -377,6 +380,36 @@ class SystemIntegrationTest {
                 .isNotFound()
                 .expectBody()
                 .consumeWith(result -> {});
+        assertNull(shares.findById(share.path("id").asText()).block(Duration.ofSeconds(10)));
+        // 独立保留一个未显式删除的分享，验证软删版本时撤销且保留该引用。
+        JsonNode retainedShareBeforeDeletion =
+                client.post()
+                        .uri("/prototype-hub/versions/" + id + "/shares")
+                        .header("X-Access-Token", token)
+                        .bodyValue(java.util.Map.of())
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .expectBody(JsonNode.class)
+                        .returnResult()
+                        .getResponseBody()
+                        .path("result");
+        String retainedPublicPath =
+                "/prototype-hub/public/shares/"
+                        + retainedShareBeforeDeletion.path("token").asText();
+        JsonNode retainedGrantBeforeDeletion =
+                client.get()
+                        .uri(retainedPublicPath)
+                        .exchange()
+                        .expectStatus()
+                        .isOk()
+                        .expectBody(JsonNode.class)
+                        .returnResult()
+                        .getResponseBody()
+                        .path("result");
+        String retainedRuntimeBeforeDeletion =
+                retainedGrantBeforeDeletion.path("previewUrl").asText().substring(4);
+        client.get().uri(retainedRuntimeBeforeDeletion).exchange().expectStatus().isOk();
         client.delete()
                 .uri("/prototype-hub/versions/" + id)
                 .header("X-Access-Token", token)
@@ -402,8 +435,58 @@ class SystemIntegrationTest {
                 .isOk()
                 .expectBody()
                 .consumeWith(result -> {});
-        org.junit.jupiter.api.Assertions.assertFalse(
-                java.nio.file.Files.exists(FILES.resolve("projects/" + project)));
+        // 软删除仅阻断访问；旧/新快照、逻辑版本和撤销分享均保留，不产生历史回收任务。
+        assertTrue(
+                Files.readString(FILES.resolve(originalPath).resolve("index.html"))
+                        .contains("initial"));
+        assertTrue(
+                Files.readString(FILES.resolve(replacementPath).resolve("index.html"))
+                        .contains("replacement"));
+        assertNotNull(versions.findById(id).block(Duration.ofSeconds(10)).getDeletedTime());
+        var retainedShare =
+                shares.findById(retainedShareBeforeDeletion.path("id").asText())
+                        .block(Duration.ofSeconds(10));
+        assertNotNull(retainedShare);
+        assertTrue(retainedShare.getRevoked());
+        assertFalse(retainedShare.getEnabled());
+        assertNotNull(
+                database.sql("select deleted_time from p_project where id=:id")
+                        .bind("id", project)
+                        .map((row, metadata) -> row.get("deleted_time", Long.class))
+                        .one()
+                        .block(Duration.ofSeconds(10)));
+        assertEquals(
+                2L,
+                database.sql("select count(*) from p_revision where version_id=:id")
+                        .bind("id", id)
+                        .map((row, metadata) -> row.get(0, Long.class))
+                        .one()
+                        .block(Duration.ofSeconds(10)));
+        assertEquals(0L, cleanup.createQuery().count().block(Duration.ofSeconds(10)).longValue());
+        assertEquals(
+                0L,
+                database.sql("select count(*) from p_preview_session where version_id=:id")
+                        .bind("id", id)
+                        .map((row, metadata) -> row.get(0, Long.class))
+                        .one()
+                        .block(Duration.ofSeconds(10)));
+        for (String deleted :
+                java.util.List.of(
+                        "/prototype-hub/projects/" + project, "/prototype-hub/versions/" + id))
+            client.get()
+                    .uri(deleted)
+                    .header("X-Access-Token", token)
+                    .exchange()
+                    .expectStatus()
+                    .isNotFound();
+        client.get().uri(runtime).exchange().expectStatus().isForbidden();
+        client.get()
+                .uri(publicPath + "/" + key + "/runtime/index.html")
+                .exchange()
+                .expectStatus()
+                .isNotFound();
+        client.get().uri(retainedPublicPath).exchange().expectStatus().isNotFound();
+        client.get().uri(retainedRuntimeBeforeDeletion).exchange().expectStatus().isNotFound();
     }
 
     @Test
@@ -826,7 +909,8 @@ class SystemIntegrationTest {
     }
 
     @Test
-    void oldFileDeletionFailureIsDurableAndRetryable() throws Exception {
+    void unclassifiedHistoricalCleanupRemainsDurableWithoutReclaimingRetainedFiles()
+            throws Exception {
         String token = login(), project = createProject(token).path("id").asText();
         String id =
                 upload(
@@ -836,12 +920,8 @@ class SystemIntegrationTest {
                                 zip("old"))
                         .path("id")
                         .asText();
-        Path old =
-                FILES.resolve(
-                                versions.requireById(id)
-                                        .block(Duration.ofSeconds(10))
-                                        .getStoragePath())
-                        .getParent();
+        String oldPath = versions.requireById(id).block(Duration.ofSeconds(10)).getStoragePath();
+        Path old = FILES.resolve(oldPath).getParent();
         Path saved = old.resolveSibling(old.getFileName() + "-saved"),
                 neighbor = Files.createTempDirectory("proto-neighbor-");
         Files.writeString(neighbor.resolve("keep"), "safe");
@@ -855,24 +935,42 @@ class SystemIntegrationTest {
                     .exchange()
                     .expectStatus()
                     .isOk();
+            assertEquals(
+                    0L, cleanup.createQuery().count().block(Duration.ofSeconds(10)).longValue());
+            // 模拟旧版本遗留任务：来源无法区分历史与失败候选，不得在升级后自动推断回收。
+            var legacy = new FileCleanupEntity();
+            legacy.setId(UUID.randomUUID().toString());
+            legacy.setProjectId(project);
+            legacy.setVersionId(id);
+            legacy.setResourceType("version");
+            legacy.setStoragePath(oldPath);
+            legacy.setCreateTime(System.currentTimeMillis());
+            legacy.setAttempts(0);
+            legacy.setNextAttempt(0L);
+            cleanup.insert(legacy).block(Duration.ofSeconds(10));
+            long firstAttempt = System.currentTimeMillis();
             cleanup.retryPending().block(Duration.ofSeconds(10));
-            var task =
-                    cleanup.createQuery()
-                            .where(
-                                    com.gaiys.proto.prototypehub.entity.FileCleanupEntity
-                                            ::getVersionId,
-                                    id)
-                            .fetchOne()
-                            .block(Duration.ofSeconds(10));
+            var task = cleanup.findById(legacy.getId()).block(Duration.ofSeconds(10));
             assertNotNull(task);
             assertTrue(task.getAttempts() > 0);
+            assertTrue(task.getNextAttempt() > firstAttempt);
+            assertEquals(legacy.getCreateTime(), task.getCreateTime());
+            assertEquals("version", task.getResourceType());
+            assertTrue(Files.isSymbolicLink(old));
             assertTrue(Files.exists(neighbor.resolve("keep")));
             Files.delete(old);
             Files.move(saved, old);
+            long secondAttempt = System.currentTimeMillis();
             cleanup.attempt(task).block(Duration.ofSeconds(10));
-            assertFalse(Files.exists(old));
-            assertNull(cleanup.findById(task.getId()).block(Duration.ofSeconds(10)));
+            var retried = cleanup.findById(task.getId()).block(Duration.ofSeconds(10));
+            assertNotNull(retried);
+            assertTrue(retried.getAttempts() > task.getAttempts());
+            assertTrue(retried.getNextAttempt() > secondAttempt);
+            assertTrue(Files.readString(old.resolve("site/index.html")).contains("old"));
+            assertNotNull(versions.findById(id).block(Duration.ofSeconds(10)).getDeletedTime());
             cleanup.retryPending().block(Duration.ofSeconds(10));
+            assertNotNull(cleanup.findById(task.getId()).block(Duration.ofSeconds(10)));
+            assertTrue(Files.exists(old));
         } finally {
             if (Files.isSymbolicLink(old)) Files.delete(old);
             if (Files.exists(saved)) Files.move(saved, old);

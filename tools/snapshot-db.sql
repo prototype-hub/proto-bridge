@@ -17,10 +17,10 @@ SELECT 'project_authorization',count(*),md5(coalesce(jsonb_agg(jsonb_build_array
  FROM :"prototype_hub_project_table";
 \endif
 SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name='p_creation_receipt' AND column_name='revision_id') AS prototype_hub_has_receipt_revision \gset
+ AND table_name=:'prototype_hub_receipt_table' AND column_name='revision_id') AS prototype_hub_has_receipt_revision \gset
 \if :prototype_hub_has_receipt_revision
 SELECT 'creation_receipt_revision_bindings',count(*),md5(coalesce(jsonb_agg(
- jsonb_build_array(id,resource_id,revision_id) ORDER BY id)::text,'[]')) FROM p_creation_receipt;
+ jsonb_build_array(id,resource_id,revision_id) ORDER BY id)::text,'[]')) FROM :"prototype_hub_receipt_table";
 \endif
 -- Immutable content and current/share bindings must survive migration and restore.
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_table')) IS NOT NULL AS prototype_hub_has_revisions \gset
@@ -57,4 +57,19 @@ SELECT 'project_members',count(*),md5(coalesce(jsonb_agg(to_jsonb(m) ORDER BY id
 \if :prototype_hub_has_preview_sessions
 SELECT 'short_preview_sessions',count(*),md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_preview_session_table" s;
+\endif
+
+-- Deletion status is stable business data: restoring only IDs must not revive access.
+-- Old schemas remain diagnosable before EasyORM adds the nullable columns.
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_project_table' AND column_name='deleted_time') AS prototype_hub_has_project_deletion,
+ EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_version_table' AND column_name='deleted_time') AS prototype_hub_has_version_deletion \gset
+\if :prototype_hub_has_project_deletion
+SELECT 'project_deletion_state',count(*),md5(coalesce(jsonb_agg(
+ jsonb_build_array(id,deleted_time) ORDER BY id)::text,'[]')) FROM :"prototype_hub_project_table";
+\endif
+\if :prototype_hub_has_version_deletion
+SELECT 'version_deletion_state',count(*),md5(coalesce(jsonb_agg(
+ jsonb_build_array(id,project_id,deleted_time) ORDER BY id)::text,'[]')) FROM :"prototype_hub_version_table";
 \endif

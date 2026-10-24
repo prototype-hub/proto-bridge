@@ -27,7 +27,7 @@ import reactor.core.publisher.Sinks;
 /**
  * 协调原型 ZIP 接收、解压和版本持久化。
  *
- * <p>每次订阅独立创建上传目录和事务结果信号；usingWhen 等待数据库最终结果决定目录归属， 提交后的取消不会删除已生效的文件；历史目录持续保留，整体删除通过持久化任务清理。
+ * <p>每次订阅独立创建上传目录和事务结果信号；usingWhen 等待数据库最终结果决定目录归属， 提交后的取消不会删除已生效的文件；历史及软删除目录持续保留。
  */
 @Service
 @Slf4j
@@ -78,7 +78,7 @@ public class PrototypeUploadService {
                                                     project,
                                                     PrototypeProjectAccessService.Action.EDIT)
                                             .then()
-                                    : projects.findById(project)
+                                    : projects.findActiveById(project)
                                             .flatMap(
                                                     found ->
                                                             access.requireProject(
@@ -248,9 +248,10 @@ public class PrototypeUploadService {
         // 只在解压完成后持项目行锁，回执、实际计数和 INSERT 共用一个短事务及 Spring 连接。
         Mono<PrototypeVersionEntity> creation =
                 access.tryLockProject(project)
+                        .then(projects.findActiveById(project).hasElement())
                         .flatMap(
-                                exists ->
-                                        exists
+                                active ->
+                                        active
                                                 ? access.requireProject(
                                                                 project,
                                                                 PrototypeProjectAccessService.Action
@@ -271,42 +272,43 @@ public class PrototypeUploadService {
             PrototypeCreationReceiptService.Request request) {
         return receipts.replayReceipt(
                         request,
-                        receipt ->
-                                versions.findById(receipt.getResourceId())
-                                        .flatMap(
-                                                found ->
-                                                        access.requireVersion(
-                                                                found.getId(),
-                                                                PrototypeProjectAccessService.Action
-                                                                        .EDIT))
-                                        .flatMap(
-                                                found ->
-                                                        revisions
-                                                                .require(
-                                                                        found,
-                                                                        receipt.getRevisionId())
-                                                                .map(
-                                                                        original -> {
-                                                                            PrototypeVersionEntity
-                                                                                    response =
-                                                                                            found
-                                                                                                    .copyTo(
-                                                                                                            new PrototypeVersionEntity());
-                                                                            response
-                                                                                    .setResponseRevisionId(
-                                                                                            original
-                                                                                                    .getId());
-                                                                            response.setVersionName(
-                                                                                    original
-                                                                                            .getVersionName());
-                                                                            response.setDescription(
-                                                                                    original
-                                                                                            .getDescription());
-                                                                            response.setEntryFile(
-                                                                                    original
-                                                                                            .getEntryFile());
-                                                                            return response;
-                                                                        })))
+                        receipt -> {
+                            // 父项目活动状态已在项目行锁内读取；部分恢复遗留的活动子版本也不得重放。
+                            if (!projectExists) return Mono.empty();
+                            return versions.findActiveById(receipt.getResourceId())
+                                    .flatMap(
+                                            found ->
+                                                    access.requireVersion(
+                                                            found.getId(),
+                                                            PrototypeProjectAccessService.Action
+                                                                    .EDIT))
+                                    .flatMap(
+                                            found ->
+                                                    revisions
+                                                            .require(found, receipt.getRevisionId())
+                                                            .map(
+                                                                    original -> {
+                                                                        PrototypeVersionEntity
+                                                                                response =
+                                                                                        found
+                                                                                                .copyTo(
+                                                                                                        new PrototypeVersionEntity());
+                                                                        response
+                                                                                .setResponseRevisionId(
+                                                                                        original
+                                                                                                .getId());
+                                                                        response.setVersionName(
+                                                                                original
+                                                                                        .getVersionName());
+                                                                        response.setDescription(
+                                                                                original
+                                                                                        .getDescription());
+                                                                        response.setEntryFile(
+                                                                                original
+                                                                                        .getEntryFile());
+                                                                        return response;
+                                                                    }));
+                        })
                 .switchIfEmpty(
                         Mono.defer(
                                 () ->
@@ -468,7 +470,7 @@ public class PrototypeUploadService {
                                     project,
                                     storageId);
                             // 已确认不属于任何已提交快照的候选目录也登记持久重试，进程重启后可收敛。
-                            return cleanup.enqueue(
+                            return cleanup.enqueueCandidate(
                                             project,
                                             storageId,
                                             storage.relativeSitePath(project, storageId))

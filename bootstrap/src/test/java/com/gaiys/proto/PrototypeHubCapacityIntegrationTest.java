@@ -267,13 +267,15 @@ class PrototypeHubCapacityIntegrationTest {
         expectCode(
                 asAdmin(projects.create(input("project"), actor, "same-key")),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
-        assertEquals(4, count("p_project"));
+        assertEquals(5, count("p_project"));
+        assertEquals(4, projects.usage().block(TIMEOUT).projects().used());
         assertNotEquals(
                 id,
                 asAdmin(projects.create(input("project"), otherActor, "same-key"))
                         .block(TIMEOUT)
                         .getId());
-        assertEquals(5, count("p_project"));
+        assertEquals(6, count("p_project"));
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
     }
 
     @Test
@@ -315,8 +317,12 @@ class PrototypeHubCapacityIntegrationTest {
         cleanup.retryPending().block(TIMEOUT);
         expectCode(
                 upload(project, "release", zip, "same-key"), "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
-        assertEquals(4, directoryCount(project));
-        assertEquals(5, count("p_version"));
+        assertEquals(5, directoryCount(project));
+        assertEquals(6, count("p_version"));
+        assertNotNull(versions.findById(id).block(TIMEOUT).getDeletedTime());
+        assertEquals(4, versions.usage(project).block(TIMEOUT).versions().used());
+        assertNotEquals(id, upload(project, "release", zip, "fresh-key").block(TIMEOUT).getId());
+        assertEquals(5, versions.usage(project).block(TIMEOUT).versions().used());
     }
 
     @Test
@@ -329,9 +335,58 @@ class PrototypeHubCapacityIntegrationTest {
         expectCode(
                 upload(project, "release", zip, "deleted-project-key"),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
-        assertEquals(0, count("p_project"));
-        assertEquals(0, count("p_version"));
-        assertEquals(0, directoryCount(project));
+        assertEquals(1, count("p_project"));
+        assertEquals(1, count("p_version"));
+        assertNotNull(projects.findById(project).block(TIMEOUT).getDeletedTime());
+        assertNotNull(versions.findById(original.getId()).block(TIMEOUT).getDeletedTime());
+        assertEquals(0, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(1, directoryCount(project));
+    }
+
+    @Test
+    void activeVersionReceiptCannotReplayUnderASoftDeletedParentFromAnIncompleteRestore()
+            throws Exception {
+        String project = project();
+        byte[] zip = zip("retained original");
+        var original = upload(project, "release", zip, "partial-restore-key").block(TIMEOUT);
+        database.sql("update p_project set deleted_time=1 where id=:id")
+                .bind("id", project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertNull(versions.findById(original.getId()).block(TIMEOUT).getDeletedTime());
+        Mono<String> retainedRows =
+                database.sql(
+                                "select jsonb_build_array("
+                                        + "(select jsonb_agg(to_jsonb(p) order by id) from p_project p),"
+                                        + "(select jsonb_agg(to_jsonb(v) order by id) from p_version v),"
+                                        + "(select jsonb_agg(to_jsonb(r) order by id) from p_revision r),"
+                                        + "(select jsonb_agg(to_jsonb(c) order by id) from p_creation_receipt c)"
+                                        + ")::text as snapshot")
+                        .map((row, metadata) -> row.get("snapshot", String.class))
+                        .one();
+        String before = retainedRows.block(TIMEOUT);
+        Path retainedFile = FILES.resolve(original.getStoragePath()).resolve("index.html");
+        String retainedContent = Files.readString(retainedFile);
+        expectCode(
+                upload(project, "release", zip, "partial-restore-key"),
+                "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
+        StepVerifier.create(upload(project, "release", zip, "fresh-key"))
+                .expectErrorSatisfies(
+                        error -> {
+                            var failure = assertInstanceOf(PrototypeHubException.class, error);
+                            assertEquals(404, failure.getStatus());
+                            assertEquals("PROTOTYPE_HUB_PROJECT_NOT_FOUND", failure.getCode());
+                        })
+                .verify(TIMEOUT);
+        assertEquals(before, retainedRows.block(TIMEOUT));
+        assertEquals(1, count("p_project"));
+        assertEquals(1, count("p_version"));
+        assertEquals(1, count("p_revision"));
+        assertEquals(1, count("p_creation_receipt"));
+        assertEquals(0, count("p_file_cleanup"));
+        assertEquals(1, directoryCount(project));
+        assertEquals(retainedContent, Files.readString(retainedFile));
     }
 
     @Test
@@ -366,7 +421,7 @@ class PrototypeHubCapacityIntegrationTest {
     void onlyCommittedDeletionReleasesProjectAndVersionCapacity() throws Exception {
         var rows = createProjects(5);
         String empty = rows.getLast().getId();
-        rejectMutation("p_project", "delete");
+        rejectMutation("p_project", "update");
         try {
             StepVerifier.create(asAdmin(deletion.deleteProject(empty)))
                     .expectError()
@@ -385,7 +440,7 @@ class PrototypeHubCapacityIntegrationTest {
         byte[] zip = zip("original");
         PrototypeVersionEntity version = null;
         for (int i = 0; i < 5; i++) version = upload(project, "v" + i, zip, null).block(TIMEOUT);
-        rejectMutation("p_version", "delete");
+        rejectMutation("p_version", "update");
         try {
             StepVerifier.create(asAdmin(deletion.deleteVersion(version.getId())))
                     .expectError()
@@ -395,12 +450,40 @@ class PrototypeHubCapacityIntegrationTest {
         } finally {
             allowMutation("p_version");
         }
+        JsonNode retainedShare =
+                response(
+                                client.post()
+                                        .uri(
+                                                "/prototype-hub/versions/"
+                                                        + version.getId()
+                                                        + "/shares")
+                                        .header("X-Access-Token", admin)
+                                        .bodyValue(Map.of())
+                                        .exchange(),
+                                200)
+                        .path("result");
+        // 分享撤销发生在 tombstone 写入之后；后续失败也必须回滚删除状态和额度。
+        rejectMutation("p_share", "update");
+        try {
+            StepVerifier.create(asAdmin(deletion.deleteVersion(version.getId())))
+                    .expectError()
+                    .verify(TIMEOUT);
+            assertNull(versions.requireById(version.getId()).block(TIMEOUT).getDeletedTime());
+            assertEquals(5, versions.usage(project).block(TIMEOUT).versions().used());
+            client.get()
+                    .uri("/prototype-hub/public/shares/" + retainedShare.path("token").asText())
+                    .exchange()
+                    .expectStatus()
+                    .isOk();
+        } finally {
+            allowMutation("p_share");
+        }
         asAdmin(deletion.deleteVersion(version.getId())).block(TIMEOUT);
         cleanup.retryPending().block(TIMEOUT);
         assertEquals(4, versions.usage(project).block(TIMEOUT).versions().used());
         upload(project, "reclaimed", zip, null).block(TIMEOUT);
-        assertEquals(5, count("p_version"));
-        assertEquals(5, directoryCount(project));
+        assertEquals(6, count("p_version"));
+        assertEquals(6, directoryCount(project));
     }
 
     @Test
@@ -451,7 +534,8 @@ class PrototypeHubCapacityIntegrationTest {
         assertFalse(projects.usage().block(TIMEOUT).projects().canCreate());
         asAdmin(deletion.deleteProject(rows.get(3).getId())).block(TIMEOUT);
         asAdmin(projects.create(input("reclaimed"), actor)).block(TIMEOUT);
-        assertEquals(5, count("p_project"));
+        assertEquals(7, count("p_project"));
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
     }
 
     @Test

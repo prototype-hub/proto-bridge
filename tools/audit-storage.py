@@ -20,12 +20,15 @@ def main():
     if root.is_symlink():
         parser.error('Storage root must not be a symlink')
     root = root.resolve()
+    if not root.is_dir():
+        parser.error('Storage root must be an existing directory')
     manifest = json.loads(Path(args.manifest).read_text())
     complete = (isinstance(manifest, dict)
                 and manifest.get('format') == 'prototype-hub-storage-references'
                 and manifest.get('formatVersion') == 2
                 and manifest.get('sourceSchema') == 'immutable-revisions-v1'
                 and manifest.get('referencesComplete') is True
+                and manifest.get('receiptReferencesChecked') is True
                 and type(manifest.get('integrityErrors')) is int
                 and manifest.get('integrityErrors') == 0)
     rows = manifest.get('entries') if isinstance(manifest, dict) else manifest
@@ -35,11 +38,17 @@ def main():
         # Old manifests only listed current p_version paths. Accept them for inspection,
         # but never let that incomplete view turn retained revisions into deletion targets.
         if not complete:
-            parser.error('Repair requires a complete revision reference export with valid associations in format version 2')
+            parser.error('Repair requires a complete revision reference export with checked receipt associations in format version 2')
         if not args.offline or not args.confirm or Path(args.confirm).resolve() != root:
             parser.error('Repair requires --offline and --confirm equal to the absolute storage root')
     referenced = set()
     findings = []
+    if (isinstance(manifest, dict) and type(manifest.get('integrityErrors')) is int
+            and manifest['integrityErrors'] != 0):
+        findings.append({'kind': 'database-integrity', 'count': manifest['integrityErrors']})
+    for path in sorted(root.rglob('*')):
+        if path.is_symlink():
+            findings.append({'kind': 'symlink', 'path': str(path.relative_to(root))})
     for row in rows:
         if not isinstance(row, dict):
             parser.error('Invalid storage reference entry')
@@ -72,6 +81,10 @@ def main():
             findings.append({'kind': 'unreferenced-directory',
                              'path': str(version.relative_to(root))})
     print(json.dumps(findings, ensure_ascii=False, indent=2))
+    # A broken snapshot cannot authorize any repair, even of an apparently orphaned
+    # directory. Scan every reference first so failure never leaves partial repair.
+    if any(finding['kind'] != 'unreferenced-directory' for finding in findings):
+        return 1
     if args.delete_unreferenced:
         for version in unreferenced:
             if any(part.is_symlink() for part in
@@ -79,7 +92,8 @@ def main():
                 parser.error('Refusing repair through symlink')
             shutil.rmtree(version)
         print('Removed ' + str(len(unreferenced)) + ' unreferenced directories from the offline snapshot')
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

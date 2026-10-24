@@ -158,7 +158,8 @@ class DatabaseDescriptionIntegrationTest {
                         "p_project_member",
                         "p_preview_session"),
                 tables);
-        assertEquals(144, describedColumns); // Revision bindings and three share-lifecycle fields.
+        assertEquals(
+                146, describedColumns); // Revision/share bindings and project/version tombstones.
         assertEquals("id", comment("s_user_detail", "id"));
         for (String name : Set.of("parent_id", "path", "_level", "sort_index"))
             assertFalse(comment("s_menu", name).isBlank(), name);

@@ -47,12 +47,23 @@ public class PrototypeShareService
         return createQuery().where(PrototypeShareEntity::getVersionId, id).fetch();
     }
 
-    public Mono<Integer> deleteByVersionId(String id) {
-        return createDelete().where(PrototypeShareEntity::getVersionId, id).execute();
+    /** 父资源软删保留分享引用，但终态撤销并更换密钥，后续不能通过恢复父行复活旧链接。 */
+    public Mono<Integer> revokeByVersionId(String id) {
+        return createUpdate()
+                .set(PrototypeShareEntity::getEnabled, false)
+                .set(PrototypeShareEntity::getRevoked, true)
+                .set(PrototypeShareEntity::getAccessKey, random())
+                .where(PrototypeShareEntity::getVersionId, id)
+                .execute();
     }
 
-    public Mono<Integer> deleteByProjectId(String id) {
-        return createDelete().where(PrototypeShareEntity::getProjectId, id).execute();
+    public Mono<Integer> revokeByProjectId(String id) {
+        return createUpdate()
+                .set(PrototypeShareEntity::getEnabled, false)
+                .set(PrototypeShareEntity::getRevoked, true)
+                .set(PrototypeShareEntity::getAccessKey, random())
+                .where(PrototypeShareEntity::getProjectId, id)
+                .execute();
     }
 
     /** 管理侧仅校验已知密码，不授予公开访问凭据；启停和有效期不影响密码确认。 */

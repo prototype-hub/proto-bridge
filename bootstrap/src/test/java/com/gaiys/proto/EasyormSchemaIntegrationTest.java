@@ -2,6 +2,8 @@ package com.gaiys.proto;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.system.configuration.initializer.AdministratorInitializer;
 import com.gaiys.proto.system.configuration.initializer.MenuStartupInitializer;
 import com.gaiys.proto.system.entity.MenuEntity;
@@ -193,6 +195,37 @@ class EasyormSchemaIntegrationTest {
         for (String table : List.of("p_installation", "p_creation_receipt"))
             assertFalse(
                     scalar("SELECT obj_description('public." + table + "'::regclass)").isBlank());
+    }
+
+    @Test
+    void oldProjectAndVersionRowsGainNullableDeletionColumnsWithoutLosingData() throws Exception {
+        execute("ALTER TABLE p_project DROP COLUMN deleted_time");
+        execute("ALTER TABLE p_version DROP COLUMN deleted_time");
+        execute(
+                "INSERT INTO p_project(id,name,creator_id,create_time,modifier_id,modify_time) VALUES ('old-soft-delete-project','Retained old project','legacy',1,'legacy',1)");
+        execute(
+                "INSERT INTO p_version(id,project_id,version_name,storage_path,entry_file,preview_key,status,creator_id,create_time) VALUES ('old-soft-delete-version','old-soft-delete-project','Retained old version','projects/old-soft-delete-project/versions/old-soft-delete-version/site','index.html','legacy-key','ready','legacy',1)");
+        try {
+            synchronize(PrototypeProjectEntity.class);
+            synchronize(PrototypeVersionEntity.class);
+            for (String table : List.of("p_project", "p_version")) {
+                assertEquals(
+                        "1",
+                        scalar(
+                                "SELECT count(*)::text FROM "
+                                        + table
+                                        + " WHERE id LIKE 'old-soft-delete-%' AND deleted_time IS NULL"));
+                assertEquals(
+                        "YES",
+                        scalar(
+                                "SELECT is_nullable FROM information_schema.columns WHERE table_name='"
+                                        + table
+                                        + "' AND column_name='deleted_time'"));
+            }
+        } finally {
+            execute("DELETE FROM p_version WHERE id='old-soft-delete-version'");
+            execute("DELETE FROM p_project WHERE id='old-soft-delete-project'");
+        }
     }
 
     @Test

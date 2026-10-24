@@ -3,10 +3,10 @@
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_project_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_share_table',:'prototype_hub_cleanup_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table')
+ AND table_name IN (:'prototype_hub_project_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_share_table',:'prototype_hub_cleanup_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_receipt_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_project_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_share_table',:'prototype_hub_cleanup_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table');
+ AND tablename IN (:'prototype_hub_project_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_share_table',:'prototype_hub_cleanup_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_receipt_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -16,7 +16,7 @@ SELECT s.id AS orphan_share FROM :"prototype_hub_share_table" s
  LEFT JOIN :"prototype_hub_version_table" v ON v.id=s.version_id
  LEFT JOIN :"prototype_hub_project_table" p ON p.id=s.project_id
  WHERE v.id IS NULL OR p.id IS NULL OR v.project_id<>s.project_id;
-SELECT token,count(*) FROM :"prototype_hub_share_table" GROUP BY token HAVING count(*)>1;
+SELECT md5(token) AS duplicate_share_token_digest,count(*) FROM :"prototype_hub_share_table" GROUP BY token HAVING count(*)>1;
 SELECT status,count(*) FROM :"prototype_hub_version_table" GROUP BY status;
 
 -- Optional current authorization structure: old pre-member schemas remain inspectable.
@@ -24,7 +24,7 @@ SELECT count(*)=2 AS prototype_hub_has_ownership FROM information_schema.columns
  WHERE table_schema=current_schema() AND table_name=:'prototype_hub_project_table'
  AND column_name IN ('owner_id','access_epoch') \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_member_table')) IS NOT NULL AS prototype_hub_has_members,
-       to_regclass(format('%I.%I',current_schema(),:'prototype_hub_preview_session_table')) IS NOT NULL AS prototype_hub_has_preview_sessions,
+       to_regclass(format('%I.%I',current_schema(),:'prototype_hub_preview_session_table',:'prototype_hub_receipt_table')) IS NOT NULL AS prototype_hub_has_preview_sessions,
        to_regclass(format('%I.%I',current_schema(),'s_user')) IS NOT NULL AS prototype_hub_has_users \gset
 \if :prototype_hub_has_ownership
 SELECT count(*) AS unassigned_projects FROM :"prototype_hub_project_table" WHERE owner_id IS NULL OR owner_id='';
@@ -100,5 +100,30 @@ SELECT s.id AS invalid_session_revision FROM :"prototype_hub_preview_session_tab
  AND (r.id IS NULL OR r.version_id<>s.version_id OR r.project_id<>s.project_id
  OR r.storage_path IS DISTINCT FROM s.storage_path);
 \endif
+\endif
+\endif
+
+-- Null deletion time is active, including legacy rows. Retained tombstones are
+-- part of the same physical graph and must not be excluded from integrity checks.
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_project_table' AND column_name='deleted_time') AS prototype_hub_has_project_deletion,
+ EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_version_table' AND column_name='deleted_time') AS prototype_hub_has_version_deletion \gset
+\if :prototype_hub_has_project_deletion
+SELECT count(*) FILTER (WHERE deleted_time IS NULL) AS active_projects,
+ count(*) FILTER (WHERE deleted_time IS NOT NULL) AS soft_deleted_projects FROM :"prototype_hub_project_table";
+\endif
+\if :prototype_hub_has_version_deletion
+SELECT count(*) FILTER (WHERE deleted_time IS NULL) AS active_versions,
+ count(*) FILTER (WHERE deleted_time IS NOT NULL) AS soft_deleted_versions FROM :"prototype_hub_version_table";
+\endif
+SELECT count(*)=2 AS prototype_hub_has_receipt_revision FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_receipt_table'
+ AND column_name IN ('resource_id','revision_id') \gset
+\if :prototype_hub_has_revisions
+\if :prototype_hub_has_receipt_revision
+SELECT c.id AS invalid_creation_receipt_revision FROM :"prototype_hub_receipt_table" c
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=c.revision_id
+ WHERE nullif(c.revision_id,'') IS NOT NULL AND (r.id IS NULL OR r.version_id<>c.resource_id);
 \endif
 \endif

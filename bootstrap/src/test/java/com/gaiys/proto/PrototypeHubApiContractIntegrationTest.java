@@ -465,11 +465,14 @@ class PrototypeHubApiContractIntegrationTest {
         assertTrue(Files.exists(FILES.resolve(storagePath).resolve("index.html")));
 
         call(HttpMethod.DELETE, "/prototype-hub/versions/" + version, admin, null, 200);
-        assertNull(versions.findById(version).block(Duration.ofSeconds(10)));
-        assertNull(shares.findById(shareId).block(Duration.ofSeconds(10)));
+        assertNotNull(versions.findById(version).block(Duration.ofSeconds(10)).getDeletedTime());
+        var retainedShare = shares.findById(shareId).block(Duration.ofSeconds(10));
+        assertTrue(retainedShare.getRevoked());
+        assertFalse(retainedShare.getEnabled());
         call(HttpMethod.DELETE, "/prototype-hub/projects/" + project, admin, null, 200);
         call(HttpMethod.GET, "/prototype-hub/projects/" + project, admin, null, 404);
-        assertFalse(Files.exists(projectFiles));
+        assertTrue(Files.exists(projectFiles));
+        assertEquals(0L, cleanupTasks(project));
     }
 
     long cleanupTasks(String project) {

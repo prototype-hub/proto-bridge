@@ -339,6 +339,160 @@ class RuntimeSafetyTest(unittest.TestCase):
                 runtime.storage_manifest(unsafe)
         self.assertEqual(b'unrelated', (outside / 'keep.png').read_bytes())
 
+class RetainedDeletionVerificationTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='runtime-deletion-test-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        jar = self.root / 'fixture.jar'
+        jar.write_bytes(b'never launched')
+        args = argparse.Namespace(jar=jar, java=Path(sys.executable),
+                                  postgres_image='postgres:16-alpine',
+                                  report=self.root / 'report.json', frontend_dir=None)
+        self.check = runtime.RuntimeCheck(args, self.root)
+        self.api = runtime.Api('http://127.0.0.1:1', self.check.secrets_seen)
+        self.api.token = 'private-platform-token'
+        self.storage = self.root / 'storage'
+        self.storage.mkdir()
+        (self.storage / 'retained.html').write_bytes(b'kept after deletion')
+        self.state = {name: {'count': count, 'contentMd5': 'a' * 32}
+                      for name, count in (('projects', 2), ('versions', 2), ('revisions', 3),
+                                          ('shares', 2), ('receipts', 4), ('members', 1))}
+        self.state.update(sessions=0, invalidReferences=0)
+        public = {'previewUrl': '/api/public/private-grant/index.html',
+                  'pagesUrl': '/api/public/private-grant/pages',
+                  'runtimeBaseUrl': '/api/public/private-grant'}
+        internal = {'previewUrl': '/api/runtime/private-session/index.html',
+                    'runtimeBaseUrl': '/api/runtime/private-session'}
+        (self.root / 'unused.zip').write_bytes(b'original sample')
+        self.fixture = {'project': {'id': 'retained-project'}, 'projectName': 'Retained',
+                        'projectKey': 'original-project-key', 'emptyProject': {'id': 'empty-project'},
+                        'emptyKey': 'empty-project-key', 'original': {'id': 'retained-version', 'revisionId': 'r1'},
+                        'current': {'revisionId': 'r2'}, 'versionKey': 'original-version-key',
+                        'replacement': {'id': 'replacement-version'}, 'replacementKey': 'replacement-key',
+                        'member': {'username': 'fixture-viewer'}, 'shares': ({'token': 'private-share'},),
+                        'publicGrants': (public,), 'internalGrants': (internal,),
+                        'files': runtime.storage_manifest(self.storage), 'state': self.state}
+
+    def test_deleted_state_requires_all_rows_references_and_cleared_sessions(self):
+        for field in ('revisions', 'shares', 'receipts'):
+            broken = dict(self.state, **{field: {'count': 0, 'contentMd5': 'a' * 32}})
+            with self.subTest(field=field), patch.object(self.check, 'sql', return_value=json.dumps(broken)):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'lost retained'):
+                    self.check.deleted_fixture_state('disposable', self.fixture)
+        for field in ('sessions', 'invalidReferences'):
+            with self.subTest(field=field), patch.object(self.check, 'sql',
+                    return_value=json.dumps(dict(self.state, **{field: 1}))):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'grant or broke'):
+                    self.check.deleted_fixture_state('disposable', self.fixture)
+        with patch.object(self.check, 'sql', return_value=json.dumps(self.state)) as sql:
+            self.assertEqual(self.state, self.check.deleted_fixture_state('disposable', self.fixture))
+        self.assertIn(":'project'", sql.call_args.args[1])
+        self.assertNotIn('retained-project', sql.call_args.args[1])
+        self.assertEqual('retained-project', sql.call_args.kwargs['variables']['project'])
+
+    def test_all_deleted_grants_are_read_anonymously_and_file_loss_fails(self):
+        def request(identity, method, path, payload=None, expected=200, headers=None, **options):
+            if path == '/api/authorize/login':
+                return {'token': 'temporary-viewer-token'}
+            if expected == 409:
+                return {'code': 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT'}
+            return []
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=request) as calls, \
+                patch.object(self.check, 'deleted_fixture_state', return_value=self.state):
+            self.check.verify_deleted_fixture(self.api, self.fixture, self.root / 'unused.zip',
+                                               self.storage, 'disposable')
+        anonymous_reads = [call for call in calls.call_args_list
+                           if call.args[2].startswith(('/api/public/', '/api/runtime/'))]
+        self.assertEqual(5, len(anonymous_reads))
+        for call in anonymous_reads:
+            self.assertIsNone(call.args[0].token)
+            self.assertEqual('GET', call.args[1])
+            self.assertEqual(403 if '/runtime/' in call.args[2] else 404,
+                             call.kwargs['expected'])
+        self.assertEqual(4, sum(call.kwargs.get('expected', call.args[4] if len(call.args) > 4 else 200) == 409
+                                for call in calls.call_args_list))
+        self.assertNotIn('private-', json.dumps(self.check.report))
+        (self.storage / 'retained.html').unlink()
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
+                patch.object(self.check, 'deleted_fixture_state', return_value=self.state):
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'file identities or bytes'):
+                self.check.verify_deleted_fixture(self.api, self.fixture, self.root / 'unused.zip',
+                                                   self.storage, 'disposable')
+
+    def test_creation_captures_each_file_before_deletion_and_rejects_partial_loss(self):
+        for lost in ('r1', 'r2', 'replacement', None):
+            with self.subTest(lost=lost):
+                project_root = self.storage / 'projects'
+                if project_root.exists():
+                    shutil.rmtree(project_root)
+                files = {}
+                state = {'current': False, 'activeVersions': 0}
+
+                def write_revision(revision):
+                    path = project_root / 'retained-project/versions' / revision / 'site/index.html'
+                    path.parent.mkdir(parents=True)
+                    path.write_text(revision)
+                    files[revision] = path
+
+                def upload(project, zip_path, key):
+                    revision = 'replacement' if files else 'r1'
+                    write_revision(revision)
+                    state['activeVersions'] += 1
+                    return {'id': 'replacement-version' if revision == 'replacement' else 'retained-version',
+                            'revisionId': revision}
+
+                def replace(version, zip_path):
+                    write_revision('r2')
+                    state['current'] = True
+                    return dict(version, revisionId='r2')
+
+                def request(identity, method, path, payload=None, expected=200, headers=None, **options):
+                    if path == '/api/authorize/login':
+                        return {'token': 'temporary-viewer-token'}
+                    if method == 'POST' and path.endswith('/shares'):
+                        return {'token': 'latest' if payload.get('revisionMode') else 'fixed'}
+                    if '/public/shares/' in path:
+                        return {'revisionId': 'r2' if state['current'] else 'r1'}
+                    if method == 'GET' and '/versions/_usage?' in path:
+                        return {'versions': {'used': state['activeVersions']}}
+                    if method == 'DELETE' and '/versions/' in path:
+                        state['activeVersions'] -= 1
+                        is_replacement = path.endswith('/replacement-version')
+                        if lost and ((lost == 'replacement') == is_replacement):
+                            files[lost].unlink()
+                    return {}
+
+                with patch.object(self.api, 'project', side_effect=[{'id': 'retained-project'},
+                                                                  {'id': 'empty-project'}]), \
+                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}}
+                                                                    for used in (1, 1, 2, 1)]), \
+                        patch.object(self.api, 'upload', side_effect=upload), \
+                        patch.object(self.api, 'replace', side_effect=replace), \
+                        patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
+                        patch.object(self.check, 'preview'), \
+                        patch.object(self.check, 'deleted_fixture_state', return_value=self.state):
+                    if lost:
+                        with self.assertRaisesRegex(runtime.VerificationFailure,
+                                                    'changed retained fixture files'):
+                            self.check.create_deleted_fixture(self.api, {'id': 'viewer', 'username': 'viewer'},
+                                                              self.root / 'unused.zip', self.root / 'unused.zip',
+                                                              self.storage)
+                        self.assertTrue(any(path.exists() for path in files.values()))
+                    else:
+                        fixture = self.check.create_deleted_fixture(
+                            self.api, {'id': 'viewer', 'username': 'viewer'}, self.root / 'unused.zip',
+                            self.root / 'unused.zip', self.storage)
+                        self.assertEqual({path.relative_to(self.storage).as_posix() for path in files.values()},
+                                         set(fixture['files']))
+
+    def test_disposable_sql_passes_ids_as_quoted_psql_variables(self):
+        hostile_id = "value' with quotes"
+        with patch.object(self.check, 'command', return_value=b'{}') as command:
+            self.check.sql('disposable', "select :'project';", variables={'project': hostile_id})
+        self.assertIn('project=' + hostile_id, command.call_args.args[0])
+        self.assertEqual(b"select :'project';", command.call_args.kwargs['input_data'])
+
 
 @unittest.skipUnless(os.environ.get('PROTO_RUNTIME_PLAYWRIGHT_DIR'),
                      'Set PROTO_RUNTIME_PLAYWRIGHT_DIR to an installed frontend for real CLI probes')

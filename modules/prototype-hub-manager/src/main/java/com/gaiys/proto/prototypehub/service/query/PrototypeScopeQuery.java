@@ -161,12 +161,15 @@ public class PrototypeScopeQuery {
                                                         PrototypeProjectMemberEntity::getUserId,
                                                         userId));
         if (page != null) query.where(page);
+        query.where(condition -> condition.isNull(PrototypeVersionEntity::getDeletedTime));
         applyScope(query, userId, administrator);
         return query;
     }
 
     private static <T> void applyScope(
             QueryHelper.JoinSpec<T> query, String userId, boolean administrator) {
+        // 删除状态约束也适用于 ADMIN，且必须在 COUNT/分页之前注入。
+        query.where(condition -> condition.isNull(PrototypeProjectEntity::getDeletedTime));
         if (administrator) return;
         // owner 的空白判断与按 ID 详情一致，不能在分页后过滤，否则总数和页边界会泄漏或缺项。
         query.where(

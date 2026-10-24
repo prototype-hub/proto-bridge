@@ -704,6 +704,37 @@ class PrototypeHubShareLifecycleIntegrationTest {
                         .contains("\"integrityErrors\" : 0"));
     }
 
+    @Test
+    void operationalSnapshotsAndPreflightRetainAndDistinguishSoftDeletedRows() throws Exception {
+        String project = project(admin);
+        JsonNode version = upload(project, null, "Retained operations", admin);
+        String versionId = version.path("id").asText();
+        create(versionId, Map.of());
+        for (String script :
+                List.of("prototype-hub-table-names.sql", "preflight-db.sql", "snapshot-db.sql"))
+            DATABASE.copyFileToContainer(
+                    MountableFile.forHostPath(Path.of("..", "tools", script).toAbsolutePath()),
+                    "/tmp/" + script);
+        String before = psql("snapshot-db.sql", null);
+        result(HttpMethod.DELETE, "/prototype-hub/versions/" + versionId, admin, null);
+        String afterVersion = psql("snapshot-db.sql", null);
+        assertNotEquals(deletionDigest(before, "version"), deletionDigest(afterVersion, "version"));
+        assertEquals(deletionDigest(before, "project"), deletionDigest(afterVersion, "project"));
+        result(HttpMethod.DELETE, "/prototype-hub/projects/" + project, admin, null);
+        String afterProject = psql("snapshot-db.sql", null);
+        assertNotEquals(deletionDigest(before, "project"), deletionDigest(afterProject, "project"));
+        String preflight = psql("preflight-db.sql", null);
+        assertTrue(preflight.contains("active_projects,soft_deleted_projects\n0,1\n"));
+        assertTrue(preflight.contains("active_versions,soft_deleted_versions\n0,1\n"));
+    }
+
+    private String deletionDigest(String snapshot, String type) {
+        return snapshot.lines()
+                .filter(line -> line.startsWith(type + "_deletion_state,"))
+                .findFirst()
+                .orElseThrow();
+    }
+
     private String shareRow(JsonNode share) {
         return database.sql("select to_jsonb(s)::text as snapshot from p_share s where id=:id")
                 .bind("id", share.path("id").asText())
