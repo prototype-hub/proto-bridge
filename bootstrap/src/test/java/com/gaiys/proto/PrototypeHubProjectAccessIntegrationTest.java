@@ -40,6 +40,8 @@ import org.hswebframework.web.system.authorization.api.service.reactive.Reactive
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.core.io.ByteArrayResource;
@@ -789,8 +791,10 @@ class PrototypeHubProjectAccessIntegrationTest {
                 .isNotFound();
     }
 
-    @Test
-    void comparisonRequiresCurrentVersionReadAndRejectsPublicProofRevokedOrDisabledActors() {
+    @ParameterizedTest(name = "fixed revision read authorization, comparison={0}")
+    @ValueSource(booleans = {true, false})
+    void comparisonAndQualityRequireCurrentReadAndRejectPublicProofRevokedOrDisabledActors(
+            boolean comparison) {
         Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
         Actor noVersionRead = actor(Map.of("prototype-hub-project", List.of("query")));
         String project = project(owner, "Comparison scope").path("id").asText();
@@ -799,17 +803,18 @@ class PrototypeHubProjectAccessIntegrationTest {
         String path =
                 "/prototype-hub/versions/"
                         + id
-                        + "/revisions/_compare?leftRevisionId="
-                        + rid
-                        + "&rightRevisionId="
-                        + rid;
+                        + (comparison
+                                ? "/revisions/_compare?leftRevisionId="
+                                        + rid
+                                        + "&rightRevisionId="
+                                        + rid
+                                : "/revisions/" + rid + "/quality");
         member(project, viewer, "viewer");
         member(project, noVersionRead, "viewer");
+        JsonNode readable = result(HttpMethod.GET, path, viewer.token(), null);
         assertEquals(
                 rid,
-                result(HttpMethod.GET, path, viewer.token(), null)
-                        .path("left")
-                        .path("id")
+                (comparison ? readable.path("left").path("id") : readable.path("revisionId"))
                         .asText());
         call(HttpMethod.GET, path, noVersionRead.token(), null, 403);
         JsonNode share =

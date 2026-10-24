@@ -552,7 +552,50 @@ class RuntimeCheck:
         require(occupancy['versions']['used'] == 1, 'Revision replacement consumed a logical version slot')
         self.verify_revision_comparison(api, original, current, original_hashes, current_hashes,
                                         foreign_revision)
+        self.verify_revision_quality(api, original, current, foreign_revision)
         return sorted(item['manifestSha256'] for item in (first[0], second[0]))
+
+    def verify_revision_quality(self, api, original, current, foreign_revision=None):
+        """Check the original complete static fixture through the actual fixed-revision endpoint."""
+        base = '/api/prototype-hub/versions/' + original['id']
+        limits = {'maxTextBytes': 2 * 1024 * 1024, 'maxTotalTextBytes': 32 * 1024 * 1024,
+                  'maxReferences': 100000, 'maxFindings': 1000}
+        for snapshot in (original, current):
+            path = base + '/revisions/' + snapshot['revisionId']
+            metadata = api.request('GET', path)
+            report = api.request('GET', path + '/quality')
+            require(report['versionId'] == original['id'] and
+                    report['revisionId'] == snapshot['revisionId'] and report['entryFile'] == 'index.html' and
+                    report['manifestSha256'] == metadata['manifestSha256'],
+                    'Quality report changed its fixed revision or manifest identity')
+            summary = report['summary']
+            require(report['complete'] is True and report['findings'] == [] and report['limits'] == limits,
+                    'Quality report marked the original complete fixture incomplete or changed its bounds')
+            require(summary['files'] == 5 and summary['scannedDocuments'] == 4 and
+                    0 < summary['scannedBytes'] <= limits['maxTotalTextBytes'] and
+                    summary['checkedReferences'] == 9 and
+                    all(summary[name] == 0 for name in ('errors', 'warnings', 'findingsTotal',
+                                                      'omittedFindings', 'skippedDocuments')) and
+                    summary['uncheckedReferences'] == dict(external=0, rootAbsolute=0, fragment=0,
+                                                           unsupportedScheme=0),
+                    'Quality report omitted static fixture files or references, or reported false findings')
+            require(not any(name in report for name in ('storagePath', 'manifestJson', 'previewUrl', 'accessKey')),
+                    'Quality report exposed internal storage or authorization details')
+            require(api.request('GET', path + '/quality') == report,
+                    'Repeated static quality report changed without a fixture change')
+        require(api.request('GET', base + '/current-revision')['id'] == current['revisionId'],
+                'Read-only quality report changed the current pointer')
+        api.request('GET', base + '/revisions/' + uuid.uuid4().hex + '/quality', expected=404)
+        if foreign_revision:
+            api.request('GET', base + '/revisions/' + foreign_revision + '/quality', expected=404)
+        Api(api.origin, self.secrets_seen).request(
+            'GET', base + '/revisions/' + original['revisionId'] + '/quality', expected=401)
+        self.report['revisionQuality'] = {
+            'fixedHistoricalAndCurrentVerified': True, 'repeatableBoundedReportVerified': True,
+            'fixtureFiles': 5, 'scannedDocuments': 4, 'checkedReferences': 9,
+            'missingRevisionAndAnonymousRejected': True,
+            'foreignRevisionRejected': bool(foreign_revision) or
+                self.report.get('revisionQuality', {}).get('foreignRevisionRejected', False)}
 
     def verify_revision_comparison(self, api, original, current, original_hashes, current_hashes,
                                    foreign_revision=None):
@@ -774,6 +817,7 @@ SELECT json_build_object(
                 revision_path = path + '/revisions/' + revision
                 identity.request('GET', revision_path, expected=404)
                 identity.request('GET', revision_path + '/pages', expected=404)
+                identity.request('GET', revision_path + '/quality', expected=404)
                 identity.request('POST', revision_path + '/preview-session', expected=404)
         anonymous = Api(api.origin, self.secrets_seen)
         for share in fixture['shares']:

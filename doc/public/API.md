@@ -90,6 +90,26 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 历史版本没有 `currentRevisionId` 时，列表和详情可显示 `migrationRequired=true`；当前修订、页面、更新及新建分享返回 409 / `PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED`。无修订绑定的旧公开分享不可用，旧内部会话不再授权。管理员在停写并完成联合备份后调用 `POST /prototype-hub/versions/{id}/revision-migration`，请求 `{"apply":false}` 预检、`true` 显式幂等迁移；需要有效 ADMIN 和版本 save。响应为 `versionId/migrationRequired/revisionId/manifestSha256/fileCount/totalBytes/sharesToBind/receiptsToBind/applied`，`migrationRequired` 表示操作完成后状态，两个数量表示操作前待绑定数量。详细升级步骤见[数据说明](DATA.md#不可变修订与旧内容迁移)。
 
+## 固定修订交付包质量报告
+
+`GET /prototype-hub/versions/{id}/revisions/{rid}/quality` 按保存清单及该固定修订的实际 HTML/CSS 字节检查交付包。沿用 `prototype-hub-version.query` 与当前项目读取范围；活动父项目、逻辑版本和修订必须精确关联，不接受公开分享证明，也不将历史目标替换成 current。每次请求重新鉴权，不保存报告或修改文件。
+
+统一响应的 `result` 包含 `versionId/revisionId/manifestSha256/entryFile`、`summary`、`limits`、`complete` 和 `findings`。客户端只对这份有界结果分页和下载 JSON，不调用额外下载接口；下载内容对应已显示的固定修订，无访问令牌、内部存储根路径或完整 manifest。
+
+| 字段 | 含义 |
+| --- | --- |
+| `summary.files/scannedDocuments/scannedBytes/checkedReferences` | 清单文件数、已解析 HTML/CSS 文档数及字节数、已处理静态引用数；引用数包含显式列出的未检查类别 |
+| `summary.errors/warnings/findingsTotal/omittedFindings/skippedDocuments` | 去重后的错误、警告、问题总数、因结果上限省略数，以及无法完整读取/解析的文档数 |
+| `summary.uncheckedReferences` | `external/rootAbsolute/fragment/unsupportedScheme` 四类未核验引用计数；外部、站点根地址、片段和非文件协议不表示已检查成功 |
+| `limits` | 单文档 `maxTextBytes=2097152`、累计 `maxTotalTextBytes=33554432`、最多 `maxReferences=100000` 个引用和 `maxFindings=1000` 条问题；客户端不能提高上限 |
+| `findings[]` | `code/severity/sourcePath/targetPath/reference`；均以纯文本展示，原始引用最多 1024 字符，按来源、代码、目标和引用稳定排序 |
+
+问题代码为 `entry_missing`（入口缺失）、`file_missing`（清单文件实际缺失）、`missing_resource`（资源引用缺失）、`broken_internal_link`（内部页面链接无目标）、`chinese_path`（中文路径兼容性提示）、`text_unreadable`（无法解析文本）、`document_limit/reference_limit/findings_limit`（对应预算限制）以及 `invalid_reference`（无法安全解析的本地引用）。级别为 `error` 或 `warning`；中文路径本身不阻止预览或判为错误。
+
+`complete=true` 只表示声明的本地静态检查已完成，允许存在已报告的问题；预算耗尽、文件缺失/无法读取或省略问题时为 false。外部 URL、根绝对地址、片段目标和非文件协议单独计为未检查，不因这一计数将 complete 强制改为 false。平台注入的 Inspector 脚本不计作交付包缺失资源。报告不发送网络请求、不执行 JavaScript，也不证明动态链接、交互状态或业务流程正确；它不替代上传安全、ZIP 路径检查或人工验收。
+
+损坏或不支持的清单返回 400 / `PROTOTYPE_HUB_MANIFEST_INVALID`；未登录 401，缺通用查询动作 403，目标不存在/跨范围/已软删 404，未迁移版本 409。磁盘内容缺失作为报告问题返回，不能给出“全部通过”的结论。
+
 ## 同版本修订比较
 
 `GET /prototype-hub/versions/{id}/revisions/_compare` 比较同一活动逻辑版本的两个明确修订。它沿用 `prototype-hub-version.query` 与当前项目读取权限，不增加菜单或权限项；公开分享不提供比较或额外历史授权。

@@ -181,6 +181,104 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     @Test
+    void qualityPinsHistoricalRevisionAndReportsBrokenResourcesWithoutChangingSavedData()
+            throws Exception {
+        String project = project();
+        JsonNode first = upload(project, null, qualityArchive("R1", true), null, null, 200);
+        String id = first.path("id").asText(), r1 = first.path("revisionId").asText();
+        String r2 =
+                upload(project, id, qualityArchive("R2", false), null, r1, 200)
+                        .path("revisionId")
+                        .asText();
+        String before = databaseSnapshot();
+        JsonNode old = result(HttpMethod.GET, revision(id, r1) + "/quality", null);
+        JsonNode current = result(HttpMethod.GET, revision(id, r2) + "/quality", null);
+        for (JsonNode report : List.of(old, current)) {
+            String rid = report.path("revisionId").asText();
+            assertEquals(id, report.path("versionId").asText());
+            assertEquals("index.html", report.path("entryFile").asText());
+            assertEquals(
+                    revisions.findById(rid).block(TIMEOUT).getManifestSha256(),
+                    report.path("manifestSha256").asText());
+            assertEquals(4, report.path("summary").path("files").asInt());
+            assertEquals(3, report.path("summary").path("scannedDocuments").asInt());
+            assertTrue(report.path("summary").path("scannedBytes").asLong() > 0);
+            assertTrue(report.path("complete").asBoolean());
+            assertEquals(1, report.path("summary").path("warnings").asInt());
+            assertEquals(2 * 1024 * 1024, report.path("limits").path("maxTextBytes").asInt());
+            assertEquals(
+                    32 * 1024 * 1024, report.path("limits").path("maxTotalTextBytes").asLong());
+            assertEquals(100_000, report.path("limits").path("maxReferences").asInt());
+            assertEquals(1000, report.path("limits").path("maxFindings").asInt());
+            assertFalse(report.has("storagePath"));
+            assertFalse(report.has("manifestJson"));
+            assertFalse(report.toString().contains("previewUrl"));
+            assertEquals(report, result(HttpMethod.GET, revision(id, rid) + "/quality", null));
+        }
+        assertEquals(r1, old.path("revisionId").asText());
+        assertEquals(r2, current.path("revisionId").asText());
+        assertEquals(2, old.path("summary").path("errors").asInt());
+        assertEquals(0, current.path("summary").path("errors").asInt());
+        assertEquals(6, old.path("summary").path("checkedReferences").asInt());
+        assertEquals(4, current.path("summary").path("checkedReferences").asInt());
+        for (String target : List.of("nested/missing.png", "nested/missing.html")) {
+            assertTrue(
+                    java.util.stream.StreamSupport.stream(old.path("findings").spliterator(), false)
+                            .anyMatch(
+                                    item ->
+                                            "nested/中文.html"
+                                                            .equals(
+                                                                    item.path("sourcePath")
+                                                                            .asText())
+                                                    && target.equals(
+                                                            item.path("targetPath").asText())),
+                    target);
+        }
+        assertEquals(
+                r2,
+                result(HttpMethod.GET, version(id) + "/current-revision", null)
+                        .path("id")
+                        .asText());
+        assertEquals(before, databaseSnapshot());
+        // 报告读取固定修订的实际文本；磁盘丢失不能伪装为无问题的完整扫描。
+        var row = revisions.findById(r1).block(TIMEOUT);
+        Files.delete(FILES.resolve(row.getStoragePath()).resolve("nested/中文.html"));
+        JsonNode missing = result(HttpMethod.GET, revision(id, r1) + "/quality", null);
+        assertFalse(missing.path("complete").asBoolean());
+        assertTrue(missing.path("summary").path("errors").asInt() > 0);
+        assertEquals(before, databaseSnapshot());
+    }
+
+    @Test
+    void qualityRejectsForeignRevisionsAnonymousLegacyAndMalformedSavedManifest() throws Exception {
+        String project = project();
+        JsonNode own = upload(project, null, qualityArchive("R1", false), null, null, 200);
+        String id = own.path("id").asText(), rid = own.path("revisionId").asText();
+        String sameProject =
+                upload(project, null, archive("Other version"), null, null, 200)
+                        .path("revisionId")
+                        .asText();
+        String otherProject =
+                upload(project(), null, archive("Other project"), null, null, 200)
+                        .path("revisionId")
+                        .asText();
+        for (String foreign : List.of(sameProject, otherProject, "missing"))
+            call(HttpMethod.GET, revision(id, foreign) + "/quality", admin, null, 404);
+        call(HttpMethod.GET, revision(id, rid) + "/quality", null, null, 401);
+        revisions
+                .createUpdate()
+                .set(PrototypeRevisionEntity::getManifestJson, "null")
+                .where(PrototypeRevisionEntity::getId, rid)
+                .execute()
+                .block(TIMEOUT);
+        JsonNode malformed = call(HttpMethod.GET, revision(id, rid) + "/quality", admin, null, 400);
+        assertEquals("PROTOTYPE_HUB_MANIFEST_INVALID", malformed.path("code").asText());
+        makeLegacy(id);
+        JsonNode legacy = call(HttpMethod.GET, revision(id, rid) + "/quality", admin, null, 409);
+        assertEquals("PROTOTYPE_HUB_REVISION_MIGRATION_REQUIRED", legacy.path("code").asText());
+    }
+
+    @Test
     void comparisonPinsTwoExplicitRevisionsAfterCurrentChangesAndReadsNoRuntimeFiles()
             throws Exception {
         String project = project();
@@ -2020,6 +2118,33 @@ class PrototypeHubRevisionIntegrationTest {
 
     private static String sha(byte[] bytes) throws Exception {
         return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(bytes));
+    }
+
+    private static byte[] qualityArchive(String label, boolean broken) throws IOException {
+        var bytes = new ByteArrayOutputStream();
+        try (var zip = new ZipOutputStream(bytes)) {
+            for (var entry :
+                    List.of(
+                            Map.entry("index.html", "<html><body>" + label + "</body></html>"),
+                            Map.entry(
+                                    "nested/中文.html",
+                                    "<html><body><a href='../index.html'>Home</a>"
+                                            + "<img src='../assets/icon.svg'>"
+                                            + "<link rel='stylesheet' href='../assets/style.css'>"
+                                            + (broken
+                                                    ? "<img src='missing.png'><a href='missing.html'>Missing</a>"
+                                                    : "")
+                                            + "</body></html>"),
+                            Map.entry("assets/style.css", "body{background:url(icon.svg)}"),
+                            Map.entry(
+                                    "assets/icon.svg",
+                                    "<svg xmlns='http://www.w3.org/2000/svg'/>"))) {
+                zip.putNextEntry(new ZipEntry(entry.getKey()));
+                zip.write(entry.getValue().getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
+        }
+        return bytes.toByteArray();
     }
 
     private static byte[] archive(String content) throws IOException {
