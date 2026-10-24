@@ -13,10 +13,10 @@ import org.hswebframework.web.api.crud.entity.GenericEntity;
 @Table(
         name = "p_file_cleanup",
         indexes = @Index(name = "idx_protohub_cleanup_due", columnList = "next_attempt"))
-@Schema(description = "原型上传候选清理重试及来源不明旧任务的保留记录")
+@Schema(description = "原型上传候选、到期快照的持久化清理重试及未知旧任务保留记录")
 public class FileCleanupEntity extends GenericEntity<String> {
     @Column(name = "resource_type", length = 16, nullable = false)
-    @Schema(description = "资源类型：upload-candidate 可核验候选；旧 project/version 来源不明，仅保留不执行")
+    @Schema(description = "资源类型：upload-candidate 上传候选或 expired-snapshot 到期快照；未知旧类型仅保留")
     private String resourceType;
 
     @Column(name = "project_id", length = 64, nullable = false)

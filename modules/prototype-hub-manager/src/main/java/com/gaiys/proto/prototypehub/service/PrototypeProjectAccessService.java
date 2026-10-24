@@ -201,6 +201,12 @@ public class PrototypeProjectAccessService {
                                                         return Mono.error(
                                                                 PrototypeHubException
                                                                         .resourceActive());
+                                                    if (PrototypeRetentionService.expired(
+                                                            grant.project().getDeletedTime(),
+                                                            System.currentTimeMillis()))
+                                                        return Mono.error(
+                                                                PrototypeHubException.missing(
+                                                                        "project"));
                                                     return Mono.just(grant);
                                                 }));
     }
@@ -214,12 +220,20 @@ public class PrototypeProjectAccessService {
                                 requireProject(version.getProjectId(), Action.EDIT)
                                         .then(
                                                 Mono.defer(
-                                                        () ->
-                                                                version.getDeletedTime() == null
-                                                                        ? Mono.error(
-                                                                                PrototypeHubException
-                                                                                        .resourceActive())
-                                                                        : Mono.just(version))));
+                                                        () -> {
+                                                            if (version.getDeletedTime() == null)
+                                                                return Mono.error(
+                                                                        PrototypeHubException
+                                                                                .resourceActive());
+                                                            if (PrototypeRetentionService.expired(
+                                                                    version.getDeletedTime(),
+                                                                    System.currentTimeMillis()))
+                                                                return Mono.error(
+                                                                        PrototypeHubException
+                                                                                .missing(
+                                                                                        "version"));
+                                                            return Mono.just(version);
+                                                        })));
     }
 
     public Mono<PagerResult<ProjectResponse>> deletedProjects(PrototypeListQueryRequest request) {

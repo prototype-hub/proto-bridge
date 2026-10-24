@@ -14,6 +14,11 @@ SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=curren
 SELECT count(*)=2 AS prototype_hub_has_receipt_revision FROM information_schema.columns
  WHERE table_schema=current_schema() AND table_name=:'prototype_hub_receipt_table'
  AND column_name IN ('resource_id','revision_id') \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_member_table')) IS NOT NULL AS prototype_hub_has_members,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_preview_session_table')) IS NOT NULL AS prototype_hub_has_preview_sessions \gset
+SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
+ AND table_name=:'prototype_hub_preview_session_table' AND column_name='revision_id')
+ AS prototype_hub_has_session_revision \gset
 \if :prototype_hub_has_revision_structure
 WITH storage_references AS (
  SELECT id AS version_id,project_id,current_revision_id AS revision_id,storage_path
@@ -54,6 +59,27 @@ WITH storage_references AS (
  SELECT c.id FROM :"prototype_hub_receipt_table" c
  LEFT JOIN :"prototype_hub_revision_table" r ON r.id=c.revision_id
  WHERE nullif(c.revision_id,'') IS NOT NULL AND (r.id IS NULL OR r.version_id<>c.resource_id)
+\endif
+\if :prototype_hub_has_members
+ UNION ALL
+ SELECT m.id FROM :"prototype_hub_member_table" m
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=m.project_id
+ WHERE p.id IS NULL
+\endif
+\if :prototype_hub_has_preview_sessions
+ UNION ALL
+ SELECT s.id FROM :"prototype_hub_preview_session_table" s
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=s.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=s.version_id
+\if :prototype_hub_has_session_revision
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=s.revision_id
+\endif
+ WHERE p.id IS NULL OR v.id IS NULL OR v.project_id<>s.project_id
+\if :prototype_hub_has_session_revision
+ OR (nullif(s.revision_id,'') IS NOT NULL AND (r.id IS NULL
+  OR r.version_id<>s.version_id OR r.project_id<>s.project_id
+  OR r.storage_path IS DISTINCT FROM s.storage_path))
+\endif
 \endif
 )
 SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',2,

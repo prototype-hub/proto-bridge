@@ -12,7 +12,7 @@ import org.hswebframework.web.crud.service.GenericReactiveCrudService;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
-/** 资源创建回执的唯一校验与持久化边界，不保存原始 Idempotency-Key 或请求内容。 */
+/** 资源创建回执的唯一持久化边界；随资源永久清理后去重结束，不保存原始请求键或内容。 */
 @Service
 public class PrototypeCreationReceiptService
         extends GenericReactiveCrudService<PrototypeCreationReceiptEntity, String> {

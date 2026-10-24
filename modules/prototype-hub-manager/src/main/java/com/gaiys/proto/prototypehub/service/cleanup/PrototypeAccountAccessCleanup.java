@@ -111,21 +111,30 @@ public class PrototypeAccountAccessCleanup {
 
     /** 账号撤权只维护授权字段，官方标记保留项目编辑审计；其他实体事件照常执行。 */
     private Mono<Void> revokeProject(String projectId, String userId) {
-        return access.lockProject(projectId)
-                .then(
-                        projects.createUpdate()
-                                .setNull(PrototypeProjectEntity::getOwnerId)
-                                .where(PrototypeProjectEntity::getId, projectId)
-                                .and(PrototypeProjectEntity::getOwnerId, userId)
-                                .execute()
-                                .contextWrite(RecordModifierEntity::markDoNotUpdate))
-                .then(
-                        bindings.createDelete()
-                                .where(PrototypeProjectMemberEntity::getProjectId, projectId)
-                                .and(PrototypeProjectMemberEntity::getUserId, userId)
-                                .execute())
-                // 非空 epoch 表示已分类的授权谱系；显式迁移也不能给同名新账号复活旧所有权。
-                .then(members.rotate(projectId));
+        return access.tryLockProject(projectId)
+                .flatMap(
+                        exists ->
+                                !exists
+                                        ? Mono.empty()
+                                        : projects.createUpdate()
+                                                .setNull(PrototypeProjectEntity::getOwnerId)
+                                                .where(PrototypeProjectEntity::getId, projectId)
+                                                .and(PrototypeProjectEntity::getOwnerId, userId)
+                                                .execute()
+                                                .contextWrite(RecordModifierEntity::markDoNotUpdate)
+                                                .then(
+                                                        bindings.createDelete()
+                                                                .where(
+                                                                        PrototypeProjectMemberEntity
+                                                                                ::getProjectId,
+                                                                        projectId)
+                                                                .and(
+                                                                        PrototypeProjectMemberEntity
+                                                                                ::getUserId,
+                                                                        userId)
+                                                                .execute())
+                                                // 非空 epoch 表示已分类的授权谱系；显式迁移也不能给同名新账号复活旧所有权。
+                                                .then(members.rotate(projectId)));
     }
 
     private static boolean affected(

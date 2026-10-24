@@ -11,7 +11,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
-/** 事务内软删除并撤销访问；修订、分享、创建回执、成员谱系及文件留待显式保留策略处理。 */
+/** 事务内软删除并撤销访问；保留30天供恢复，到期图及文件由保留期服务清理。 */
 @Service
 @AllArgsConstructor
 public class PrototypeDeletionService {

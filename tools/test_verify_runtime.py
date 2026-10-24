@@ -607,6 +607,130 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
                         self.assertEqual(2, len(fixture['files']))
 
 
+class ExpiredCleanupVerificationTest(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory(prefix='runtime-expiry-test-')
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        (self.root / 'unused.jar').write_bytes(b'never launched')
+        args = argparse.Namespace(jar=self.root / 'unused.jar', java=Path(sys.executable),
+                                  postgres_image='postgres:16-alpine',
+                                  report=self.root / 'report.json', frontend_dir=None)
+        self.check = runtime.RuntimeCheck(args, self.root)
+        self.storage = self.root / 'storage'
+        self.storage.mkdir()
+        self.retained = self.storage / 'retained.html'
+        self.retained.write_bytes(b'Keep exact bytes')
+        self.fixture = {'project': {'id': 'expired-project'}, 'emptyProject': {'id': 'empty-project'},
+                        'original': {'id': 'expired-version'}, 'replacement': {'id': 'expired-replacement'},
+                        'projectName': 'Original name', 'projectKey': 'original-key'}
+        self.counts = dict.fromkeys(('projects', 'versions', 'revisions', 'shares', 'receipts',
+                                    'members', 'sessions', 'cleanup'), 0)
+
+    def test_aging_and_queue_seeding_refuse_running_writers(self):
+        self.check.processes.append(object())
+        with patch.object(self.check, 'sql') as sql:
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'writer is running'):
+                self.check.expire_fixture('disposable', self.fixture)
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'writer is running'):
+                self.check.seed_pending_cleanup('disposable', self.storage, self.fixture)
+            sql.assert_not_called()
+        self.assertEqual({'retained.html'}, set(runtime.storage_manifest(self.storage)))
+
+    def test_aging_binds_only_owned_ids_and_explicit_elapsed_deadline(self):
+        with patch.object(runtime.time, 'time', return_value=2000000000), \
+                patch.object(self.check, 'sql') as sql:
+            self.check.expire_fixture('disposable', self.fixture)
+        self.assertIn('deleted_time IS NOT NULL', sql.call_args.args[1])
+        self.assertNotIn('expired-project', sql.call_args.args[1])
+        self.assertEqual(str(2000000000000 - 30 * 24 * 60 * 60 * 1000 - 60000),
+                         sql.call_args.kwargs['variables']['deleted'])
+
+    def test_expired_graph_requires_every_relation_even_when_files_are_gone(self):
+        for counts in ({}, dict(self.counts, sessions=-1), dict(self.counts, cleanup=False)):
+            with self.subTest(counts=counts), patch.object(self.check, 'sql', return_value=json.dumps(counts)):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'incomplete or invalid'):
+                    self.check.expired_fixture_counts('disposable', self.fixture)
+        with patch.object(self.check, 'sql', return_value=json.dumps(self.counts)):
+            self.assertEqual(self.counts, self.check.expired_fixture_counts('disposable', self.fixture))
+
+    def pending(self):
+        with patch.object(self.check, 'sql') as sql:
+            pending = self.check.seed_pending_cleanup('disposable', self.storage, self.fixture)
+        self.assertIn("'expired-snapshot'", sql.call_args.args[1])
+        self.assertEqual(self.fixture['project']['id'], sql.call_args.kwargs['variables']['project'])
+        self.assertEqual(2, len(pending['files']))
+        self.assertTrue(sql.call_args.kwargs['variables']['path'].startswith(
+            'projects/expired-project/versions/'))
+        return pending
+
+    def remove_pending(self, pending):
+        for name in pending['files']:
+            (self.storage / name).unlink()
+
+    def test_cleanup_accepts_only_exact_owned_file_difference(self):
+        pending = self.pending()
+        before = runtime.storage_manifest(self.storage)
+        self.remove_pending(pending)
+        with patch.object(self.check, 'sql', return_value='0'):
+            expected = self.check.verify_cleanup('disposable', self.storage, before, pending)
+        self.assertEqual({'retained.html': runtime.digest_file(self.retained)}, expected)
+        self.retained.write_bytes(b'Unexpected modification')
+        with patch.object(self.check, 'sql', return_value='0'):
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'outside the exact owned fixture'):
+                self.check.verify_cleanup('disposable', self.storage, before, pending)
+        self.retained.unlink()
+        with patch.object(self.check, 'sql', return_value='0'):
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'outside the exact owned fixture'):
+                self.check.verify_cleanup('disposable', self.storage, before, pending)
+
+    def test_missing_source_file_cannot_be_reclassified_as_expected_cleanup(self):
+        pending = self.pending()
+        before = runtime.storage_manifest(self.storage)
+        before.pop(next(iter(pending['files'])))
+        with self.assertRaisesRegex(runtime.VerificationFailure, 'not present unchanged'):
+            self.check.verify_cleanup('disposable', self.storage, before, pending)
+
+    def test_pending_queue_or_orphan_graph_prevents_success_after_file_deletion(self):
+        pending = self.pending()
+        before = runtime.storage_manifest(self.storage)
+        self.remove_pending(pending)
+        for queue, field in (('1', None), ('0', 'receipts'), ('0', 'members'), ('0', 'sessions')):
+            with self.subTest(queue=queue, field=field), \
+                    patch.object(self.check, 'sql', return_value=queue), \
+                    patch.object(self.check, 'expired_fixture_counts',
+                                 return_value=dict(self.counts, **({field: 1} if field else {}))), \
+                    patch.object(runtime.time, 'monotonic', side_effect=[0, 61]):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'did not drain'):
+                    self.check.verify_cleanup('disposable', self.storage, before, pending,
+                                               expired=dict(self.fixture, files={}))
+
+    def test_purged_grants_remain_anonymous_and_old_key_cannot_revive_identity(self):
+        api = runtime.Api('http://127.0.0.1:1', self.check.secrets_seen)
+        api.token = 'private-platform-token'
+        fixture = dict(self.fixture, shares=({'token': 'private-share'},),
+                       publicGrants=({'previewUrl': '/api/public/private-grant/index.html'},),
+                       internalGrants=({'previewUrl': '/api/runtime/private-grant/index.html'},))
+        def request(identity, method, path, *args, **kwargs):
+            return {'data': []} if '/_deleted/_query' in path else None
+        for recreated_id in ('new-project', 'expired-project'):
+            with self.subTest(recreated_id=recreated_id), \
+                    patch.object(api, 'project', return_value={'id': recreated_id}) as create, \
+                    patch.object(runtime.Api, 'request', autospec=True, side_effect=request) as calls:
+                if recreated_id == 'expired-project':
+                    with self.assertRaisesRegex(runtime.VerificationFailure, 'revived the old project ID'):
+                        self.check.verify_expired_access(api, fixture)
+                else:
+                    self.check.verify_expired_access(api, fixture)
+                    create.assert_called_once_with('Original name', 'original-key')
+                    for call in calls.call_args_list:
+                        if call.args[2].startswith(('/api/public/', '/api/runtime/',
+                                                   '/api/prototype-hub/public/')):
+                            self.assertIsNone(call.args[0].token)
+                            self.assertEqual(403 if '/api/runtime/' in call.args[2] else 404,
+                                             call.kwargs['expected'])
+
+
 @unittest.skipUnless(os.environ.get('PROTO_RUNTIME_PLAYWRIGHT_DIR'),
                      'Set PROTO_RUNTIME_PLAYWRIGHT_DIR to an installed frontend for real CLI probes')
 class PlaywrightLifecycleTest(unittest.TestCase):

@@ -15,12 +15,15 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @Setter
 @Table(
         name = "p_version",
-        indexes = @Index(name = "idx_protohub_version_project", columnList = "project_id"))
+        indexes = {
+            @Index(name = "idx_protohub_version_project", columnList = "project_id"),
+            @Index(name = "idx_version_deleted", columnList = "deleted_time,id")
+        })
 @EnableEntityEvent
 @Schema(description = "原型项目版本及上传文件信息")
 public class PrototypeVersionEntity extends GenericEntity<String> {
     @Column(name = "deleted_time")
-    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动逻辑版本；不可变修订和文件继续保留")
+    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动逻辑版本；30天后永久清理修订和文件")
     private Long deletedTime;
 
     @Column(name = "current_revision_id", length = 64)

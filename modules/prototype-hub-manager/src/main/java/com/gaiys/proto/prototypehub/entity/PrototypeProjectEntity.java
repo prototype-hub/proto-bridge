@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.entity;
 
 import io.swagger.v3.oas.annotations.media.Schema;
 import javax.persistence.Column;
+import javax.persistence.Index;
 import javax.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
@@ -10,12 +11,14 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 
 @Getter
 @Setter
-@Table(name = "p_project")
+@Table(
+        name = "p_project",
+        indexes = @Index(name = "idx_project_deleted", columnList = "deleted_time,id"))
 @EnableEntityEvent
 @Schema(description = "原型项目及创建修改信息")
 public class PrototypeProjectEntity extends GenericEntity<String> {
     @Column(name = "deleted_time")
-    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动项目；历史内容和授权谱系继续保留")
+    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动项目；30天后永久清理")
     private Long deletedTime;
 
     @Column(name = "name", length = 255, nullable = false)

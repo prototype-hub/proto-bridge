@@ -9,13 +9,19 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.FileCleanupService;
 import com.gaiys.proto.prototypehub.service.PrototypeCreationReceiptService;
+import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
+import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
@@ -23,6 +29,8 @@ import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
+import io.r2dbc.spi.Connection;
+import io.r2dbc.spi.ConnectionFactories;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -41,6 +49,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.authorization.token.ParsedToken;
 import org.hswebframework.web.authorization.token.SimpleParsedToken;
 import org.junit.jupiter.api.AfterAll;
@@ -70,6 +79,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.publisher.Signal;
 import reactor.core.publisher.Sinks;
+import reactor.core.scheduler.Schedulers;
 
 /** 不可变快照的真实 HTTP、单连接 PostgreSQL、事务竞争与文件生命周期边界。 */
 @SpringBootTest(
@@ -124,6 +134,10 @@ class PrototypeHubRevisionIntegrationTest {
     @Autowired PrototypeManifestBuilder manifests;
     @Autowired FileWork work;
     @Autowired TransactionalOperator transactions;
+    @Autowired PrototypeRetentionService retention;
+    @Autowired PrototypeInstallationService installations;
+    @Autowired ReactiveRepository<PrototypeProjectMemberEntity, String> memberRows;
+    @Autowired ReactiveRepository<PrototypePreviewSessionEntity, String> sessionRows;
     private String admin;
 
     private static Path temporaryStorage() {
@@ -137,6 +151,15 @@ class PrototypeHubRevisionIntegrationTest {
     @BeforeEach
     void isolate() throws IOException {
         PrototypeHubTestData.clear(database);
+        installations
+                .createUpdate()
+                .setNull(PrototypeInstallationEntity::getRetentionDeletedTime)
+                .setNull(PrototypeInstallationEntity::getRetentionVersionId)
+                .setNull(PrototypeInstallationEntity::getRetentionProjectTime)
+                .setNull(PrototypeInstallationEntity::getRetentionProjectId)
+                .where(PrototypeInstallationEntity::getId, "default")
+                .execute()
+                .block(TIMEOUT);
         SecureZipExtractor.deleteRecursively(FILES);
         Files.createDirectories(FILES);
         client = client.mutate().responseTimeout(TIMEOUT).build();
@@ -540,27 +563,7 @@ class PrototypeHubRevisionIntegrationTest {
         JsonNode uploaded = upload(project, null, archive("current"), null, null, 200);
         String id = uploaded.path("id").asText();
         var current = revisions.findById(uploaded.path("revisionId").asText()).block(TIMEOUT);
-        List<PrototypeRevisionEntity> history = new ArrayList<>();
-        for (int i = 0; i < 201; i++) {
-            var revision = new PrototypeRevisionEntity();
-            revision.setId(String.format("history-%04d", i));
-            revision.setProjectId(project);
-            revision.setVersionId(id);
-            revision.setVersionName("Historical " + i);
-            revision.setStoragePath("projects/" + project + "/versions/history-" + i + "/site");
-            revision.setEntryFile("index.html");
-            revision.setManifestJson(current.getManifestJson());
-            revision.setManifestSha256(current.getManifestSha256());
-            revision.setFileCount(current.getFileCount());
-            revision.setTotalBytes(current.getTotalBytes());
-            revision.setCreatorId(current.getCreatorId());
-            revision.setCreateTime(current.getCreateTime() - i - 1);
-            history.add(revision);
-            Path site = FILES.resolve(revision.getStoragePath());
-            Files.createDirectories(site);
-            Files.writeString(site.resolve("index.html"), "historical fixture");
-        }
-        revisions.insert(Flux.fromIterable(history)).block(TIMEOUT);
+        seedHistory(project, id, current, 201);
         call(HttpMethod.DELETE, version(id), admin, null, 200);
         assertEquals(202, count("p_revision"));
         assertEquals(1, count("p_version"));
@@ -569,6 +572,18 @@ class PrototypeHubRevisionIntegrationTest {
         assertEquals(202, count("p_revision"));
         assertEquals(202, directoryCount(project));
         assertTrue(Files.exists(FILES.resolve(current.getStoragePath()).resolve("index.html")));
+        ageVersion(id);
+        assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+        assertEquals(0, count("p_version"));
+        assertEquals(0, count("p_revision"));
+        assertEquals(202, count("p_file_cleanup"));
+        assertEquals(202, directoryCount(project));
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(152, count("p_file_cleanup"));
+        assertEquals(152, directoryCount(project));
+        for (int i = 0; i < 4; i++) cleanup.retryPending().block(TIMEOUT);
+        assertEquals(0, count("p_file_cleanup"));
+        assertEquals(0, directoryCount(project));
     }
 
     @Test
@@ -599,6 +614,574 @@ class PrototypeHubRevisionIntegrationTest {
                                         task.getAttempts() == 1
                                                 && task.getNextAttempt()
                                                         > System.currentTimeMillis()));
+    }
+
+    @Test
+    void expiredRowsDisappearFromTrashBeforeTheWorkerAndCannotRestore() throws Exception {
+        String project = project();
+        JsonNode fresh = upload(project, null, archive("Fresh"), null, null, 200);
+        JsonNode expired = upload(project, null, archive("Expired"), null, null, 200);
+        call(HttpMethod.DELETE, version(fresh.path("id").asText()), admin, null, 200);
+        call(HttpMethod.DELETE, version(expired.path("id").asText()), admin, null, 200);
+        ageVersion(expired.path("id").asText());
+        JsonNode page =
+                result(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/_deleted/_query?projectId=" + project,
+                        Map.of("pageSize", 1));
+        assertEquals(1, page.path("total").asInt());
+        assertEquals(fresh.path("id"), page.path("data").get(0).path("id"));
+        call(HttpMethod.POST, version(expired.path("id").asText()) + "/_restore", admin, null, 404);
+        assertEquals(2, count("p_version"));
+        assertEquals(2, directoryCount(project));
+        call(HttpMethod.POST, version(fresh.path("id").asText()) + "/_restore", admin, null, 200);
+
+        String oldProject = project(), freshProject = project();
+        call(HttpMethod.DELETE, "/prototype-hub/projects/" + oldProject, admin, null, 200);
+        call(HttpMethod.DELETE, "/prototype-hub/projects/" + freshProject, admin, null, 200);
+        ageProject(oldProject);
+        JsonNode projectsPage =
+                result(HttpMethod.POST, "/prototype-hub/projects/_deleted/_query", Map.of());
+        assertEquals(1, projectsPage.path("total").asInt());
+        assertEquals(freshProject, projectsPage.path("data").get(0).path("id").asText());
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + oldProject + "/_restore",
+                admin,
+                null,
+                404);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/projects/" + freshProject + "/_restore",
+                admin,
+                null,
+                200);
+    }
+
+    @Test
+    void purgeRemovesTheCompleteExpiredGraphAndEndsItsCreationKeyDeduplication() throws Exception {
+        String project = keyedProject("retention-project-key");
+        JsonNode first = upload(project, null, archive("R1"), "retention-upload-key", null, 200);
+        String id = first.path("id").asText();
+        upload(
+                project,
+                id,
+                archive("R2"),
+                "retention-replace-key",
+                first.path("revisionId").asText(),
+                200);
+        result(HttpMethod.POST, version(id) + "/shares", Map.of());
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        call(HttpMethod.DELETE, "/prototype-hub/projects/" + project, admin, null, 200);
+        ageVersion(id);
+        ageProject(project);
+        PrototypeProjectMemberEntity member = new PrototypeProjectMemberEntity();
+        member.setId("retained-member");
+        member.setProjectId(project);
+        member.setUserId("retained-user");
+        member.setRole("viewer");
+        member.setCreateTime(System.currentTimeMillis());
+        memberRows.insert(member).block(TIMEOUT);
+        PrototypePreviewSessionEntity session = sessionFixture(project, id, "retained-session");
+        sessionRows.insert(session).block(TIMEOUT);
+        assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+        assertEquals(0, count("p_version"));
+        assertEquals(0, count("p_revision"));
+        assertEquals(0, count("p_share"));
+        assertEquals(0, count("p_preview_session"));
+        assertEquals(1, count("p_project_member"));
+        assertEquals(1, count("p_creation_receipt"));
+        assertEquals(2, count("p_file_cleanup"));
+        assertEquals(2, directoryCount(project));
+        assertTrue(retention.purgeProject(project).block(TIMEOUT));
+        assertEquals(0, count("p_project"));
+        assertEquals(0, count("p_project_member"));
+        assertEquals(0, count("p_creation_receipt"));
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(0, count("p_file_cleanup"));
+        assertEquals(0, directoryCount(project));
+        String newProject = keyedProject("retention-project-key");
+        assertNotEquals(project, newProject);
+        JsonNode replacement =
+                upload(newProject, null, archive("R1"), "retention-upload-key", null, 200);
+        assertNotEquals(id, replacement.path("id").asText());
+        // 在同一仍活动父项目中，原上传键在版本永久清理后也只会创建新ID。
+        String nextId = replacement.path("id").asText();
+        call(HttpMethod.DELETE, version(nextId), admin, null, 200);
+        ageVersion(nextId);
+        assertTrue(retention.purgeVersion(nextId).block(TIMEOUT));
+        assertNotEquals(
+                nextId,
+                upload(newProject, null, archive("R1"), "retention-upload-key", null, 200)
+                        .path("id")
+                        .asText());
+    }
+
+    @Test
+    void youngerActiveChildrenProtectExpiredParentsAndOrphanTombstonesStillPurge()
+            throws Exception {
+        String project = project();
+        JsonNode child = upload(project, null, archive("Child"), null, null, 200);
+        String id = child.path("id").asText();
+        // 模拟部分恢复的活动子行；父到期不是提前级联永久删除的授权。
+        ageProject(project);
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        assertFalse(retention.purgeVersion(id).block(TIMEOUT));
+        assertEquals(1, directoryCount(project));
+        versions.createUpdate()
+                .set(PrototypeVersionEntity::getDeletedTime, System.currentTimeMillis())
+                .where(PrototypeVersionEntity::getId, id)
+                .execute()
+                .block(TIMEOUT);
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        assertFalse(retention.purgeVersion(id).block(TIMEOUT));
+        ageVersion(id);
+        assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+        assertTrue(retention.purgeProject(project).block(TIMEOUT));
+
+        String orphanProject = project();
+        String orphan =
+                upload(orphanProject, null, archive("Orphan"), null, null, 200).path("id").asText();
+        call(HttpMethod.DELETE, version(orphan), admin, null, 200);
+        ageVersion(orphan);
+        projects.deleteById(orphanProject).block(TIMEOUT);
+        assertTrue(retention.purgeVersion(orphan).block(TIMEOUT));
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(0, directoryCount(orphanProject));
+    }
+
+    @Test
+    void queueInsertAndLateDeleteFailuresRollBackTheEntireGraphBeforeAnyFileDeletion()
+            throws Exception {
+        String project = project();
+        String id =
+                upload(project, null, archive("Atomic"), "atomic-purge", null, 200)
+                        .path("id")
+                        .asText();
+        result(HttpMethod.POST, version(id) + "/shares", Map.of());
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        ageVersion(id);
+        String before = databaseSnapshot();
+        for (String table : List.of("p_file_cleanup", "p_version")) {
+            sql(
+                    "create function reject_retention() returns trigger language plpgsql as 'begin raise exception ''fixture rejection''; end'");
+            sql(
+                    "create trigger reject_retention before "
+                            + (table.equals("p_file_cleanup") ? "insert" : "delete")
+                            + " on "
+                            + table
+                            + " for each row execute function reject_retention()");
+            try {
+                assertThrows(Exception.class, () -> retention.purgeVersion(id).block(TIMEOUT));
+                assertEquals(before, databaseSnapshot());
+                assertEquals(0, count("p_file_cleanup"));
+                assertEquals(1, directoryCount(project));
+            } finally {
+                sql("drop trigger reject_retention on " + table);
+                sql("drop function reject_retention()");
+            }
+        }
+        assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+    }
+
+    @ParameterizedTest(name = "canonical alias retained by raw {0}")
+    @ValueSource(strings = {"version", "revision"})
+    void canonicalAndAliasReferencesProtectSharedFilesUntilTheLastVersionIsPurged(String reference)
+            throws Exception {
+        String project = project();
+        JsonNode first = upload(project, null, archive("Shared"), null, null, 200);
+        String id = first.path("id").asText();
+        String path = versions.findById(id).block(TIMEOUT).getStoragePath();
+        String alias = path.replace("/versions/", "/versions/unused/../");
+        String other = upload(project, null, archive("Alias"), null, null, 200).path("id").asText();
+        if (reference.equals("version")) {
+            makeLegacy(other);
+            versions.createUpdate()
+                    .set(PrototypeVersionEntity::getStoragePath, alias)
+                    .where(PrototypeVersionEntity::getId, other)
+                    .execute()
+                    .block(TIMEOUT);
+        } else
+            revisions
+                    .createUpdate()
+                    .set(PrototypeRevisionEntity::getStoragePath, alias)
+                    .where(PrototypeRevisionEntity::getVersionId, other)
+                    .execute()
+                    .block(TIMEOUT);
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        ageVersion(id);
+        assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+        cleanup.retryPending().block(TIMEOUT);
+        assertTrue(Files.exists(FILES.resolve(path).resolve("index.html")));
+        assertEquals(1, count("p_file_cleanup"));
+        assertEquals(1, cleanup.createQuery().fetchOne().block(TIMEOUT).getAttempts());
+        call(HttpMethod.DELETE, version(other), admin, null, 200);
+        ageVersion(other);
+        assertTrue(retention.purgeVersion(other).block(TIMEOUT));
+        assertEquals(reference.equals("version") ? 1 : 2, count("p_file_cleanup"));
+        cleanup.createUpdate()
+                .set(FileCleanupEntity::getNextAttempt, 0L)
+                .where(FileCleanupEntity::getProjectId, project)
+                .execute()
+                .block(TIMEOUT);
+        cleanup.retryPending().block(TIMEOUT);
+        assertFalse(Files.exists(FILES.resolve(path)));
+        assertEquals(0, count("p_file_cleanup"));
+    }
+
+    @Test
+    void failedAndCancelledFileWorkRemainDurableForANewWorkerAndMissingDirectoriesAreIdempotent()
+            throws Exception {
+        String project = project();
+        String id = upload(project, null, archive("Retry"), null, null, 200).path("id").asText();
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        ageVersion(id);
+        retention.purgeVersion(id).block(TIMEOUT);
+        FileCleanupEntity task = cleanup.createQuery().fetchOne().block(TIMEOUT);
+        var failing = spy(storage);
+        doAnswer(invocation -> Mono.error(new IOException("fixture storage offline")))
+                .when(failing)
+                .deleteStoredVersion(project, task.getStoragePath(), id);
+        cleanupWorker(failing).attempt(task).block(TIMEOUT);
+        assertEquals(1, cleanup.findById(task.getId()).block(TIMEOUT).getAttempts());
+        assertEquals(1, directoryCount(project));
+
+        var pending = spy(storage);
+        CountDownLatch entered = new CountDownLatch(1);
+        doAnswer(invocation -> Mono.<Void>never().doOnSubscribe(ignored -> entered.countDown()))
+                .when(pending)
+                .deleteStoredVersion(project, task.getStoragePath(), id);
+        var cancelled = cleanupWorker(pending).attempt(task).toFuture();
+        assertTrue(entered.await(5, TimeUnit.SECONDS));
+        assertTrue(cancelled.cancel(true));
+        assertNotNull(cleanup.findById(task.getId()).block(TIMEOUT));
+        cleanupWorker(storage).attempt(task).block(TIMEOUT);
+        assertNull(cleanup.findById(task.getId()).block(TIMEOUT));
+        assertEquals(0, directoryCount(project));
+        FileCleanupEntity missing =
+                cleanup.enqueueExpired(
+                                project,
+                                "missing",
+                                "projects/" + project + "/versions/missing/site")
+                        .block(TIMEOUT);
+        cleanupWorker(storage).attempt(missing).block(TIMEOUT);
+        assertNull(cleanup.findById(missing.getId()).block(TIMEOUT));
+    }
+
+    @ParameterizedTest(name = "restore wins project lock={0}")
+    @ValueSource(booleans = {true, false})
+    void restoreAndPurgeSerializeOnTheProjectLockAndRereadCurrentState(boolean restoreWins)
+            throws Exception {
+        String project = project();
+        String id = upload(project, null, archive("Race"), null, null, 200).path("id").asText();
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
+        if (!restoreWins) ageVersion(id);
+        Connection anchor =
+                Mono.from(
+                                ConnectionFactories.get(
+                                                "r2dbc:postgresql://"
+                                                        + DATABASE.getUsername()
+                                                        + ":"
+                                                        + DATABASE.getPassword()
+                                                        + "@"
+                                                        + DATABASE.getHost()
+                                                        + ":"
+                                                        + DATABASE.getMappedPort(5432)
+                                                        + "/"
+                                                        + DATABASE.getDatabaseName())
+                                        .create())
+                        .block(TIMEOUT);
+        assertNotNull(anchor);
+        CompletableFuture<Boolean> purging;
+        CompletableFuture<JsonNode> restoring;
+        try {
+            Mono.from(anchor.beginTransaction()).block(TIMEOUT);
+            Flux.from(
+                            anchor.createStatement(
+                                            "select id from p_project where id=$1 for update")
+                                    .bind(0, project)
+                                    .execute())
+                    .flatMap(row -> row.map((data, metadata) -> data.get("id", String.class)))
+                    .then()
+                    .block(TIMEOUT);
+            if (restoreWins) {
+                restoring =
+                        Mono.fromCallable(
+                                        () ->
+                                                call(
+                                                        HttpMethod.POST,
+                                                        version(id) + "/_restore",
+                                                        admin,
+                                                        null,
+                                                        200))
+                                .subscribeOn(Schedulers.boundedElastic())
+                                .toFuture();
+                awaitProjectLock(anchor);
+                purging = retention.purgeVersion(id).toFuture();
+            } else {
+                purging = retention.purgeVersion(id).toFuture();
+                awaitProjectLock(anchor);
+                restoring =
+                        Mono.fromCallable(
+                                        () ->
+                                                call(
+                                                        HttpMethod.POST,
+                                                        version(id) + "/_restore",
+                                                        admin,
+                                                        null,
+                                                        404))
+                                .subscribeOn(Schedulers.boundedElastic())
+                                .toFuture();
+            }
+            // 两个真实业务入口在同一单连接池中排队；首个请求已实际等待项目行，而非依靠 sleep 猜测。
+            Mono.from(anchor.commitTransaction()).block(TIMEOUT);
+            assertEquals(!restoreWins, purging.get(30, TimeUnit.SECONDS));
+            assertNotNull(restoring.get(30, TimeUnit.SECONDS));
+        } finally {
+            Mono.from(anchor.close()).block(TIMEOUT);
+        }
+        if (restoreWins) {
+            assertNull(versions.findById(id).block(TIMEOUT).getDeletedTime());
+            assertEquals(0, count("p_file_cleanup"));
+            assertEquals(1, directoryCount(project));
+        } else {
+            assertNull(versions.findById(id).block(TIMEOUT));
+            assertEquals(1, count("p_file_cleanup"));
+            assertEquals(1, directoryCount(project));
+            cleanup.retryPending().block(TIMEOUT);
+            assertEquals(0, directoryCount(project));
+        }
+    }
+
+    private void awaitProjectLock(Connection anchor) {
+        Flux.defer(
+                        () ->
+                                Flux.from(
+                                                anchor.createStatement(
+                                                                "select exists(select 1 from pg_stat_activity a where a.pid<>pg_backend_pid() and a.wait_event_type='Lock' and pg_backend_pid()=any(pg_blocking_pids(a.pid))) as blocked")
+                                                        .execute())
+                                        .flatMap(
+                                                row ->
+                                                        row.map(
+                                                                (data, metadata) ->
+                                                                        data.get(
+                                                                                "blocked",
+                                                                                Boolean.class))))
+                .repeat()
+                .filter(Boolean.TRUE::equals)
+                .next()
+                .timeout(TIMEOUT)
+                .block(TIMEOUT);
+    }
+
+    @Test
+    void expiredCleanupNeverFollowsAVersionDirectorySymlink() throws Exception {
+        String project = project();
+        Path neighbor = Files.createDirectories(FILES.resolve("neighbor"));
+        Path keep = neighbor.resolve("keep.txt");
+        Files.writeString(keep, "unowned files");
+        Path target = FILES.resolve("projects/" + project + "/versions/trap");
+        Files.createDirectories(target.getParent());
+        Files.createSymbolicLink(target, neighbor);
+        FileCleanupEntity task =
+                cleanup.enqueueExpired(
+                                project, "trap", "projects/" + project + "/versions/trap/site")
+                        .block(TIMEOUT);
+        cleanup.attempt(task).block(TIMEOUT);
+        assertEquals("unowned files", Files.readString(keep));
+        assertEquals(1, cleanup.findById(task.getId()).block(TIMEOUT).getAttempts());
+        Files.delete(target);
+        cleanup.attempt(cleanup.findById(task.getId()).block(TIMEOUT)).block(TIMEOUT);
+        assertNull(cleanup.findById(task.getId()).block(TIMEOUT));
+        assertEquals("unowned files", Files.readString(keep));
+    }
+
+    @Test
+    void persistedVersionCursorPassesFiftyInvalidRowsAndResetsForRetry() throws Exception {
+        String project = project();
+        String healthy =
+                upload(project, null, archive("Healthy"), null, null, 200).path("id").asText();
+        PrototypeVersionEntity source = versions.findById(healthy).block(TIMEOUT);
+        long blockedTime =
+                System.currentTimeMillis() - PrototypeRetentionService.RETENTION_MILLIS - 120_000;
+        List<PrototypeVersionEntity> blocked = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            PrototypeVersionEntity row = new PrototypeVersionEntity();
+            org.springframework.beans.BeanUtils.copyProperties(source, row);
+            row.setId(String.format("blocked-version-%03d", i));
+            row.setStoragePath("../outside");
+            row.setDeletedTime(blockedTime);
+            blocked.add(row);
+        }
+        versions.insert(Flux.fromIterable(blocked)).block(TIMEOUT);
+        call(HttpMethod.DELETE, version(healthy), admin, null, 200);
+        ageVersion(healthy);
+        retention.purgeExpired().block(TIMEOUT);
+        assertNotNull(versions.findById(healthy).block(TIMEOUT));
+        PrototypeInstallationEntity claimed = installations.current().block(TIMEOUT);
+        assertEquals("blocked-version-049", claimed.getRetentionVersionId());
+        assertEquals(blockedTime, claimed.getRetentionDeletedTime());
+        // 下一轮仅从数据库读游标；不依赖当前实例的内存状态，重启仍可越过失败头页。
+        retention.purgeExpired().block(TIMEOUT);
+        assertNull(versions.findById(healthy).block(TIMEOUT));
+        assertEquals(50, count("p_version"));
+        assertNull(installations.current().block(TIMEOUT).getRetentionVersionId());
+        retention.purgeExpired().block(TIMEOUT);
+        assertEquals(
+                "blocked-version-049",
+                installations.current().block(TIMEOUT).getRetentionVersionId());
+        assertEquals(50, count("p_version"));
+    }
+
+    @Test
+    void persistedProjectCursorPassesFiftyDeleteFailuresAndParentsWithChildrenAreExcluded()
+            throws Exception {
+        String healthy = project();
+        PrototypeProjectEntity source = projects.findById(healthy).block(TIMEOUT);
+        long blockedTime =
+                System.currentTimeMillis() - PrototypeRetentionService.RETENTION_MILLIS - 120_000;
+        List<PrototypeProjectEntity> blocked = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            PrototypeProjectEntity row = new PrototypeProjectEntity();
+            org.springframework.beans.BeanUtils.copyProperties(source, row);
+            row.setId(String.format("blocked-project-%03d", i));
+            row.setDeletedTime(blockedTime);
+            blocked.add(row);
+        }
+        projects.insert(Flux.fromIterable(blocked)).block(TIMEOUT);
+        ageProject(healthy);
+        sql(
+                "create function reject_selected_parent() returns trigger language plpgsql as 'begin if old.id like ''blocked-project-%'' then raise exception ''fixture rejection''; end if; return old; end'");
+        sql(
+                "create trigger reject_selected_parent before delete on p_project for each row execute function reject_selected_parent()");
+        try {
+            retention.purgeExpired().block(TIMEOUT);
+            assertNotNull(projects.findById(healthy).block(TIMEOUT));
+            assertEquals(
+                    "blocked-project-049",
+                    installations.current().block(TIMEOUT).getRetentionProjectId());
+            retention.purgeExpired().block(TIMEOUT);
+            assertNull(projects.findById(healthy).block(TIMEOUT));
+            assertEquals(50, count("p_project"));
+            assertNull(installations.current().block(TIMEOUT).getRetentionProjectId());
+        } finally {
+            sql("drop trigger reject_selected_parent on p_project");
+            sql("drop function reject_selected_parent()");
+        }
+        // 同一个失败头页保留原始活动子行后，不应再占用项目候选页。
+        List<PrototypeVersionEntity> children = new ArrayList<>();
+        for (int i = 0; i < 50; i++) {
+            PrototypeVersionEntity child = new PrototypeVersionEntity();
+            child.setId("active-child-" + i);
+            child.setProjectId(blocked.get(i).getId());
+            child.setVersionName("Retained child");
+            child.setStoragePath("projects/" + child.getProjectId() + "/versions/active/site");
+            child.setEntryFile("index.html");
+            child.setPreviewKey("fixture");
+            child.setStatus("ready");
+            child.setCreatorId(source.getCreatorId());
+            child.setCreateTime(System.currentTimeMillis());
+            children.add(child);
+        }
+        versions.insert(Flux.fromIterable(children)).block(TIMEOUT);
+        String later = project();
+        ageProject(later);
+        retention.purgeExpired().block(TIMEOUT);
+        assertNull(projects.findById(later).block(TIMEOUT));
+        assertEquals(50, count("p_project"));
+        assertEquals(50, count("p_version"));
+    }
+
+    private void seedHistory(String project, String id, PrototypeRevisionEntity current, int size)
+            throws IOException {
+        List<PrototypeRevisionEntity> history = new ArrayList<>();
+        for (int i = 0; i < size; i++) {
+            var revision = new PrototypeRevisionEntity();
+            revision.setId(String.format("history-%04d", i));
+            revision.setProjectId(project);
+            revision.setVersionId(id);
+            revision.setVersionName("Historical " + i);
+            revision.setStoragePath("projects/" + project + "/versions/history-" + i + "/site");
+            revision.setEntryFile("index.html");
+            revision.setManifestJson(current.getManifestJson());
+            revision.setManifestSha256(current.getManifestSha256());
+            revision.setFileCount(current.getFileCount());
+            revision.setTotalBytes(current.getTotalBytes());
+            revision.setCreatorId(current.getCreatorId());
+            revision.setCreateTime(current.getCreateTime() - i - 1);
+            history.add(revision);
+            Path site = FILES.resolve(revision.getStoragePath());
+            Files.createDirectories(site);
+            Files.writeString(site.resolve("index.html"), "historical fixture");
+        }
+        revisions.insert(Flux.fromIterable(history)).block(TIMEOUT);
+    }
+
+    private PrototypePreviewSessionEntity sessionFixture(
+            String project, String version, String id) {
+        PrototypeVersionEntity row = versions.findById(version).block(TIMEOUT);
+        PrototypePreviewSessionEntity session = new PrototypePreviewSessionEntity();
+        session.setId(id);
+        session.setProjectId(project);
+        session.setVersionId(version);
+        session.setRevisionId(row.getCurrentRevisionId());
+        session.setStoragePath(row.getStoragePath());
+        session.setUserId("retained-user");
+        session.setAccessEpoch("retained-epoch");
+        session.setCreateTime(System.currentTimeMillis());
+        session.setExpiresAt(System.currentTimeMillis() + 60000);
+        return session;
+    }
+
+    private FileCleanupService cleanupWorker(PrototypeStorageService supplied) {
+        return new FileCleanupService(
+                supplied, revisions.getRepository(), versions.getRepository()) {
+            @Override
+            public ReactiveRepository<FileCleanupEntity, String> getRepository() {
+                return cleanup.getRepository();
+            }
+        };
+    }
+
+    private void ageVersion(String id) {
+        versions.createUpdate()
+                .set(
+                        PrototypeVersionEntity::getDeletedTime,
+                        System.currentTimeMillis()
+                                - PrototypeRetentionService.RETENTION_MILLIS
+                                - 60_000L)
+                .where(PrototypeVersionEntity::getId, id)
+                .execute()
+                .block(TIMEOUT);
+    }
+
+    private void ageProject(String id) {
+        projects.createUpdate()
+                .set(
+                        PrototypeProjectEntity::getDeletedTime,
+                        System.currentTimeMillis()
+                                - PrototypeRetentionService.RETENTION_MILLIS
+                                - 60_000L)
+                .where(PrototypeProjectEntity::getId, id)
+                .execute()
+                .block(TIMEOUT);
+    }
+
+    private String keyedProject(String key) {
+        return client.post()
+                .uri("/prototype-hub/projects")
+                .header("X-Access-Token", admin)
+                .header("Idempotency-Key", key)
+                .bodyValue(Map.of("name", "Keyed retention project"))
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectBody(JsonNode.class)
+                .returnResult()
+                .getResponseBody()
+                .path("result")
+                .path("id")
+                .asText();
     }
 
     @Test
@@ -888,6 +1471,35 @@ class PrototypeHubRevisionIntegrationTest {
         assertEquals(1, storageExport(null).path("integrityErrors").asInt());
         sql("update p_creation_receipt set revision_id='" + r1 + "'");
         assertEquals(0, storageExport(null).path("integrityErrors").asInt());
+        PrototypeProjectMemberEntity orphan = new PrototypeProjectMemberEntity();
+        orphan.setId("export-orphan-member");
+        orphan.setProjectId("missing-project");
+        orphan.setUserId("fixture-user");
+        orphan.setRole("viewer");
+        orphan.setCreateTime(System.currentTimeMillis());
+        memberRows.insert(orphan).block(TIMEOUT);
+        assertEquals(1, storageExport(null).path("integrityErrors").asInt());
+        memberRows.deleteById(orphan.getId()).block(TIMEOUT);
+        PrototypePreviewSessionEntity session = sessionFixture(project, id, "export-session");
+        sessionRows.insert(session).block(TIMEOUT);
+        assertEquals(0, storageExport(null).path("integrityErrors").asInt());
+        sessionRows
+                .createUpdate()
+                .set(PrototypePreviewSessionEntity::getVersionId, legacyId)
+                .where(PrototypePreviewSessionEntity::getId, session.getId())
+                .execute()
+                .block(TIMEOUT);
+        assertEquals(1, storageExport(null).path("integrityErrors").asInt());
+        sessionRows
+                .createUpdate()
+                .set(PrototypePreviewSessionEntity::getVersionId, id)
+                .set(PrototypePreviewSessionEntity::getStoragePath, "wrong-snapshot")
+                .where(PrototypePreviewSessionEntity::getId, session.getId())
+                .execute()
+                .block(TIMEOUT);
+        assertEquals(1, storageExport(null).path("integrityErrors").asInt());
+        sessionRows.deleteById(session.getId()).block(TIMEOUT);
+        assertEquals(0, storageExport(null).path("integrityErrors").asInt());
         sql("create schema legacy_export");
         sql(
                 "create table legacy_export.p_version(id varchar(64),project_id"
@@ -945,6 +1557,73 @@ class PrototypeHubRevisionIntegrationTest {
         assertEquals(0, count("p_file_cleanup"));
         assertEquals(1, directoryCount(project));
         assertManifest(r1);
+    }
+
+    @Test
+    void operationalSnapshotIncludesDurableQueueAndSweepCursorsWithoutChangingBusinessDigests()
+            throws Exception {
+        String project = project();
+        upload(project, null, archive("Snapshot"), null, null, 200);
+        for (String name : List.of("prototype-hub-table-names.sql", "snapshot-db.sql"))
+            DATABASE.copyFileToContainer(
+                    MountableFile.forHostPath(Path.of("..", "tools", name).toAbsolutePath()),
+                    "/tmp/" + name);
+        String before = toolSnapshot();
+        String identity = installations.current().block(TIMEOUT).getInstallationId();
+        cleanup.enqueueExpired(project, "pending", "projects/" + project + "/versions/pending/site")
+                .block(TIMEOUT);
+        String withQueue = toolSnapshot();
+        assertNotEquals(
+                snapshotLine(before, "file_cleanup"), snapshotLine(withQueue, "file_cleanup"));
+        assertEquals(snapshotLine(before, "installation"), snapshotLine(withQueue, "installation"));
+        installations
+                .createUpdate()
+                .set(PrototypeInstallationEntity::getRetentionDeletedTime, 1L)
+                .set(PrototypeInstallationEntity::getRetentionVersionId, "cursor-version")
+                .set(PrototypeInstallationEntity::getRetentionProjectTime, 2L)
+                .set(PrototypeInstallationEntity::getRetentionProjectId, "cursor-project")
+                .where(PrototypeInstallationEntity::getId, "default")
+                .execute()
+                .block(TIMEOUT);
+        String withCursor = toolSnapshot();
+        assertNotEquals(
+                snapshotLine(before, "installation"), snapshotLine(withCursor, "installation"));
+        assertEquals(identity, installations.current().block(TIMEOUT).getInstallationId());
+        for (String kind :
+                List.of(
+                        "projects",
+                        "versions",
+                        "revisions",
+                        "project_authorization",
+                        "current_revision_bindings"))
+            assertEquals(snapshotLine(before, kind), snapshotLine(withCursor, kind));
+    }
+
+    private String toolSnapshot() throws Exception {
+        var result =
+                DATABASE.execInContainer(
+                        "psql",
+                        "-X",
+                        "-qAt",
+                        "-F",
+                        ",",
+                        "-v",
+                        "ON_ERROR_STOP=1",
+                        "-U",
+                        DATABASE.getUsername(),
+                        "-d",
+                        DATABASE.getDatabaseName(),
+                        "-f",
+                        "/tmp/snapshot-db.sql");
+        assertEquals(0, result.getExitCode(), result.getStderr());
+        return result.getStdout();
+    }
+
+    private String snapshotLine(String snapshot, String kind) {
+        return snapshot.lines()
+                .filter(line -> line.startsWith(kind + ","))
+                .findFirst()
+                .orElseThrow();
     }
 
     private JsonNode storageExport(String schema) throws Exception {
