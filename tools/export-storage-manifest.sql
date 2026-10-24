@@ -11,6 +11,9 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_tabl
 SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
  AND table_name=:'prototype_hub_share_table' AND column_name='revision_mode')
  AS prototype_hub_has_share_mode \gset
+SELECT count(*)=2 AS prototype_hub_has_receipt_revision FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_receipt_table'
+ AND column_name IN ('resource_id','revision_id') \gset
 \if :prototype_hub_has_revision_structure
 WITH storage_references AS (
  SELECT id AS version_id,project_id,current_revision_id AS revision_id,storage_path
@@ -44,9 +47,18 @@ WITH storage_references AS (
 \endif
  OR (nullif(s.revision_id,'') IS NOT NULL
  AND (r.id IS NULL OR r.version_id<>s.version_id OR r.project_id<>s.project_id))
+\if :prototype_hub_has_receipt_revision
+ UNION ALL
+ -- Receipts with no revision include project and pre-migration requests. Only explicit
+ -- revision bindings prove a retained version reference; never guess the resource type.
+ SELECT c.id FROM :"prototype_hub_receipt_table" c
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=c.revision_id
+ WHERE nullif(c.revision_id,'') IS NOT NULL AND (r.id IS NULL OR r.version_id<>c.resource_id)
+\endif
 )
 SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',2,
- 'sourceSchema','immutable-revisions-v1','referencesComplete',true,
+ 'sourceSchema','immutable-revisions-v1','referencesComplete',:'prototype_hub_has_receipt_revision'::boolean,
+ 'receiptReferencesChecked',:'prototype_hub_has_receipt_revision'::boolean,
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
  'entries',coalesce(json_agg(json_build_object('id',version_id,'projectId',project_id,
  'revisionId',revision_id,'storagePath',storage_path)
@@ -55,7 +67,8 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
 \else
 -- A current-only export is useful for diagnosis, but can never authorize repair.
 SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',2,
- 'sourceSchema','legacy-current-only','referencesComplete',false,'integrityErrors',null,
+ 'sourceSchema','legacy-current-only','referencesComplete',false,
+ 'receiptReferencesChecked',false,'integrityErrors',null,
  'entries',coalesce(json_agg(json_build_object('id',id,'projectId',project_id,
  'revisionId',null,'storagePath',storage_path) ORDER BY project_id,id,storage_path)
  FILTER (WHERE storage_path IS NOT NULL),'[]'::json)) FROM :"prototype_hub_version_table";

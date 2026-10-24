@@ -14,6 +14,10 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型项目及创建修改信息")
 public class PrototypeProjectEntity extends GenericEntity<String> {
+    @Column(name = "deleted_time")
+    @Schema(description = "软删除时间（Unix 毫秒），为空表示活动项目；历史内容和授权谱系继续保留")
+    private Long deletedTime;
+
     @Column(name = "name", length = 255, nullable = false)
     @Schema(description = "原型项目名称")
     private String name;

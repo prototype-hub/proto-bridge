@@ -106,8 +106,8 @@ public class PrototypeProjectController {
     @DeleteMapping("/{id}")
     @DeleteAction
     @Operation(
-            summary = "删除空原型项目",
-            description = "仅当项目下不存在版本时删除；存在版本时须先删除全部版本",
+            summary = "软删除空原型项目",
+            description = "仅当项目下不存在活动版本时软删除；保留历史引用、成员谱系和文件，释放项目占用并阻断访问",
             responses = @ApiResponse(responseCode = "409", description = "项目下仍存在版本"))
     public Mono<ProjectResponse> delete(@PathVariable String id) {
         return access.current()

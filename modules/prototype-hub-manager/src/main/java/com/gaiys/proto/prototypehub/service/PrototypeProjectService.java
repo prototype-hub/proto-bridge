@@ -7,6 +7,7 @@ import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
 import com.gaiys.proto.prototypehub.web.response.ProjectUsageResponse;
 import java.util.UUID;
 import lombok.AllArgsConstructor;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveQuery;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
@@ -15,7 +16,7 @@ import reactor.core.publisher.Mono;
 /**
  * 管理项目元信息及部署的实际用量。
  *
- * <p>创建时在安装行锁内校验容量并持久化回执；删除约束和文件清理由删除服务协调。
+ * <p>创建时在安装行锁内校验容量并持久化回执；软删除及访问撤销由删除服务协调，文件引用继续保留。
  */
 @Service
 @AllArgsConstructor
@@ -26,8 +27,17 @@ public class PrototypeProjectService
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
 
+    /** 业务读取排除软删；原始仓储仍供授权谱系维护与文件引用检查使用。 */
+    public ReactiveQuery<PrototypeProjectEntity> activeQuery() {
+        return createQuery().isNull(PrototypeProjectEntity::getDeletedTime);
+    }
+
+    public Mono<PrototypeProjectEntity> findActiveById(String id) {
+        return activeQuery().where(PrototypeProjectEntity::getId, id).fetchOne();
+    }
+
     public Mono<PrototypeProjectEntity> requireById(String id) {
-        return findById(id)
+        return findActiveById(id)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")));
     }
 
@@ -54,7 +64,7 @@ public class PrototypeProjectService
                                     receipts.replay(
                                             request,
                                             id ->
-                                                    findById(id)
+                                                    findActiveById(id)
                                                             .flatMap(
                                                                     project ->
                                                                             access.requireProject(
@@ -76,7 +86,7 @@ public class PrototypeProjectService
                 .current()
                 .flatMap(
                         installation ->
-                                createQuery()
+                                activeQuery()
                                         .count()
                                         .map(
                                                 used ->
@@ -88,7 +98,7 @@ public class PrototypeProjectService
 
     private Mono<PrototypeProjectEntity> createWithinCapacity(
             ProjectRequest input, String actor, PrototypeCreationReceiptService.Request request) {
-        return createQuery()
+        return activeQuery()
                 .count()
                 .flatMap(
                         used -> {

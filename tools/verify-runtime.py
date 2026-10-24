@@ -33,7 +33,7 @@ import zlib
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
 TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_share',
-          'p_creation_receipt', 's_user', 's_dimension', 's_dimension_user',
+          'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
 FRONTEND_GLOBAL_TIMEOUT_MS = 300000
@@ -179,10 +179,10 @@ class Api:
         headers = {'Idempotency-Key': key} if key else {}
         return self.request('POST', '/api/prototype-hub/projects', {'name': name}, expected, headers)
 
-    def upload(self, project, zip_path, key):
+    def upload(self, project, zip_path, key, expected=200):
         body, content_type = multipart(zip_path)
         return self.request('POST', '/api/prototype-hub/projects/' + project + '/versions', body,
-                            headers={'Content-Type': content_type, 'Idempotency-Key': key})
+                            expected=expected, headers={'Content-Type': content_type, 'Idempotency-Key': key})
 
     def replace(self, version, zip_path):
         body, content_type = multipart(zip_path, version['currentRevisionId'])
@@ -261,9 +261,12 @@ class RuntimeCheck:
         require(port.startswith('127.0.0.1:'), 'Disposable PostgreSQL is not loopback-only')
         self.database_port = int(port.rsplit(':', 1)[1])
 
-    def sql(self, database, sql):
+    def sql(self, database, sql, *, variables=None):
+        bindings = []
+        for name, value in (variables or {}).items():
+            bindings.extend(('-v', name + '=' + value))
         return self.command(['docker', 'exec', '-i', self.container, 'psql', '-X', '-qAt',
-                             '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', database],
+                             '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', database] + bindings,
                             input_data=sql.encode()).decode().strip()
 
     def database_manifest(self, database):
@@ -546,6 +549,178 @@ class RuntimeCheck:
         require(occupancy['versions']['used'] == 1, 'Revision replacement consumed a logical version slot')
         return sorted(item['manifestSha256'] for item in (first[0], second[0]))
 
+    def create_deleted_fixture(self, api, member, zip_path, replacement_zip, storage):
+        """Exercise deletion through HTTP; keep its graph and files for joint restore."""
+        occupied = api.usage()['projects']['used']
+        before_files = storage_manifest(storage)
+        project_key, version_key = uuid.uuid4().hex, uuid.uuid4().hex
+        project_name = 'Runtime retained project'
+        project = api.project(project_name, project_key)
+        api.request('PUT', '/api/prototype-hub/projects/' + project['id'] + '/members/' + member['id'],
+                    {'role': 'viewer'})
+        version = api.upload(project['id'], zip_path, version_key)
+        path = '/api/prototype-hub/versions/' + version['id']
+        anonymous = Api(api.origin, self.secrets_seen)
+        fixed = api.request('POST', path + '/shares', {'password': self.share_password})
+        latest = api.request('POST', path + '/shares', {'revisionMode': 'latest'})
+        fixed_path = '/api/prototype-hub/public/shares/' + fixed['token']
+        fixed_grant = anonymous.request('POST', fixed_path + '/verify', {'password': self.share_password})
+        latest_path = '/api/prototype-hub/public/shares/' + latest['token']
+        latest_first = anonymous.request('GET', latest_path)
+        viewer = Api(api.origin, self.secrets_seen)
+        viewer.login(member['username'], self.member_password)
+        first_session = viewer.request('POST', path + '/preview-session')
+        current = api.replace(version, replacement_zip)
+        latest_current = anonymous.request('GET', latest_path)
+        current_session = api.request('POST', path + '/preview-session')
+        require(fixed_grant['revisionId'] == latest_first['revisionId'] == version['revisionId']
+                and latest_current['revisionId'] == current['revisionId']
+                and current['revisionId'] != version['revisionId'],
+                'Deleted fixture did not establish two immutable share snapshots')
+        self.preview(api, fixed_grant)
+        self.preview(api, latest_current)
+        files = storage_manifest(storage)
+        retained_files = {name: digest for name, digest in files.items() if name not in before_files}
+        require(retained_files, 'Deleted fixture has no files before deletion')
+        api.request('DELETE', path)
+        files = storage_manifest(storage)
+        require(all(files.get(name) == digest for name, digest in retained_files.items()),
+                'Soft deletion changed retained fixture files')
+        require(api.request('GET', '/api/prototype-hub/versions/_usage?projectId=' +
+                            project['id'])['versions']['used'] == 0,
+                'Soft-deleted version did not release logical occupancy')
+        replacement_key = uuid.uuid4().hex
+        replacement = api.upload(project['id'], zip_path, replacement_key)
+        require(replacement['id'] != version['id'] and
+                api.request('GET', '/api/prototype-hub/versions/_usage?projectId=' +
+                            project['id'])['versions']['used'] == 1,
+                'Fresh version creation did not reuse released occupancy with a new identity')
+        files = storage_manifest(storage)
+        replacement_files = {name: digest for name, digest in files.items()
+                             if name not in before_files and name not in retained_files}
+        require(replacement_files, 'Replacement fixture has no files before deletion')
+        retained_files.update(replacement_files)
+        api.request('DELETE', '/api/prototype-hub/versions/' + replacement['id'])
+        api.request('DELETE', '/api/prototype-hub/projects/' + project['id'])
+        require(api.usage()['projects']['used'] == occupied,
+                'Project with only deleted versions did not release occupancy')
+        empty_key = uuid.uuid4().hex
+        empty = api.project(project_name, empty_key)
+        require(empty['id'] != project['id'] and api.usage()['projects']['used'] == occupied + 1,
+                'Fresh project did not reuse released occupancy with a new identity')
+        api.request('DELETE', '/api/prototype-hub/projects/' + empty['id'])
+        require(api.usage()['projects']['used'] == occupied,
+                'Empty project soft deletion did not release occupancy')
+        files = storage_manifest(storage)
+        require(all(files.get(name) == digest for name, digest in retained_files.items()),
+                'Soft deletion changed retained fixture files')
+        fixture = {'project': project, 'projectName': project_name, 'projectKey': project_key,
+                   'emptyProject': empty, 'emptyKey': empty_key, 'original': version,
+                   'current': current, 'versionKey': version_key, 'replacement': replacement,
+                   'replacementKey': replacement_key, 'member': member,
+                   'shares': (fixed, latest), 'publicGrants': (fixed_grant, latest_first, latest_current),
+                   'internalGrants': (first_session, current_session), 'files': retained_files}
+        fixture['state'] = self.deleted_fixture_state('runtime_source', fixture)
+        return fixture
+
+    def deleted_fixture_state(self, database, fixture):
+        # psql quoted variables bind API-generated IDs; these read-only queries only
+        # inspect this run's disposable database. Reports receive hashes, never rows.
+        statement = """
+SELECT json_build_object(
+ 'projects',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(p) ORDER BY id)::text,'[]'))) FROM p_project p
+  WHERE id IN (:'project',:'empty_project') AND deleted_time IS NOT NULL),
+ 'versions',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::text,'[]'))) FROM p_version v
+  WHERE id IN (:'version',:'replacement') AND project_id=:'project' AND deleted_time IS NOT NULL),
+ 'revisions',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,'[]'))) FROM p_revision r
+  WHERE version_id IN (:'version',:'replacement') AND project_id=:'project'),
+ 'shares',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))) FROM p_share s
+  WHERE version_id=:'version' AND project_id=:'project' AND revoked=true AND enabled=false),
+ 'receipts',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(c) ORDER BY id)::text,'[]'))) FROM p_creation_receipt c
+  WHERE resource_id IN (:'project',:'empty_project',:'version',:'replacement')),
+ 'members',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(m) ORDER BY id)::text,'[]'))) FROM p_project_member m
+  WHERE project_id=:'project'),
+ 'sessions',(SELECT count(*) FROM p_preview_session WHERE project_id=:'project'),
+ 'invalidReferences',(SELECT count(*) FROM p_creation_receipt c
+  LEFT JOIN p_revision r ON r.id=c.revision_id
+  WHERE c.resource_id IN (:'version',:'replacement')
+  AND (r.id IS NULL OR r.version_id<>c.resource_id OR r.project_id<>:'project')));
+"""
+        state = json.loads(self.sql(database, statement, variables={
+            'project': fixture['project']['id'], 'empty_project': fixture['emptyProject']['id'],
+            'version': fixture['original']['id'], 'replacement': fixture['replacement']['id']}))
+        for table, count in (('projects', 2), ('versions', 2), ('revisions', 3),
+                             ('shares', 2), ('receipts', 4), ('members', 1)):
+            require(state[table]['count'] == count, 'Deleted fixture lost retained ' + table)
+        require(state['sessions'] == state['invalidReferences'] == 0,
+                'Deleted fixture kept an internal grant or broke a receipt revision binding')
+        return state
+
+    def verify_deleted_fixture(self, api, fixture, zip_path, storage, database):
+        project = fixture['project']['id']
+        version = fixture['original']['id']
+        path = '/api/prototype-hub/versions/' + version
+        viewer = Api(api.origin, self.secrets_seen)
+        viewer.login(fixture['member']['username'], self.member_password)
+        for identity in (api, viewer):
+            require(all(row['id'] not in (project, fixture['emptyProject']['id'])
+                        for row in identity.request('GET', '/api/prototype-hub/projects')),
+                    'Deleted project remained in an active list')
+            require(all(row['id'] not in (version, fixture['replacement']['id'])
+                        for row in identity.request('GET', '/api/prototype-hub/versions')),
+                    'Deleted version remained in an active list')
+            for target in ('/api/prototype-hub/projects/' + project,
+                           '/api/prototype-hub/projects/' + fixture['emptyProject']['id'],
+                           '/api/prototype-hub/projects/' + project + '/members', path,
+                           path + '/pages', path + '/current-revision', path + '/revisions',
+                           path + '/shares'):
+                identity.request('GET', target, expected=404)
+            identity.request('POST', path + '/preview-session', expected=404)
+            for revision in (fixture['original']['revisionId'], fixture['current']['revisionId']):
+                revision_path = path + '/revisions/' + revision
+                identity.request('GET', revision_path, expected=404)
+                identity.request('GET', revision_path + '/pages', expected=404)
+                identity.request('POST', revision_path + '/preview-session', expected=404)
+        anonymous = Api(api.origin, self.secrets_seen)
+        for share in fixture['shares']:
+            public_path = '/api/prototype-hub/public/shares/' + share['token']
+            anonymous.request('GET', public_path, expected=404)
+            anonymous.request('POST', public_path + '/verify',
+                              {'password': self.share_password}, expected=404)
+        for grant in fixture['publicGrants']:
+            for target in (grant['previewUrl'], grant['pagesUrl'],
+                           grant['runtimeBaseUrl'] + '/assets/style.css'):
+                anonymous.request('GET', target, expected=404)
+        for grant in fixture['internalGrants']:
+            for target in (grant['previewUrl'], grant['runtimeBaseUrl'] + '/assets/style.css'):
+                anonymous.request('GET', target, expected=403)
+        for key in (fixture['projectKey'], fixture['emptyKey']):
+            result = api.project(fixture['projectName'], key, expected=409)
+            require(result.get('code') == 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT',
+                    'Deleted project creation key did not remain a conflict')
+        for key in (fixture['versionKey'], fixture['replacementKey']):
+            result = api.upload(project, zip_path, key, expected=409)
+            require(result.get('code') == 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT',
+                    'Deleted version creation key did not remain a conflict')
+        require(self.deleted_fixture_state(database, fixture) == fixture['state'],
+                'Deleted IDs, status, relationships or immutable content changed')
+        files = storage_manifest(storage)
+        require(all(files.get(path) == digest for path, digest in fixture['files'].items()),
+                'Deleted fixture file identities or bytes changed')
+        self.report['retainedDeletion'] = {
+            'projectCount': 2, 'versionCount': 2, 'revisionCount': 3,
+            'retainedFileCount': len(fixture['files']), 'stateAndReferenceHashesVerified': True,
+            'quotaReleasedAndFreshIdsVerified': True, 'oldInternalAndPublicGrantsRejected': True,
+            'freshManagementAndPublicEntrypointsRejected': True, 'creationReplaysConflict': True,
+            'membershipLineageRetained': True, 'internalSessionsRemoved': True,
+            'fileHashesVerified': True}
+
     def create_system_files(self, api):
         profile = api.request('GET', '/api/user/detail')
         expected = {'userId': profile['id']}
@@ -628,10 +803,13 @@ class RuntimeCheck:
                 api, latest_share, latest_first_grant, version, current, preview_hashes, current_hashes)
             following_share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
                                           '/shares', {'revisionMode': 'latest'})
+            deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
+            self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
         with self.phase('full-process-restart'):
             self.stop(process)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
             self.verify_system_files(api, system_files)
+            self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             require(api.usage()['installationId'] == installation_id,
                     'Installation identity changed on restart')
             require(api.project('Runtime restore project', project_key)['id'] == project['id'],
@@ -649,6 +827,7 @@ class RuntimeCheck:
         with self.phase('two-process-final-project-slot'):
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
             self.verify_system_files(other, system_files)
+            self.verify_deleted_fixture(other, deleted, zip_path, storage, 'runtime_source')
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
             for index in range(3):
@@ -711,6 +890,7 @@ class RuntimeCheck:
             restored, restored_process = self.start('runtime_restored', restored_storage,
                                                     restored_system_storage, 'restored')
             system_hashes = self.verify_system_files(restored, system_files)
+            self.verify_deleted_fixture(restored, deleted, zip_path, restored_storage, 'runtime_restored')
             require(restored.usage()['installationId'] == installation_id,
                     'Installation identity changed after restore')
             require(restored.usage()['projects']['used'] == 5, 'Restored occupancy differs')
@@ -750,7 +930,8 @@ class RuntimeCheck:
                     'Startup changed restored system file ownership')
             self.report['restoredTables'] = before_database
             self.report['restoredRevisions'] = {
-                'count': 2, 'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
+                'count': before_database['p_revision']['count'], 'activeSampleCount': 2,
+                'retainedDeletedCount': 3, 'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
                 'creationReceiptPinnedToOriginal': True, 'manifestSha256': manifest_hashes,
                 'historicalAndCurrentBytesVerified': True}
             self.report['restoredFileCount'] = len(before_files)
@@ -765,7 +946,8 @@ class RuntimeCheck:
         self.stop(restored_process)
 
     def clear_business_data(self, api):
-        # These resources belong to the random database created above, never a user deployment.
+        # Soft-delete only active resources in this run's random database. Retained
+        # physical rows/files remain part of the restore evidence, never user data.
         for version in api.request('GET', '/api/prototype-hub/versions'):
             api.request('DELETE', '/api/prototype-hub/versions/' + version['id'])
         for project in api.request('GET', '/api/prototype-hub/projects'):

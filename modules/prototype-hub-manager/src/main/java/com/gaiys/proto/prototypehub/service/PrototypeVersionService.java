@@ -10,6 +10,7 @@ import java.util.List;
 import java.util.Map;
 import lombok.AllArgsConstructor;
 import org.hswebframework.ezorm.rdb.executor.wrapper.ResultWrappers;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveQuery;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.ezorm.rdb.operator.dml.query.Selects;
 import org.hswebframework.web.api.crud.entity.PagerResult;
@@ -30,6 +31,15 @@ public class PrototypeVersionService
         extends GenericReactiveCrudService<PrototypeVersionEntity, String> {
     private final PrototypeProjectService projects;
     private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
+
+    /** 仅业务可见版本计入额度；清理与备份必须继续使用完整仓储引用。 */
+    public ReactiveQuery<PrototypeVersionEntity> activeQuery() {
+        return createQuery().isNull(PrototypeVersionEntity::getDeletedTime);
+    }
+
+    public Mono<PrototypeVersionEntity> findActiveById(String id) {
+        return activeQuery().where(PrototypeVersionEntity::getId, id).fetchOne();
+    }
 
     public Mono<VersionResponse> response(PrototypeVersionEntity version) {
         return revisions
@@ -79,7 +89,7 @@ public class PrototypeVersionService
 
     public Mono<VersionUsageResponse> usage(String project) {
         return projects.requireById(project)
-                .then(createQuery().where(PrototypeVersionEntity::getProjectId, project).count())
+                .then(activeQuery().where(PrototypeVersionEntity::getProjectId, project).count())
                 .map(
                         used ->
                                 new VersionUsageResponse(
@@ -88,7 +98,7 @@ public class PrototypeVersionService
 
     /** 调用方在项目行锁内检查版本行数；替换已有逻辑版本不经过此创建额度校验。 */
     public Mono<Void> requireCapacity(String project) {
-        return createQuery()
+        return activeQuery()
                 .where(PrototypeVersionEntity::getProjectId, project)
                 .count()
                 .flatMap(
@@ -105,16 +115,16 @@ public class PrototypeVersionService
 
     public Flux<PrototypeVersionEntity> findAll(String project) {
         return project == null || project.isBlank()
-                ? createQuery().fetch()
+                ? activeQuery().fetch()
                 : findByProjectId(project);
     }
 
     public Flux<PrototypeVersionEntity> findByProjectId(String project) {
-        return createQuery().where(PrototypeVersionEntity::getProjectId, project).fetch();
+        return activeQuery().where(PrototypeVersionEntity::getProjectId, project).fetch();
     }
 
     public Mono<PrototypeVersionEntity> requireById(String id) {
-        return findById(id)
+        return findActiveById(id)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("version")));
     }
 
@@ -134,6 +144,7 @@ public class PrototypeVersionService
         return createUpdate()
                 .set(update)
                 .where(PrototypeVersionEntity::getId, old.getId())
+                .isNull(PrototypeVersionEntity::getDeletedTime)
                 .and(PrototypeVersionEntity::getStoragePath, old.getStoragePath())
                 .and(PrototypeVersionEntity::getCurrentRevisionId, old.getCurrentRevisionId())
                 .execute()

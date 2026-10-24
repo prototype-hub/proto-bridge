@@ -149,6 +149,7 @@ public class PrototypeProjectAccessService {
 
     public Mono<Grant> requireProject(Actor actor, String id, Action action, boolean audit) {
         return projects.findById(id)
+                .filter(project -> project.getDeletedTime() == null)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")))
                 .flatMap(project -> role(actor, project).map(role -> new Grant(project, role)))
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")))
@@ -175,6 +176,7 @@ public class PrototypeProjectAccessService {
     public Mono<PrototypeVersionEntity> requireVersion(
             Actor actor, String id, Action action, boolean audit) {
         return versions.findById(id)
+                .filter(version -> version.getDeletedTime() == null)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("version")))
                 .flatMap(
                         version ->
@@ -197,8 +199,15 @@ public class PrototypeProjectAccessService {
         return versions.findById(share.getVersionId())
                 .filter(
                         version ->
-                                share.getProjectId() != null
+                                version.getDeletedTime() == null
+                                        && share.getProjectId() != null
                                         && share.getProjectId().equals(version.getProjectId()))
+                // 公开资源不经过登录授权；关联边界也必须核验父项目尚活动。
+                .flatMap(
+                        version ->
+                                projects.findById(version.getProjectId())
+                                        .filter(project -> project.getDeletedTime() == null)
+                                        .map(project -> version))
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("share")));
     }
 
@@ -259,6 +268,7 @@ public class PrototypeProjectAccessService {
                     .thenMany(
                             versions.createQuery()
                                     .where(PrototypeVersionEntity::getProjectId, projectId)
+                                    .isNull(PrototypeVersionEntity::getDeletedTime)
                                     .fetch());
         }
         return current()

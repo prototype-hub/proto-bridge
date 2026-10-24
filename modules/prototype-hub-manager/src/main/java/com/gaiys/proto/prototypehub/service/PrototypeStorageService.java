@@ -99,18 +99,6 @@ public class PrototypeStorageService {
                                         properties.getRoot(), project, storagePath)));
     }
 
-    public Mono<Void> deleteVersion(PrototypeVersionEntity version) {
-        return deleteStoredVersion(
-                version.getProjectId(), version.getStoragePath(), version.getId());
-    }
-
-    public Mono<Void> deleteProject(String project) {
-        return work.run(
-                () ->
-                        SecureZipExtractor.deleteRecursively(
-                                SafePaths.project(properties.getRoot(), project)));
-    }
-
     public Path site(PrototypeVersionEntity version) {
         return SafePaths.storedVersion(
                         properties.getRoot(), version.getProjectId(), version.getStoragePath())

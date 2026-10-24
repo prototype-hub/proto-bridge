@@ -206,7 +206,7 @@ public class PrototypeVersionController {
 
     @DeleteMapping("/versions/{id}")
     @DeleteAction
-    @Operation(summary = "删除原型版本及分享")
+    @Operation(summary = "软删除原型版本并撤销分享", description = "释放活动版本占用并阻断访问，保留不可变修订、分享引用及文件；不提供恢复入口")
     public Mono<VersionResponse> delete(@PathVariable String id) {
         return deletion.deleteVersion(id).flatMap(versions::response);
     }

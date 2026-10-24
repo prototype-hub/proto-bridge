@@ -8,6 +8,7 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
@@ -489,28 +490,28 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     @Test
-    void deletionQueuesEveryHistoricalPathAndReferencedCleanupWaitsUntilWholeVersionDeletion()
+    void softDeletionRetainsEveryHistoricalPathAndReferencedCandidateCleanupNeverReclaimsIt()
             throws Exception {
         String project = project();
         JsonNode first = upload(project, null, archive("R1"), null, null, 200);
         String id = first.path("id").asText(), r1 = first.path("revisionId").asText();
         String oldPath = revisions.findById(r1).block(TIMEOUT).getStoragePath();
         upload(project, id, archive("R2"), null, r1, 200);
-        var task = cleanup.enqueue(project, id, oldPath).block(TIMEOUT);
+        var task = cleanup.enqueueCandidate(project, id, oldPath).block(TIMEOUT);
         cleanup.attempt(task).block(TIMEOUT);
         assertTrue(Files.exists(FILES.resolve(oldPath).resolve("index.html")));
         assertEquals(1, cleanup.findById(task.getId()).block(TIMEOUT).getAttempts());
         call(HttpMethod.DELETE, version(id), admin, null, 200);
-        assertEquals(0, count("p_revision"));
-        assertEquals(0, count("p_version"));
+        assertEquals(2, count("p_revision"));
+        assertEquals(1, count("p_version"));
+        assertNotNull(versions.findById(id).block(TIMEOUT).getDeletedTime());
         assertEquals(2, directoryCount(project));
-        assertEquals(
-                3, count("p_file_cleanup")); // Explicit protected task plus two distinct history
-        // paths.
+        assertEquals(1, count("p_file_cleanup"));
         sql("update p_file_cleanup set next_attempt=0");
         cleanup.retryPending().block(TIMEOUT);
-        assertEquals(0, directoryCount(project));
-        assertEquals(0, count("p_file_cleanup"));
+        assertEquals(2, directoryCount(project));
+        assertEquals(1, count("p_file_cleanup"));
+        assertTrue(Files.readString(FILES.resolve(oldPath).resolve("index.html")).contains("R1"));
     }
 
     @Test
@@ -521,7 +522,7 @@ class PrototypeHubRevisionIntegrationTest {
             String relative = "projects/" + project + "/versions/gc-" + i + "/site";
             Files.createDirectories(FILES.resolve(relative));
             Files.writeString(FILES.resolve(relative).resolve("index.html"), "unreferenced");
-            cleanup.enqueue(project, "gc-" + i, relative).block(TIMEOUT);
+            cleanup.enqueueCandidate(project, "gc-" + i, relative).block(TIMEOUT);
         }
         assertEquals(53, count("p_file_cleanup"));
         cleanup.retryPending().block(TIMEOUT);
@@ -533,7 +534,7 @@ class PrototypeHubRevisionIntegrationTest {
     }
 
     @Test
-    void historyQueueCrossesHundredRowPagesAndRepeatedDeletionRegistrationKeepsOneTaskPerPath()
+    void softDeletionRetainsMoreThanTwoHundredHistoricalReferencesWithoutQueueingReclamation()
             throws Exception {
         String project = project();
         JsonNode uploaded = upload(project, null, archive("current"), null, null, 200);
@@ -560,26 +561,44 @@ class PrototypeHubRevisionIntegrationTest {
             Files.writeString(site.resolve("index.html"), "historical fixture");
         }
         revisions.insert(Flux.fromIterable(history)).block(TIMEOUT);
-        var version = versions.findById(id).block(TIMEOUT);
-        // One pooled connection must finish each 100-row read before its batch task writes. The
-        // current projection repeats an immutable path and must not create a second task.
-        Mono<Void> register =
-                access.lockProject(project)
-                        .then(access.lockVersion(id))
-                        .then(cleanup.enqueueVersionHistory(version))
-                        .as(transactions::transactional);
-        register.block(TIMEOUT);
-        assertEquals(202, count("p_file_cleanup"));
-        register.block(TIMEOUT);
-        assertEquals(202, count("p_file_cleanup"));
         call(HttpMethod.DELETE, version(id), admin, null, 200);
-        assertEquals(0, count("p_revision"));
-        assertEquals(202, count("p_file_cleanup"));
-        cleanup.retryPending().block(TIMEOUT);
-        assertEquals(152, count("p_file_cleanup"));
-        for (int i = 0; i < 4; i++) cleanup.retryPending().block(TIMEOUT);
+        assertEquals(202, count("p_revision"));
+        assertEquals(1, count("p_version"));
         assertEquals(0, count("p_file_cleanup"));
-        assertEquals(0, directoryCount(project));
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(202, count("p_revision"));
+        assertEquals(202, directoryCount(project));
+        assertTrue(Files.exists(FILES.resolve(current.getStoragePath()).resolve("index.html")));
+    }
+
+    @Test
+    void unclassifiedCleanupTasksNeverDeleteUnreferencedOldDirectories() throws Exception {
+        String project = project();
+        for (String type : List.of("project", "version", "unknown")) {
+            String relative = "projects/" + project + "/versions/legacy-" + type + "/site";
+            Files.createDirectories(FILES.resolve(relative));
+            Files.writeString(FILES.resolve(relative).resolve("index.html"), "retained old files");
+            FileCleanupEntity task = new FileCleanupEntity();
+            task.setId(UUID.randomUUID().toString());
+            task.setResourceType(type);
+            task.setProjectId(project);
+            task.setVersionId("legacy-" + type);
+            task.setStoragePath(relative);
+            task.setCreateTime(System.currentTimeMillis());
+            task.setNextAttempt(0L);
+            task.setAttempts(0);
+            cleanup.insert(task).block(TIMEOUT);
+        }
+        cleanup.retryPending().block(TIMEOUT);
+        assertEquals(3, directoryCount(project));
+        assertEquals(3, count("p_file_cleanup"));
+        assertTrue(
+                cleanup.createQuery().fetch().collectList().block(TIMEOUT).stream()
+                        .allMatch(
+                                task ->
+                                        task.getAttempts() == 1
+                                                && task.getNextAttempt()
+                                                        > System.currentTimeMillis()));
     }
 
     @Test
@@ -830,7 +849,7 @@ class PrototypeHubRevisionIntegrationTest {
     void storageExportIncludesHistoricalAndLegacyReferencesAndReportsBrokenRevisionAssociations()
             throws Exception {
         String project = project();
-        JsonNode first = upload(project, null, archive("R1"), null, null, 200);
+        JsonNode first = upload(project, null, archive("R1"), "retention-export", null, 200);
         String id = first.path("id").asText(), r1 = first.path("revisionId").asText();
         JsonNode share = result(HttpMethod.POST, version(id) + "/shares", Map.of());
         upload(project, id, archive("R2"), null, r1, 200);
@@ -841,16 +860,19 @@ class PrototypeHubRevisionIntegrationTest {
             DATABASE.copyFileToContainer(
                     MountableFile.forHostPath(Path.of("..", "tools", name).toAbsolutePath()),
                     "/tmp/" + name);
+        String current = versions.requireById(id).block(TIMEOUT).getCurrentRevisionId();
+        String legacyPath = versions.requireById(legacyId).block(TIMEOUT).getStoragePath();
+        call(HttpMethod.DELETE, version(id), admin, null, 200);
         JsonNode exported = storageExport(null);
         assertTrue(exported.path("referencesComplete").asBoolean());
+        assertTrue(exported.path("receiptReferencesChecked").asBoolean());
         assertEquals("immutable-revisions-v1", exported.path("sourceSchema").asText());
         assertEquals(0, exported.path("integrityErrors").asInt());
         assertEquals(3, exported.path("entries").size());
         var paths = new java.util.HashSet<String>();
         exported.path("entries").forEach(row -> paths.add(row.path("storagePath").asText()));
         assertTrue(paths.contains(revisions.findById(r1).block(TIMEOUT).getStoragePath()));
-        assertTrue(paths.contains(versions.requireById(legacyId).block(TIMEOUT).getStoragePath()));
-        String current = versions.requireById(id).block(TIMEOUT).getCurrentRevisionId();
+        assertTrue(paths.contains(legacyPath));
         sql(
                 "update p_share set revision_id='missing-revision' where id='"
                         + share.path("id").asText()
@@ -862,6 +884,10 @@ class PrototypeHubRevisionIntegrationTest {
                         + "' where id='"
                         + share.path("id").asText()
                         + "'");
+        sql("update p_creation_receipt set revision_id='missing-receipt-revision'");
+        assertEquals(1, storageExport(null).path("integrityErrors").asInt());
+        sql("update p_creation_receipt set revision_id='" + r1 + "'");
+        assertEquals(0, storageExport(null).path("integrityErrors").asInt());
         sql("create schema legacy_export");
         sql(
                 "create table legacy_export.p_version(id varchar(64),project_id"
