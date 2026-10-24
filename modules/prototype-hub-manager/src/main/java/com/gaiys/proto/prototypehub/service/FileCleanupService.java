@@ -4,12 +4,14 @@ import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Path;
+import java.util.HexFormat;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
 import org.hswebframework.web.crud.service.GenericReactiveCrudService;
-import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -22,7 +24,7 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
     private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
     private final ReactiveRepository<PrototypeVersionEntity, String> versions;
 
-    /** 只登记已确认未提交归属的上传候选；业务删除不得调用文件清理。 */
+    /** 只登记已确认未提交归属的上传候选；保留期内的业务删除不得调用文件清理。 */
     public Mono<FileCleanupEntity> enqueueCandidate(String project, String version, String path) {
         FileCleanupEntity task = new FileCleanupEntity();
         task.setId(PrototypeShareService.random());
@@ -36,27 +38,53 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
         return insert(task).thenReturn(task);
     }
 
+    /** 调用者持项目/版本锁，在删除引用的同一事务中登记；同一目录只保留一个到期任务。 */
+    public Mono<FileCleanupEntity> enqueueExpired(String project, String version, String path) {
+        String canonical = SafePaths.canonicalSitePath(project, path);
+        FileCleanupEntity task = new FileCleanupEntity();
+        task.setId(
+                HexFormat.of()
+                        .formatHex(
+                                PrototypeCreationReceiptService.sha256()
+                                        .digest(canonical.getBytes(StandardCharsets.UTF_8))));
+        task.setProjectId(project);
+        task.setVersionId(SafePaths.id(version));
+        task.setResourceType("expired-snapshot");
+        task.setStoragePath(canonical);
+        task.setCreateTime(System.currentTimeMillis());
+        task.setNextAttempt(0L);
+        task.setAttempts(0);
+        return findById(task.getId())
+                .switchIfEmpty(Mono.defer(() -> insert(task).thenReturn(task)));
+    }
+
     /** 软删行仍是保留引用；不使用业务侧的活动查询。 */
     private Mono<Boolean> referenced(FileCleanupEntity task) {
+        Path target = Path.of(task.getStoragePath());
+        String storage = target.getParent().getFileName().toString();
+        // 规范目录的最后一段必然出现在所有词法别名中；数据库先收窄，流式比较避免装入全部历史。
+        String candidate = "%/" + storage + "/%";
         return versions.createQuery()
-                .select(PrototypeVersionEntity::getId)
-                .where(PrototypeVersionEntity::getStoragePath, task.getStoragePath())
-                .paging(0, 1)
-                .fetchOne()
-                .hasElement()
+                .select(PrototypeVersionEntity::getStoragePath)
+                .like(PrototypeVersionEntity::getStoragePath, candidate)
+                .fetch()
+                .any(version -> Path.of(version.getStoragePath()).normalize().equals(target))
                 .flatMap(
                         found ->
                                 found
                                         ? Mono.just(true)
                                         : revisions
                                                 .createQuery()
-                                                .select(PrototypeRevisionEntity::getId)
-                                                .where(
+                                                .select(PrototypeRevisionEntity::getStoragePath)
+                                                .like(
                                                         PrototypeRevisionEntity::getStoragePath,
-                                                        task.getStoragePath())
-                                                .paging(0, 1)
-                                                .fetchOne()
-                                                .hasElement());
+                                                        candidate)
+                                                .fetch()
+                                                .any(
+                                                        revision ->
+                                                                Path.of(revision.getStoragePath())
+                                                                        .normalize()
+                                                                        .equals(target)));
     }
 
     public Mono<Void> attempt(FileCleanupEntity task) {
@@ -66,10 +94,17 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
                 Mono.defer(
                         () -> {
                             // 旧 project/version 任务混合了已删除历史和候选，来源不明时只能保留。
-                            if (!"upload-candidate".equals(task.getResourceType()))
+                            if (!"upload-candidate".equals(task.getResourceType())
+                                    && !"expired-snapshot".equals(task.getResourceType()))
                                 return Mono.error(
                                         new IllegalStateException(
                                                 "Unclassified retained cleanup task"));
+                            String canonical =
+                                    SafePaths.canonicalSitePath(
+                                            task.getProjectId(), task.getStoragePath());
+                            if (!canonical.equals(task.getStoragePath()))
+                                return Mono.error(
+                                        new IllegalStateException("Noncanonical cleanup target"));
                             return referenced(task)
                                     .flatMap(
                                             live -> {
@@ -121,7 +156,6 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
                         });
     }
 
-    @Scheduled(fixedDelayString = "${prototype-hub.cleanup.interval-ms:30000}")
     public Mono<Void> retryPending() {
         return Mono.defer(
                 () ->

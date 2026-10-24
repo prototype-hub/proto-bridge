@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
@@ -1875,6 +1876,82 @@ class PrototypeHubProjectAccessIntegrationTest {
                             "/tmp/" + name);
             assertEquals(0, old.getExitCode(), old.getStderr());
         }
+    }
+
+    @Test
+    void accountCleanupSkipsAProjectPurgedAfterItsBatchRead() {
+        Actor target = actor(ALL_ACTIONS);
+        String project = project(target, "Concurrent permanent cleanup").path("id").asText();
+        Connection anchor =
+                Mono.from(
+                                ConnectionFactories.get(
+                                                "r2dbc:postgresql://"
+                                                        + DATABASE.getUsername()
+                                                        + ":"
+                                                        + DATABASE.getPassword()
+                                                        + "@"
+                                                        + DATABASE.getHost()
+                                                        + ":"
+                                                        + DATABASE.getMappedPort(5432)
+                                                        + "/"
+                                                        + DATABASE.getDatabaseName())
+                                        .create())
+                        .block(TIMEOUT);
+        assertNotNull(anchor);
+        try {
+            Mono.from(anchor.beginTransaction()).block(TIMEOUT);
+            Flux.from(
+                            anchor.createStatement(
+                                            "select id from p_project where id=$1 for update")
+                                    .bind(0, project)
+                                    .execute())
+                    .flatMap(row -> row.map((data, metadata) -> data.get("id", String.class)))
+                    .then()
+                    .block(TIMEOUT);
+            var deleting =
+                    Mono.fromCallable(
+                                    () ->
+                                            result(
+                                                    HttpMethod.DELETE,
+                                                    "/user/" + target.id(),
+                                                    admin,
+                                                    null))
+                            .subscribeOn(Schedulers.boundedElastic())
+                            .toFuture();
+            // 账号删除已读到旧项目并等待项目锁；此时维护事务先移除该空项目。
+            Flux.defer(
+                            () ->
+                                    Flux.from(
+                                                    anchor.createStatement(
+                                                                    "select exists(select 1 from pg_stat_activity a where a.pid<>pg_backend_pid() and a.wait_event_type='Lock' and pg_backend_pid()=any(pg_blocking_pids(a.pid))) as blocked")
+                                                            .execute())
+                                            .flatMap(
+                                                    row ->
+                                                            row.map(
+                                                                    (data, metadata) ->
+                                                                            data.get(
+                                                                                    "blocked",
+                                                                                    Boolean
+                                                                                            .class))))
+                    .repeat()
+                    .filter(Boolean.TRUE::equals)
+                    .next()
+                    .timeout(TIMEOUT)
+                    .block(TIMEOUT);
+            Flux.from(
+                            anchor.createStatement("delete from p_project where id=$1")
+                                    .bind(0, project)
+                                    .execute())
+                    .flatMap(io.r2dbc.spi.Result::getRowsUpdated)
+                    .then()
+                    .block(TIMEOUT);
+            Mono.from(anchor.commitTransaction()).block(TIMEOUT);
+            assertNotNull(deleting.orTimeout(30, java.util.concurrent.TimeUnit.SECONDS).join());
+        } finally {
+            Mono.from(anchor.close()).block(TIMEOUT);
+        }
+        assertNull(users.findById(target.id()).block(TIMEOUT));
+        assertEquals(0L, count("select count(*) as count from p_project"));
     }
 
     @Test

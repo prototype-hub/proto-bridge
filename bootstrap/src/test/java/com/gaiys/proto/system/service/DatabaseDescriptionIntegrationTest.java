@@ -158,8 +158,17 @@ class DatabaseDescriptionIntegrationTest {
                         "p_project_member",
                         "p_preview_session"),
                 tables);
-        assertEquals(
-                146, describedColumns); // Revision/share bindings and project/version tombstones.
+        // 包含修订/分享绑定、软删时间和4个持久保留期扫描游标。
+        assertEquals(150, describedColumns);
+        for (String name :
+                Set.of(
+                        "retention_deleted_time",
+                        "retention_version_id",
+                        "retention_project_time",
+                        "retention_project_id")) {
+            assertTrue(columnNames("p_installation").contains(name), name);
+            assertFalse(comment("p_installation", name).isBlank(), name);
+        }
         assertEquals("id", comment("s_user_detail", "id"));
         for (String name : Set.of("parent_id", "path", "_level", "sort_index"))
             assertFalse(comment("s_menu", name).isBlank(), name);

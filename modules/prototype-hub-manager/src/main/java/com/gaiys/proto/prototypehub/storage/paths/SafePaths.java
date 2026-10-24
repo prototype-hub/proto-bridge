@@ -49,4 +49,20 @@ public final class SafePaths {
         id(version.getFileName().toString());
         return version;
     }
+
+    /** 队列只保存规范快照路径；历史别名先按词法归一，实际删除仍须经过 within 的符号链接检查。 */
+    public static String canonicalSitePath(String projectId, String sitePath) {
+        id(projectId);
+        if (sitePath == null
+                || sitePath.isBlank()
+                || sitePath.indexOf('\\') >= 0
+                || sitePath.indexOf('\0') >= 0) throw PrototypeHubException.invalidPath();
+        Path site = Path.of(sitePath).normalize();
+        if (site.isAbsolute() || site.getNameCount() != 5)
+            throw PrototypeHubException.invalidPath();
+        String storage = id(site.getName(3).toString());
+        String canonical = "projects/" + projectId + "/versions/" + storage + "/site";
+        if (!site.equals(Path.of(canonical))) throw PrototypeHubException.invalidPath();
+        return canonical;
+    }
 }

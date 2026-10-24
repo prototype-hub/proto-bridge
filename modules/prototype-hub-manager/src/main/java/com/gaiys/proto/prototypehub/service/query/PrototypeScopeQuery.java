@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.enums.ProjectRole;
+import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
 import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import lombok.Getter;
@@ -103,7 +104,8 @@ public class PrototypeScopeQuery {
                                                 PrototypeProjectEntity::getOwnerId));
         if (page != null) query.where(page);
         if (deleted) {
-            query.where(condition -> condition.notNull(PrototypeProjectEntity::getDeletedTime));
+            long cutoff = System.currentTimeMillis() - PrototypeRetentionService.RETENTION_MILLIS;
+            query.where(condition -> condition.gt(PrototypeProjectEntity::getDeletedTime, cutoff));
             if (!administrator)
                 query.where(condition -> condition.is(PrototypeProjectEntity::getOwnerId, userId));
         } else applyScope(query, userId, administrator, false);
@@ -195,9 +197,10 @@ public class PrototypeScopeQuery {
                                                         PrototypeProjectMemberEntity::getUserId,
                                                         userId));
         if (page != null) query.where(page);
+        long cutoff = System.currentTimeMillis() - PrototypeRetentionService.RETENTION_MILLIS;
         query.where(
                 condition -> {
-                    if (deleted) condition.notNull(PrototypeVersionEntity::getDeletedTime);
+                    if (deleted) condition.gt(PrototypeVersionEntity::getDeletedTime, cutoff);
                     else condition.isNull(PrototypeVersionEntity::getDeletedTime);
                 });
         applyScope(query, userId, administrator, deleted);

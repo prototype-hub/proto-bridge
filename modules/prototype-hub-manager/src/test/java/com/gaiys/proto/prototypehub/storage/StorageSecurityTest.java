@@ -151,6 +151,23 @@ class StorageSecurityTest {
     }
 
     @Test
+    void cleanupCanonicalPathsNormalizeLegacyAliasesButRejectOtherProjectsAndRoots() {
+        assertEquals(
+                "projects/p/versions/v/site",
+                SafePaths.canonicalSitePath("p", "projects/p/versions/x/../v/site"));
+        for (String path :
+                List.of(
+                        "projects/q/versions/v/site",
+                        "../projects/p/versions/v/site",
+                        "/projects/p/versions/v/site",
+                        "projects/p/versions/v",
+                        "projects/p/versions/v/site/deeper",
+                        "projects/p/versions/v\\site")) {
+            assertThrows(PrototypeHubException.class, () -> SafePaths.canonicalSitePath("p", path));
+        }
+    }
+
+    @Test
     void inspectorInjectionIsIdempotentAndValidatesUrl() throws Exception {
         Path html = root.resolve("index.html");
         Files.writeString(html, "<BODY>text</BODY>");

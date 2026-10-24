@@ -82,6 +82,14 @@ class StorageAuditTest(unittest.TestCase):
         self.assertTrue(self.paths['r1'].exists())
         self.assertTrue(self.paths['r2'].exists())
 
+    def test_legacy_path_alias_never_authorizes_offline_repair(self):
+        entries = self.entries(('r1', 'r2'))
+        entries[0]['storagePath'] = 'projects/project/versions/alias/../r1/site'
+        result = self.run_audit(self.complete(entries), repair=True)
+        self.assertEqual(2, result.returncode)
+        self.assertIn('Invalid storage boundary', result.stderr)
+        self.assertTrue(all(path.exists() for path in self.paths.values()))
+
     def test_unchecked_receipt_export_is_diagnostic_only(self):
         manifest = self.complete(self.entries(('r1', 'r2')))
         manifest.pop('receiptReferencesChecked')

@@ -38,6 +38,7 @@ TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session'
           's_user_detail', 's_system_config')
 FRONTEND_GLOBAL_TIMEOUT_MS = 300000
 FRONTEND_WAIT_SECONDS = 330
+RETENTION_MILLISECONDS = 30 * 24 * 60 * 60 * 1000
 
 
 class VerificationFailure(RuntimeError):
@@ -303,7 +304,8 @@ class RuntimeCheck:
         output = (working_directory / 'process.log').open('wb')
         try:
             process = subprocess.Popen([str(self.args.java), '-Xms128m', '-Xmx512m', '-jar',
-                                        str(self.args.jar), '--server.address=127.0.0.1'],
+                                        str(self.args.jar), '--server.address=127.0.0.1',
+                                        '--prototype-hub.cleanup.interval-ms=250'],
                                        cwd=working_directory, env=environment,
                                        stdout=output, stderr=subprocess.STDOUT,
                                        start_new_session=True)
@@ -849,6 +851,108 @@ SELECT json_build_object(
             'stateAndReferenceHashesVerified': True, 'fileHashesVerified': True,
             'retainedFileCount': len(fixture['files'])}
 
+    def expire_fixture(self, database, fixture):
+        # Only this run's stopped, disposable database is aged; no production clock override.
+        require(not self.processes, 'Cannot age a fixture while an owned writer is running')
+        self.sql(database, """
+BEGIN;
+UPDATE p_version SET deleted_time=:'deleted'::bigint
+ WHERE id IN (:'version',:'replacement') AND deleted_time IS NOT NULL;
+UPDATE p_project SET deleted_time=:'deleted'::bigint
+ WHERE id IN (:'project',:'empty_project') AND deleted_time IS NOT NULL;
+COMMIT;
+""", variables={'deleted': str(int(time.time() * 1000) - RETENTION_MILLISECONDS - 60000),
+                'project': fixture['project']['id'], 'empty_project': fixture['emptyProject']['id'],
+                'version': fixture['original']['id'], 'replacement': fixture['replacement']['id']})
+
+    def expired_fixture_counts(self, database, fixture):
+        statement = """
+SELECT json_build_object(
+ 'projects',(SELECT count(*) FROM p_project WHERE id IN (:'project',:'empty_project')),
+ 'versions',(SELECT count(*) FROM p_version WHERE project_id IN (:'project',:'empty_project')
+  OR id IN (:'version',:'replacement')),
+ 'revisions',(SELECT count(*) FROM p_revision WHERE project_id IN (:'project',:'empty_project')
+  OR version_id IN (:'version',:'replacement')),
+ 'shares',(SELECT count(*) FROM p_share WHERE project_id IN (:'project',:'empty_project')
+  OR version_id IN (:'version',:'replacement')),
+ 'receipts',(SELECT count(*) FROM p_creation_receipt
+  WHERE resource_id IN (:'project',:'empty_project',:'version',:'replacement')),
+ 'members',(SELECT count(*) FROM p_project_member WHERE project_id IN (:'project',:'empty_project')),
+ 'sessions',(SELECT count(*) FROM p_preview_session WHERE project_id IN (:'project',:'empty_project')
+  OR version_id IN (:'version',:'replacement')),
+ 'cleanup',(SELECT count(*) FROM p_file_cleanup WHERE project_id IN (:'project',:'empty_project')));
+"""
+        counts = json.loads(self.sql(database, statement, variables={
+            'project': fixture['project']['id'], 'empty_project': fixture['emptyProject']['id'],
+            'version': fixture['original']['id'], 'replacement': fixture['replacement']['id']}))
+        require(set(counts) == {'projects', 'versions', 'revisions', 'shares', 'receipts',
+                                'members', 'sessions', 'cleanup'} and
+                all(type(value) is int and value >= 0 for value in counts.values()),
+                'Expired fixture graph counts are incomplete or invalid')
+        return counts
+
+    def seed_pending_cleanup(self, database, storage, fixture):
+        # A maintenance fixture models an already committed outbox task, without inducing
+        # filesystem permission failures that differ between root and ordinary users.
+        require(not self.processes, 'Cannot seed pending cleanup while an owned writer is running')
+        project, storage_id, task_id = fixture['project']['id'], uuid.uuid4().hex, uuid.uuid4().hex
+        relative = 'projects/' + project + '/versions/' + storage_id + '/site'
+        directory = storage / relative
+        require(not directory.parent.exists(), 'Pending cleanup would overwrite existing storage')
+        directory.mkdir(parents=True)
+        (directory / 'index.html').write_bytes(b'Owned pending cleanup fixture')
+        (directory.parent / 'original.zip').write_bytes(b'Owned pending cleanup source')
+        files = {path.relative_to(storage).as_posix(): digest_file(path)
+                 for path in (directory / 'index.html', directory.parent / 'original.zip')}
+        self.sql(database, """
+INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,create_time,next_attempt,attempts)
+ VALUES(:'task','expired-snapshot',:'project',:'version',:'path',:'created'::bigint,0,0);
+""", variables={'task': task_id, 'project': project, 'version': fixture['original']['id'],
+                'path': relative, 'created': str(int(time.time() * 1000))})
+        return {'id': task_id, 'files': files}
+
+    def verify_cleanup(self, database, storage, before, pending, *, expired=None):
+        removed = dict(pending['files'])
+        if expired:
+            removed.update(expired['files'])
+        require(removed and all(before.get(name) == digest for name, digest in removed.items()),
+                'Cleanup fixture is not present unchanged in the source snapshot')
+        expected = {name: digest for name, digest in before.items() if name not in removed}
+        deadline = time.monotonic() + 60
+        while True:
+            pending_count = int(self.sql(database, "SELECT count(*) FROM p_file_cleanup WHERE id=:'task';",
+                                         variables={'task': pending['id']}))
+            graph = self.expired_fixture_counts(database, expired) if expired else {}
+            files = storage_manifest(storage)
+            if pending_count == 0 and not any(graph.values()) and not any(name in files for name in removed):
+                break
+            require(time.monotonic() < deadline, 'Expired graph or durable file cleanup did not drain')
+            time.sleep(0.25)
+        require(files == expected, 'Cleanup changed files outside the exact owned fixture')
+        return expected
+
+    def verify_expired_access(self, api, fixture):
+        for project in (fixture['project'], fixture['emptyProject']):
+            api.request('POST', '/api/prototype-hub/projects/' + project['id'] + '/_restore', expected=404)
+        for version in (fixture['original'], fixture['replacement']):
+            api.request('POST', '/api/prototype-hub/versions/' + version['id'] + '/_restore', expected=404)
+        for path, ids in (('/projects', {fixture['project']['id'], fixture['emptyProject']['id']}),
+                          ('/versions', {fixture['original']['id'], fixture['replacement']['id']})):
+            page = api.request('POST', '/api/prototype-hub' + path + '/_deleted/_query', {'pageSize': 100})
+            require(not any(row['id'] in ids for row in page['data']),
+                    'Expired resource remained in the recycle bin')
+        anonymous = Api(api.origin, self.secrets_seen)
+        for share in fixture['shares']:
+            anonymous.request('GET', '/api/prototype-hub/public/shares/' + share['token'], expected=404)
+        for grant in fixture['publicGrants']:
+            anonymous.request('GET', grant['previewUrl'], expected=404, raw=True)
+        for grant in fixture['internalGrants']:
+            anonymous.request('GET', grant['previewUrl'], expected=403, raw=True)
+        # The old receipt is gone, so this is a new authorized creation, never restoration.
+        recreated = api.project(fixture['projectName'], fixture['projectKey'])
+        require(recreated['id'] != fixture['project']['id'], 'Permanent purge revived the old project ID')
+        api.request('DELETE', '/api/prototype-hub/projects/' + recreated['id'])
+
     def create_system_files(self, api):
         profile = api.request('GET', '/api/user/detail')
         expected = {'userId': profile['id']}
@@ -935,9 +1039,22 @@ SELECT json_build_object(
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
             self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
+            expired = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
         with self.phase('full-process-restart'):
             self.stop(process)
+            self.expire_fixture('runtime_source', expired)
+            pending_restart = self.seed_pending_cleanup('runtime_source', storage, expired)
+            restart_files = storage_manifest(storage)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
+            self.verify_cleanup('runtime_source', storage, restart_files, pending_restart, expired=expired)
+            self.verify_expired_access(api, expired)
+            self.report['expiredRetention'] = {
+                'retentionDays': 30, 'expiredProjectCount': 2, 'expiredVersionCount': 2,
+                'expiredRevisionCount': 3, 'expiredFileCount': len(expired['files']),
+                'graphAndFilesRemovedAfterRestart': True, 'expiredRecoveryAndOldGrantsRejected': True,
+                'oldKeyCreatesNewIdentityAfterPermanentPurge': True,
+                'pendingCleanupSurvivedRestart': True, 'pendingFileCount': len(pending_restart['files']),
+                'unrelatedFileHashesUnchanged': True}
             self.verify_system_files(api, system_files)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
@@ -992,6 +1109,7 @@ SELECT json_build_object(
             self.stop(process)
         with self.phase('quiescent-database-and-files-backup'):
             require(not self.processes, 'Backup attempted while an owned writer is still registered')
+            pending_restore = self.seed_pending_cleanup('runtime_source', storage, expired)
             before_database = self.database_manifest('runtime_source')
             before_files = storage_manifest(storage)
             before_system_files = storage_manifest(system_storage)
@@ -1029,6 +1147,8 @@ SELECT json_build_object(
             shutil.rmtree(system_storage)
             restored, restored_process = self.start('runtime_restored', restored_storage,
                                                     restored_system_storage, 'restored')
+            expected_restored_files = self.verify_cleanup('runtime_restored', restored_storage,
+                                                          before_files, pending_restore)
             system_hashes = self.verify_system_files(restored, system_files)
             self.verify_deleted_fixture(restored, deleted, zip_path, restored_storage, 'runtime_restored')
             self.verify_restored_fixture(restored, recovered, zip_path, restored_storage, 'runtime_restored')
@@ -1065,7 +1185,7 @@ SELECT json_build_object(
                 'shortSessionsIncludedInDump': True,
                 'nonEmptyMemberScopeReadVerified': True,
                 'newPreviewSessionsBounded': True}
-            require(storage_manifest(restored_storage) == before_files,
+            require(storage_manifest(restored_storage) == expected_restored_files,
                     'Replay or startup changed restored file ownership')
             require(storage_manifest(restored_system_storage) == before_system_files,
                     'Startup changed restored system file ownership')
@@ -1076,7 +1196,13 @@ SELECT json_build_object(
                 'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
                 'creationReceiptPinnedToOriginal': True, 'manifestSha256': manifest_hashes,
                 'historicalAndCurrentBytesVerified': True}
-            self.report['restoredFileCount'] = len(before_files)
+            self.report['restoredFileCount'] = len(expected_restored_files)
+            self.report['restoredPendingCleanup'] = {
+                'queueRowsInBackup': before_database['p_file_cleanup']['count'],
+                'pendingFileCount': len(pending_restore['files']),
+                'queueAndFilesVerifiedBeforeStartup': True,
+                'queueDrainedOnNewDatabaseAndStorageRoot': True,
+                'onlyOwnedPendingFilesRemoved': True}
             self.report['restoredSystemFiles'] = {
                 'fileCount': len(before_system_files), 'downloadSha256': system_hashes,
                 'databaseReferencesVerified': True, 'anonymousReadVerified': True,

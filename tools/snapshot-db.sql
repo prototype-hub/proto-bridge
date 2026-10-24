@@ -1,6 +1,12 @@
 -- Save before and after; counts alone cannot prove identity/relationship preservation.
 -- Select prototype_hub_table_prefix=protohub_ before V15; the default reads current p_* tables.
 \ir prototype-hub-table-names.sql
+-- Identity and durable sweep cursors must both survive a quiescent backup/restore.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_installation_table')) IS NOT NULL AS prototype_hub_has_installation \gset
+\if :prototype_hub_has_installation
+SELECT 'installation',count(*),md5(coalesce(jsonb_agg(to_jsonb(i) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_installation_table" i;
+\endif
 SELECT 'projects', count(*), md5(coalesce(string_agg(id, ',' ORDER BY id),'')) FROM :"prototype_hub_project_table";
 SELECT 'versions', count(*), md5(coalesce(string_agg(id||':'||project_id, ',' ORDER BY id),'')) FROM :"prototype_hub_version_table";
 SELECT 'shares', count(*), md5(coalesce(string_agg(id||':'||project_id||':'||version_id, ',' ORDER BY id),'')) FROM :"prototype_hub_share_table";
@@ -57,6 +63,13 @@ SELECT 'project_members',count(*),md5(coalesce(jsonb_agg(to_jsonb(m) ORDER BY id
 \if :prototype_hub_has_preview_sessions
 SELECT 'short_preview_sessions',count(*),md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_preview_session_table" s;
+\endif
+
+-- Committed purge tasks bridge the database transaction and retryable file deletion.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_cleanup_table')) IS NOT NULL AS prototype_hub_has_cleanup \gset
+\if :prototype_hub_has_cleanup
+SELECT 'file_cleanup',count(*),md5(coalesce(jsonb_agg(to_jsonb(c) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_cleanup_table" c;
 \endif
 
 -- Deletion status is stable business data: restoring only IDs must not revive access.
