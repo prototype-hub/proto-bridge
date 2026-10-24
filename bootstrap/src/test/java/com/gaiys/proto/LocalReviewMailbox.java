@@ -72,6 +72,10 @@ final class LocalReviewMailbox implements AutoCloseable {
         return mail;
     }
 
+    int pendingMessages() {
+        return messages.size();
+    }
+
     private void accept() {
         while (!closed) {
             try {

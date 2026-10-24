@@ -135,27 +135,27 @@ FRONT_POLICE_RECORD_NUMBER: ''
 FRONT_COPYRIGHT: ''
 
 
-# 可选：公开分享邮箱身份的验证邮件（默认不配置，不影响原型分享/预览）。
-# 设置 host 后才启用；只发送用户主动请求的一次性验证码，不发送业务通知。
-spring:
-  mail:
-    host: ''
-    port: 587
-    username: ''
-    password: '' # 仅本地私密文件/环境变量填写，严禁提交实际密码
-    protocol: smtp
-    default-encoding: UTF-8
-    properties:
-      mail.smtp.auth: true
-      mail.smtp.starttls.enable: true
-      mail.smtp.starttls.required: true
-      mail.smtp.ssl.checkserveridentity: true
-      mail.smtp.connectiontimeout: 5000
-      mail.smtp.timeout: 5000
-      mail.smtp.writetimeout: 5000
-      mail.smtp.from: 'verification@example.com'
+# 可选：公开分享邮箱身份的验证码客户端；host 留空不启用。
+# 完整属性和安全默认值在 application.yml；也可用 spring.mail.* 原生属性覆盖。
+SMTP_HOST: ''
+SMTP_PORT: '587'
+SMTP_USERNAME: ''
+SMTP_PASSWORD: '' # 仅私密文件/环境变量填写，严禁提交实际密码
+SMTP_PROTOCOL: 'smtp' # 使用 SMTPS 时改为 smtps，并将端口改为 465
+SMTP_FROM: '' # 留空使用 SMTP_USERNAME；生产应填写邮件服务允许的发送地址
+SMTP_AUTH: 'true'
+SMTP_STARTTLS_ENABLE: 'true'
+SMTP_STARTTLS_REQUIRED: 'true'
+SMTP_SSL_ENABLE: 'false'
+SMTPS_STARTTLS_ENABLE: 'false'
+SMTPS_STARTTLS_REQUIRED: 'false'
+SMTPS_SSL_ENABLE: 'true'
+SMTP_CHECK_SERVER_IDENTITY: 'true'
+SMTP_CONNECTION_TIMEOUT: '5000'
+SMTP_READ_TIMEOUT: '5000'
+SMTP_WRITE_TIMEOUT: '5000'
+SMTP_LOCALHOST: 'localhost' # 可改为邮件服务要求的 EHLO 域名
+SMTP_DEFAULT_ENCODING: 'UTF-8'
 
-prototype-hub:
-  review:
-    cookie-secure: true # 生产 HTTPS 必须 true；仅 localhost HTTP 测试可显式 false
-    trusted-origin: '' # 完整可信前端Origin，如 https://prototype.example.com 或 http://localhost:5173
+PROTOTYPEHUB_REVIEW_COOKIESECURE: 'true' # 仅 localhost HTTP 测试可显式 false
+PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN: '' # 完整可信前端 Origin，如 https://prototype.example.com

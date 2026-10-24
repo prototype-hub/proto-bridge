@@ -73,10 +73,14 @@ public class PrototypeReviewService {
                                                         guests.findById(session.getGuestId())
                                                                 .filter(
                                                                         guest ->
-                                                                                share.getProjectId()
-                                                                                        .equals(
-                                                                                                guest
-                                                                                                        .getProjectId()))
+                                                                                !Boolean.FALSE
+                                                                                                .equals(
+                                                                                                        guest
+                                                                                                                .getEnabled())
+                                                                                        && share.getProjectId()
+                                                                                                .equals(
+                                                                                                        guest
+                                                                                                                .getProjectId()))
                                                                 .map(
                                                                         guest ->
                                                                                 context(
@@ -150,7 +154,9 @@ public class PrototypeReviewService {
             PreparedCode code) {
         long now = System.currentTimeMillis();
         String email = PrototypeReviewKeys.email(input.email());
-        return useRate(share.getProjectId(), email, now)
+        return guestEnabled(share.getProjectId(), email)
+                .flatMap(enabled -> enabled ? Mono.empty() : Mono.error(denied()))
+                .then(useRate(share.getProjectId(), email, now))
                 .then(
                         challenges
                                 .createDelete()
@@ -209,20 +215,35 @@ public class PrototypeReviewService {
                 .switchIfEmpty(Mono.error(PrototypeReviewService::denied))
                 .flatMap(
                         share ->
-                                challenges
-                                        .createUpdate()
-                                        .set(PrototypeReviewChallengeEntity::getDelivered, true)
-                                        .where(
-                                                PrototypeReviewChallengeEntity::getId,
-                                                pending.getId())
-                                        .and(
-                                                PrototypeReviewChallengeEntity::getCodeHash,
-                                                pending.getCodeHash())
-                                        .and(PrototypeReviewChallengeEntity::getConsumed, false)
-                                        .gt(
-                                                PrototypeReviewChallengeEntity::getExpiresAt,
-                                                System.currentTimeMillis())
-                                        .execute())
+                                guestEnabled(share.getProjectId(), pending.getEmail())
+                                        .flatMap(
+                                                enabled ->
+                                                        enabled
+                                                                ? Mono.empty()
+                                                                : Mono.error(denied())))
+                .then(
+                        Mono.defer(
+                                () ->
+                                        challenges
+                                                .createUpdate()
+                                                .set(
+                                                        PrototypeReviewChallengeEntity
+                                                                ::getDelivered,
+                                                        true)
+                                                .where(
+                                                        PrototypeReviewChallengeEntity::getId,
+                                                        pending.getId())
+                                                .and(
+                                                        PrototypeReviewChallengeEntity::getCodeHash,
+                                                        pending.getCodeHash())
+                                                .and(
+                                                        PrototypeReviewChallengeEntity::getConsumed,
+                                                        false)
+                                                .gt(
+                                                        PrototypeReviewChallengeEntity
+                                                                ::getExpiresAt,
+                                                        System.currentTimeMillis())
+                                                .execute()))
                 .flatMap(count -> count == 1 ? Mono.empty() : Mono.error(codeInvalid()))
                 .as(transactions::transactional)
                 .then();
@@ -306,6 +327,8 @@ public class PrototypeReviewService {
                                                 before.getRevisionId(),
                                                 cookie,
                                                 System.currentTimeMillis()))
+                // 与管理启停共享项目锁；恢复访客也不能让被删除的验证码重新出现。
+                .filterWhen(current -> guestEnabled(share.getProjectId(), current.getEmail()))
                 .flatMap(
                         current -> {
                             if (!correct)
@@ -346,6 +369,8 @@ public class PrototypeReviewService {
                                     guest.setProjectId(share.getProjectId());
                                     guest.setEmail(challenge.getEmail());
                                     guest.setCreateTime(now);
+                                    guest.setEnabled(true);
+                                    guest.setConfigVersion(0L);
                                     return Mono.just(guest);
                                 }))
                 .flatMap(
@@ -431,6 +456,13 @@ public class PrototypeReviewService {
                                 access.lockProject(before.getProjectId())
                                         .then(access.lockVersion(before.getVersionId()))
                                         .then(requireScope(token, revisionId, key)));
+    }
+
+    /** 无访客行表示尚未完成首次验证；历史行的空状态继续视为启用。 */
+    private Mono<Boolean> guestEnabled(String projectId, String email) {
+        return guests.findById(PrototypeReviewKeys.guest(projectId, email))
+                .map(guest -> !Boolean.FALSE.equals(guest.getEnabled()))
+                .defaultIfEmpty(true);
     }
 
     private Mono<Void> useRate(String projectId, String email, long now) {

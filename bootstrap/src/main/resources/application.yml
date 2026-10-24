@@ -13,6 +13,34 @@ spring: # Spring 配置
     web-application-type: reactive # Web 应用类型
   jackson:
     time-zone: ${APP_TIME_ZONE} # 日期时区
+  mail: # 可选：公开分享邮箱身份的验证码客户端，host 为空时不启用
+    host: ${SMTP_HOST:}
+    port: ${SMTP_PORT:587}
+    username: ${SMTP_USERNAME:}
+    password: ${SMTP_PASSWORD:} # 仅从环境变量或本地私密配置读取
+    protocol: ${SMTP_PROTOCOL:smtp} # SMTPS 通常配合端口 465
+    default-encoding: ${SMTP_DEFAULT_ENCODING:UTF-8}
+    test-connection: false # 不在启动时连接邮件服务
+    properties:
+      mail.smtp.from: ${SMTP_FROM:} # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.auth: ${SMTP_AUTH:true}
+      mail.smtp.starttls.enable: ${SMTP_STARTTLS_ENABLE:true}
+      mail.smtp.starttls.required: ${SMTP_STARTTLS_REQUIRED:true}
+      mail.smtp.ssl.enable: ${SMTP_SSL_ENABLE:false}
+      mail.smtp.ssl.checkserveridentity: ${SMTP_CHECK_SERVER_IDENTITY:true}
+      mail.smtp.connectiontimeout: ${SMTP_CONNECTION_TIMEOUT:5000} # 毫秒，必须为正整数
+      mail.smtp.timeout: ${SMTP_READ_TIMEOUT:5000}
+      mail.smtp.writetimeout: ${SMTP_WRITE_TIMEOUT:5000}
+      mail.smtp.localhost: ${SMTP_LOCALHOST:localhost} # EHLO 身份，避免默认本机反向 DNS
+      mail.smtps.auth: ${SMTP_AUTH:true}
+      mail.smtps.starttls.enable: ${SMTPS_STARTTLS_ENABLE:false}
+      mail.smtps.starttls.required: ${SMTPS_STARTTLS_REQUIRED:false}
+      mail.smtps.ssl.enable: ${SMTPS_SSL_ENABLE:true}
+      mail.smtps.ssl.checkserveridentity: ${SMTP_CHECK_SERVER_IDENTITY:true}
+      mail.smtps.connectiontimeout: ${SMTP_CONNECTION_TIMEOUT:5000}
+      mail.smtps.timeout: ${SMTP_READ_TIMEOUT:5000}
+      mail.smtps.writetimeout: ${SMTP_WRITE_TIMEOUT:5000}
+      mail.smtps.localhost: ${SMTP_LOCALHOST:localhost}
   r2dbc: # R2DBC 配置
     url: ${DATABASE_R2DBC_URL} # pg数据库连接地址
     username: ${DATABASE_USER} # 数据库用户名
@@ -67,6 +95,9 @@ management: # 管理端配置
         enabled: true # 是否启用探针
       show-details: never # 是否显示详细信息
 prototype-hub: # PrototypeHub 配置
+  review: # 邮箱身份 Cookie 和可信前端配置
+    cookie-secure: ${PROTOTYPEHUB_REVIEW_COOKIESECURE:true} # 仅本地 HTTP 测试可设 false
+    trusted-origin: ${PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN:} # 如 https://prototype.example.com，留空使用请求 URI 的源
   storage: # 存储配置
     root: ${PROTOTYPE_HUB_STORAGE_ROOT} # 存储根目录
     max-upload-size-mb: 500 # 最大上传大小 MB

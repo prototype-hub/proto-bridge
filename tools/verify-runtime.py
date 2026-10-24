@@ -315,11 +315,15 @@ class RuntimeCheck:
                 'PROTOTYPEHUB_REVIEW_COOKIESECURE': 'false'})
             if self.ui_port:
                 environment['PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN'] = 'http://127.0.0.1:' + str(self.ui_port)
+        command = [str(self.args.java), '-Xms128m', '-Xmx512m', '-jar', str(self.args.jar),
+                   '--server.address=127.0.0.1', '--prototype-hub.cleanup.interval-ms=250']
+        if self.mailbox:
+            # The disposable loopback receiver has no authentication/TLS. Never weaken deployed defaults.
+            command.extend('--spring.mail.properties.mail.smtp.' + key + '=false'
+                           for key in ('auth', 'starttls.enable', 'starttls.required', 'ssl.enable'))
         output = (working_directory / 'process.log').open('wb')
         try:
-            process = subprocess.Popen([str(self.args.java), '-Xms128m', '-Xmx512m', '-jar',
-                                        str(self.args.jar), '--server.address=127.0.0.1',
-                                        '--prototype-hub.cleanup.interval-ms=250'],
+            process = subprocess.Popen(command,
                                        cwd=working_directory, env=environment,
                                        stdout=output, stderr=subprocess.STDOUT,
                                        start_new_session=True)
@@ -597,7 +601,63 @@ class RuntimeCheck:
         self.report['reviewIdentity'] = {'localSmtpAccepted': True, 'mailboxOnlyVerification': True,
                                          'noInternalAccountCreated': True,
                                          'cookiePathAndFlagsVerified': True}
-        return {'grant': grant, 'cookie': cookie, 'guestId': identity['guestId']}
+        fixture = {'grant': grant, 'cookie': cookie, 'guestId': identity['guestId'],
+                   'projectId': version['projectId']}
+        self.verify_review_guest_control(api, fixture, recipient)
+        return fixture
+
+    def verify_review_guest_control(self, api, fixture, recipient):
+        """Exercise actual guest revocation before checking restart/replica/restore persistence."""
+        grant = fixture['grant']
+        path = '/api/prototype-hub/projects/' + fixture['projectId'] + '/review-guests'
+        page = api.request('POST', path + '/_query', {'pageIndex': 0, 'pageSize': 20})
+        row = next((item for item in page['data'] if item['id'] == fixture['guestId']), None)
+        require(row is not None and row['enabled'] and row['maskedEmail'] != recipient and
+                recipient not in json.dumps(page) and row['verificationLevel'] == 'email',
+                'Managed guest page is missing or discloses a full mailbox')
+        reset = "update p_review_rate set next_allowed_at=0 where project_id=:'project';"
+        self.sql('runtime_source', reset, variables={'project': fixture['projectId']})
+        anonymous, anonymous_cookie = self.review_call(api, grant, 'context', {})
+        pending, anonymous_cookie = self.review_call(api, grant, 'challenges',
+            {'email': recipient, 'displayName': 'Local mailbox reviewer'},
+            cookie=anonymous_cookie, csrf=anonymous['csrfToken'])
+        old_mail = self.mailbox.latest(recipient)
+        require(old_mail is not None, 'Pending revocation fixture mail was not received')
+        endpoint = path + '/' + fixture['guestId'] + '/enabled'
+        disabled = api.request('PUT', endpoint, {'enabled': False, 'expectedVersion': row['configVersion']})
+        require(not disabled['enabled'] and disabled['configVersion'] == row['configVersion'] + 1,
+                'Guest disable did not advance the authoritative state')
+        old_cookie = fixture['cookie']
+        context, _ = self.review_call(api, grant, 'context', {}, cookie=old_cookie)
+        require(context['session'] is None, 'Disabled guest retained its old session')
+        self.review_call(api, grant, 'challenges',
+            {'email': recipient, 'displayName': 'Local mailbox reviewer'},
+            cookie=anonymous_cookie, csrf=anonymous['csrfToken'], expected=403)
+        restored = api.request('PUT', endpoint,
+                              {'enabled': True, 'expectedVersion': disabled['configVersion']})
+        require(restored['enabled'] and restored['configVersion'] == disabled['configVersion'] + 1,
+                'Guest restore did not advance the authoritative state')
+        context, _ = self.review_call(api, grant, 'context', {}, cookie=old_cookie)
+        require(context['session'] is None, 'Restoring a guest resurrected its old cookie')
+        self.review_call(api, grant, 'verify',
+            {'challengeId': pending['challengeId'], 'code': old_mail['code']},
+            cookie=anonymous_cookie, csrf=anonymous['csrfToken'], expected=400)
+        self.sql('runtime_source', reset, variables={'project': fixture['projectId']})
+        fresh, fresh_cookie = self.review_call(api, grant, 'context', {})
+        challenge, fresh_cookie = self.review_call(api, grant, 'challenges',
+            {'email': recipient, 'displayName': 'Local mailbox reviewer', 'company': 'Original fixture'},
+            cookie=fresh_cookie, csrf=fresh['csrfToken'])
+        mail = self.mailbox.latest(recipient)
+        require(mail is not None, 'Fresh verification mail was not received after guest restore')
+        verified, fresh_cookie = self.review_call(api, grant, 'verify',
+            {'challengeId': challenge['challengeId'], 'code': mail['code']},
+            cookie=fresh_cookie, csrf=fresh['csrfToken'])
+        require(verified['session'] and verified['session']['guestId'] == fixture['guestId'],
+                'Fresh verification after restore did not recover the same project guest')
+        fixture['cookie'] = fresh_cookie
+        self.report['reviewIdentity']['guestManagement'] = {
+            'maskedPage': True, 'disableAndRestore': True, 'oldCookieAndCodeRejected': True,
+            'newOtpRequiredForSameIdentity': True}
 
     def verify_review_identity(self, api, fixture):
         context, _ = self.review_call(api, fixture['grant'], 'context', {}, cookie=fixture['cookie'])
