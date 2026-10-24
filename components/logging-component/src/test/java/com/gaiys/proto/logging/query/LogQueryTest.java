@@ -6,6 +6,7 @@ import co.elastic.clients.elasticsearch._types.query_dsl.Query;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.logging.document.LogDocument;
 import com.gaiys.proto.logging.translator.LogQueryTranslator;
+import java.time.Duration;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -135,6 +136,83 @@ class LogQueryTest {
             var query = mapper.readValue(value, LogQuery.class);
             assertThrows(IllegalArgumentException.class, query::validate);
         }
+    }
+
+    private LogQuery like(String operator, String pattern) {
+        var term = new LogQuery.Term();
+        term.setColumn("message");
+        term.setTermType(operator);
+        term.setValue(mapper.valueToTree(pattern));
+        var query = new LogQuery();
+        query.setTerms(List.of(term));
+        return query;
+    }
+
+    @Test
+    void legalHostileLikePatternCompletesWithoutBacktracking() {
+        var predicate = LogQueryTranslator.memory("system", like("like", "%a".repeat(18) + "b"));
+        var document = LogDocument.builder().kind("system").message("a".repeat(30) + "c").build();
+        assertTimeout(
+                Duration.ofSeconds(1),
+                () -> {
+                    for (int index = 0; index < 100; index++) assertFalse(predicate.test(document));
+                });
+    }
+
+    @Test
+    void likeMatchesNewlinesCodePointsAndLiteralWildcards() {
+        for (var row :
+                List.of(
+                        List.of("%failed%", "start\nfailed\nend"),
+                        List.of("a_b", "a\nb"),
+                        List.of("a_b", "a😀b"),
+                        List.of("%C:\\work%", "at C:\\work\\file"),
+                        List.of("%a*?b%", "a*?b"),
+                        List.of("%%_%%", "\n"),
+                        List.of("", ""),
+                        List.of("%%", ""))) {
+            var doc = LogDocument.builder().kind("system").message(row.get(1)).build();
+            assertTrue(
+                    LogQueryTranslator.memory("system", like("like", row.getFirst())).test(doc),
+                    row.toString());
+            assertFalse(
+                    LogQueryTranslator.memory("system", like("nlike", row.getFirst())).test(doc),
+                    row.toString());
+        }
+        assertFalse(
+                LogQueryTranslator.memory("system", like("like", "a*?b"))
+                        .test(LogDocument.builder().kind("system").message("axxb").build()));
+        assertFalse(
+                LogQueryTranslator.memory("system", like("like", "_"))
+                        .test(LogDocument.builder().kind("system").message("").build()));
+        assertTrue(
+                LogQueryTranslator.memory("system", like("nlike", "anything"))
+                        .test(LogDocument.builder().kind("system").build()));
+    }
+
+    @Test
+    void elasticLikeEscapesBackslashesBeforeLiteralWildcardCharacters() {
+        var query = like("like", "%C:\\work\\a*?_%");
+        String wildcard =
+                LogQueryTranslator.elastic("system", query)
+                        .bool()
+                        .filter()
+                        .get(1)
+                        .wildcard()
+                        .value();
+        assertEquals("*C:\\\\work\\\\a\\*\\??*", wildcard);
+        var negative = like("nlike", "%C:\\work%");
+        assertEquals(
+                "*C:\\\\work*",
+                LogQueryTranslator.elastic("system", negative)
+                        .bool()
+                        .filter()
+                        .get(1)
+                        .bool()
+                        .mustNot()
+                        .getFirst()
+                        .wildcard()
+                        .value());
     }
 
     @Test

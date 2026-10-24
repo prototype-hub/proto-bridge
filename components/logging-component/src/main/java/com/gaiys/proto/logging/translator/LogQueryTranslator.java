@@ -8,7 +8,6 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.function.Predicate;
-import java.util.regex.Pattern;
 
 public final class LogQueryTranslator {
     private LogQueryTranslator() {}
@@ -104,6 +103,7 @@ public final class LogQueryTranslator {
         if (op.equals("like")) {
             String wildcard =
                     value.asText()
+                            .replace("\\", "\\\\")
                             .replace("*", "\\*")
                             .replace("?", "\\?")
                             .replace("%", "*")
@@ -150,25 +150,40 @@ public final class LogQueryTranslator {
 
     public static Predicate<LogDocument> memory(String kind, LogQuery request) {
         request.validate();
-        return doc -> kind.equals(doc.getKind()) && matchGroup(doc, request.getTerms());
+        Predicate<LogDocument> conditions = memoryGroup(request.getTerms());
+        return doc -> kind.equals(doc.getKind()) && conditions.test(doc);
     }
 
-    private static boolean matchGroup(LogDocument doc, List<LogQuery.Term> terms) {
-        return terms.isEmpty()
-                || conjunctions(terms).stream()
-                        .anyMatch(
-                                group ->
-                                        group.stream()
-                                                .allMatch(
-                                                        term ->
-                                                                (term.getColumn() == null
-                                                                                || match(doc, term))
-                                                                        && matchGroup(
-                                                                                doc,
-                                                                                term.getTerms())));
+    /** 条件树和 LIKE 模式只在一次查询建立时解析，不按每条日志重复构造。 */
+    private static Predicate<LogDocument> memoryGroup(List<LogQuery.Term> terms) {
+        List<List<Predicate<LogDocument>>> alternatives = new ArrayList<>();
+        for (var conjunction : conjunctions(terms)) {
+            List<Predicate<LogDocument>> required = new ArrayList<>();
+            for (var term : conjunction) {
+                Predicate<LogDocument> nested = memoryGroup(term.getTerms());
+                int[] pattern =
+                        ("like".equals(term.getTermType()) || "nlike".equals(term.getTermType()))
+                                        && term.getColumn() != null
+                                ? term.getValue().asText().codePoints().toArray()
+                                : null;
+                required.add(
+                        doc ->
+                                (term.getColumn() == null || match(doc, term, pattern))
+                                        && nested.test(doc));
+            }
+            alternatives.add(required);
+        }
+        return doc ->
+                alternatives.isEmpty()
+                        || alternatives.stream()
+                                .anyMatch(
+                                        group ->
+                                                group.stream()
+                                                        .allMatch(
+                                                                predicate -> predicate.test(doc)));
     }
 
-    private static boolean match(LogDocument doc, LogQuery.Term term) {
+    private static boolean match(LogDocument doc, LogQuery.Term term, int[] pattern) {
         String actual = doc.field(term.getColumn()), op = term.getTermType();
         var value = term.getValue();
         if (op.equals("isnull")) return actual == null;
@@ -177,15 +192,7 @@ public final class LogQueryTranslator {
         return switch (op) {
             case "eq" -> actual.equals(value.asText());
             case "not" -> !actual.equals(value.asText());
-            case "like", "nlike" -> {
-                StringBuilder pattern = new StringBuilder("^");
-                for (char c : value.asText().toCharArray())
-                    pattern.append(
-                            c == '%' ? ".*" : c == '_' ? "." : Pattern.quote(String.valueOf(c)));
-                pattern.append('$');
-                boolean matched = actual.matches(pattern.toString());
-                yield op.equals("like") == matched;
-            }
+            case "like", "nlike" -> op.equals("like") == like(actual, pattern);
             case "in", "nin" -> {
                 boolean found = false;
                 for (var entry : value) if (actual.equals(entry.asText())) found = true;
@@ -203,6 +210,30 @@ public final class LogQueryTranslator {
             case "lte" -> compare(actual, value.asText(), term.getColumn()) <= 0;
             default -> false;
         };
+    }
+
+    /** 无正则回溯：按模式长度保留一行状态，时间 O(文本码点数 × 有界模式码点数)。 */
+    private static boolean like(String actual, int[] pattern) {
+        boolean[] matched = new boolean[pattern.length + 1];
+        matched[0] = true;
+        for (int index = 1; index <= pattern.length; index++)
+            matched[index] = pattern[index - 1] == '%' && matched[index - 1];
+        for (int offset = 0; offset < actual.length(); ) {
+            int codePoint = actual.codePointAt(offset);
+            offset += Character.charCount(codePoint);
+            boolean diagonal = matched[0];
+            matched[0] = false;
+            for (int index = 1; index <= pattern.length; index++) {
+                boolean previous = matched[index];
+                int token = pattern[index - 1];
+                matched[index] =
+                        token == '%'
+                                ? previous || matched[index - 1]
+                                : diagonal && (token == '_' || token == codePoint);
+                diagonal = previous;
+            }
+        }
+        return matched[pattern.length];
     }
 
     private static int compare(String a, String b, String field) {

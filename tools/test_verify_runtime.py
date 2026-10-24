@@ -493,6 +493,119 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
         self.assertIn('project=' + hostile_id, command.call_args.args[0])
         self.assertEqual(b"select :'project';", command.call_args.kwargs['input_data'])
 
+    def recovered_fixture(self):
+        public = self.fixture['publicGrants'][0]
+        return {'project': {'id': 'recovered-project'}, 'projectName': 'Recovered',
+                'projectKey': 'recovered-project-key', 'original': {'id': 'recovered-version', 'revisionId': 'r1'},
+                'current': {'id': 'recovered-version', 'revisionId': 'r2'},
+                'versionKey': 'recovered-version-key', 'originalHashes': {'entry': 'original'},
+                'currentHashes': {'entry': 'current'}, 'oldShare': {'id': 'old', 'token': 'private-old'},
+                'oldPublic': public, 'oldInternal': self.fixture['internalGrants'][0],
+                'newShare': {'id': 'new', 'token': 'private-new'}, 'files': self.fixture['files'],
+                'state': {name: {'count': count, 'contentMd5': 'b' * 32}
+                          for name, count in (('projects', 1), ('versions', 1), ('revisions', 2),
+                                              ('oldShares', 1), ('newShares', 1), ('receipts', 2))}
+                | {'invalidReferences': 0}}
+
+    def test_recovered_state_rejects_revived_old_share_and_missing_receipt(self):
+        fixture = self.recovered_fixture()
+        for table in ('projects', 'versions', 'revisions', 'oldShares', 'newShares', 'receipts'):
+            broken = dict(fixture['state'], **{table: {'count': 0, 'contentMd5': 'b' * 32}})
+            with self.subTest(table=table), patch.object(self.check, 'sql', return_value=json.dumps(broken)):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'changed retained'):
+                    self.check.restored_fixture_state('disposable', fixture)
+        with patch.object(self.check, 'sql', return_value=json.dumps(
+                dict(fixture['state'], invalidReferences=1))):
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'receipt revision binding'):
+                self.check.restored_fixture_state('disposable', fixture)
+
+    def test_recovered_verification_reads_old_capabilities_anonymously_and_rejects_file_loss(self):
+        fixture = self.recovered_fixture()
+        def request(identity, method, path, payload=None, expected=200, **options):
+            if path.endswith('/shares'):
+                return [{'id': 'old', 'revoked': True, 'enabled': False}]
+            return {}
+        self.api.project = unittest.mock.Mock(return_value=fixture['project'])
+        self.api.usage = unittest.mock.Mock(return_value={'projects': {'used': 5}})
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=request) as calls, \
+                patch.object(self.check, 'verify_revisions'), patch.object(self.check, 'verify_share'), \
+                patch.object(self.check, 'restored_fixture_state', return_value=fixture['state']):
+            self.check.verify_restored_fixture(self.api, fixture, self.root / 'unused.zip',
+                                               self.storage, 'disposable')
+        denied = [call for call in calls.call_args_list if call.kwargs.get('expected') in (403, 404)]
+        self.assertEqual(7, len(denied))
+        self.assertTrue(all(call.args[0].token is None for call in denied))
+        self.assertNotIn('private-', json.dumps(self.check.report))
+        (self.storage / 'retained.html').unlink()
+        with patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
+                patch.object(self.check, 'verify_revisions'), patch.object(self.check, 'verify_share'), \
+                patch.object(self.check, 'restored_fixture_state', return_value=fixture['state']):
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'file identities or bytes'):
+                self.check.verify_restored_fixture(self.api, fixture, self.root / 'unused.zip',
+                                                   self.storage, 'disposable')
+
+    def test_recovered_verification_rejects_unchanged_file_graph_with_revived_share(self):
+        fixture = self.recovered_fixture()
+        self.api.project = unittest.mock.Mock(return_value=fixture['project'])
+        self.api.usage = unittest.mock.Mock(return_value={'projects': {'used': 2}})
+        with patch.object(runtime.Api, 'request', return_value=[{'id': 'old', 'revoked': False, 'enabled': True}]), \
+                patch.object(self.check, 'verify_revisions'), patch.object(self.check, 'verify_share') as new_share:
+            with self.assertRaisesRegex(runtime.VerificationFailure, 're-enabled a retained share'):
+                self.check.verify_restored_fixture(self.api, fixture, self.root / 'unused.zip',
+                                                   self.storage, 'disposable')
+        new_share.assert_not_called()
+
+    def test_recovery_fixture_rejects_cascading_or_replaced_identity_and_pointer(self):
+        failures = {'cascade': 'also restored a deleted child', 'new-project': 'Project recovery replaced',
+                    'new-version': 'Version recovery replaced', 'pointer': 'immutable current pointer'}
+        for failure in (*failures, None):
+            with self.subTest(failure=failure):
+                storage = self.storage / str(failure)
+                storage.mkdir()
+                def write(revision):
+                    target = storage / revision / 'site/index.html'
+                    target.parent.mkdir(parents=True)
+                    target.write_text(revision)
+                def project(name, key, expected=200):
+                    return {'code': 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT'} if expected == 409 else {'id': 'project'}
+                def upload(project, archive, key, expected=200):
+                    if expected == 409:
+                        return {'code': 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT'}
+                    write('r1')
+                    return {'id': 'version', 'revisionId': 'r1'}
+                def replace(version, archive):
+                    write('r2')
+                    return {'id': 'version', 'revisionId': 'r2'}
+                def request(identity, method, path, payload=None, expected=200, **options):
+                    if expected in (404, 409):
+                        return {}
+                    if '/_deleted/_query' in path:
+                        return {'data': [] if failure == 'cascade' else [{'id': 'version', 'deletedTime': 1}]}
+                    if path.endswith('/projects/project/_restore'):
+                        return {'id': 'different' if failure == 'new-project' else 'project'}
+                    if path.endswith('/versions/version/_restore'):
+                        return {'id': 'different' if failure == 'new-version' else 'version',
+                                'currentRevisionId': 'r1' if failure == 'pointer' else 'r2'}
+                    if path.endswith('/shares'):
+                        return {'id': 'share', 'token': 'private-share'}
+                    return {'previewUrl': '/api/private/index.html', 'runtimeBaseUrl': '/api/private',
+                            'pagesUrl': '/api/private/pages'}
+                with patch.object(self.api, 'project', side_effect=project), \
+                        patch.object(self.api, 'upload', side_effect=upload), \
+                        patch.object(self.api, 'replace', side_effect=replace), \
+                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}} for used in (0, 0, 1)]), \
+                        patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
+                        patch.object(self.check, 'preview', return_value={'entry': 'hash'}), \
+                        patch.object(self.check, 'restored_fixture_state', return_value={}):
+                    if failure:
+                        with self.assertRaisesRegex(runtime.VerificationFailure, failures[failure]):
+                            self.check.create_restored_fixture(self.api, self.root / 'unused.zip',
+                                                               self.root / 'unused.zip', storage)
+                    else:
+                        fixture = self.check.create_restored_fixture(self.api, self.root / 'unused.zip',
+                                                                    self.root / 'unused.zip', storage)
+                        self.assertEqual(2, len(fixture['files']))
+
 
 @unittest.skipUnless(os.environ.get('PROTO_RUNTIME_PLAYWRIGHT_DIR'),
                      'Set PROTO_RUNTIME_PLAYWRIGHT_DIR to an installed frontend for real CLI probes')

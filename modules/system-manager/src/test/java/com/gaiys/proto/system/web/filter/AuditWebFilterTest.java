@@ -20,7 +20,13 @@ import reactor.test.StepVerifier;
 /** 验证分页、密码确认不产生写入审计，并保留项目、版本、分享写入及请求体脱敏边界。 */
 class AuditWebFilterTest {
     @ParameterizedTest
-    @ValueSource(strings = {"/prototype-hub/projects/_query", "/prototype-hub/versions/_query"})
+    @ValueSource(
+            strings = {
+                "/prototype-hub/projects/_query",
+                "/prototype-hub/versions/_query",
+                "/prototype-hub/projects/_deleted/_query",
+                "/prototype-hub/versions/_deleted/_query"
+            })
     void pagedReadsContinueWithRequestIdWithoutCreatingWriteAuditEvents(String path) {
         var dispatcher = mock(AuditDispatcher.class);
         var filter = new AuditWebFilter(dispatcher);
@@ -70,6 +76,8 @@ class AuditWebFilterTest {
     @ParameterizedTest
     @CsvSource({
         "POST,/prototype-hub/projects,project.create,project,",
+        "POST,/prototype-hub/projects/project-id/_restore,project.restore,project,project-id",
+        "POST,/prototype-hub/versions/version-id/_restore,version.restore,version,version-id",
         "POST,/prototype-hub/projects/project-id/versions,version.upload,version,",
         "POST,/prototype-hub/versions/version-id/shares,share.create,share,",
         "POST,/prototype-hub/versions/version-id/preview-session,preview.authorize,version,version-id",

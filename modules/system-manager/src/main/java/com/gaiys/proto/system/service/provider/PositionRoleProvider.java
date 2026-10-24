@@ -1,7 +1,10 @@
 package com.gaiys.proto.system.service.provider;
 
+import com.gaiys.proto.system.entity.PositionEntity;
 import com.gaiys.proto.system.service.PositionService;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Objects;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.web.authorization.DefaultDimensionType;
 import org.hswebframework.web.authorization.Dimension;
@@ -38,14 +41,29 @@ public class PositionRoleProvider implements DimensionProvider {
                 .map(DimensionUserEntity::getDimensionId)
                 .collectList()
                 .filter(ids -> !ids.isEmpty())
-                .flatMapMany(positions::findById)
-                .expand(
-                        p ->
-                                p.getParentId() == null || p.getParentId().isBlank()
-                                        ? Mono.empty()
-                                        : positions.findById(p.getParentId()))
-                .distinct(com.gaiys.proto.system.entity.PositionEntity::getId)
-                .take(200)
+                .flatMapMany(
+                        ids ->
+                                Flux.defer(
+                                        () -> {
+                                            var visited = new HashSet<String>();
+                                            // 去重必须截断展开本身；只在展开后 distinct 无法终止循环父级。
+                                            return positions
+                                                    .findById(ids)
+                                                    .expand(
+                                                            position ->
+                                                                    visited.add(position.getId())
+                                                                                    && position
+                                                                                                    .getParentId()
+                                                                                            != null
+                                                                                    && !position.getParentId()
+                                                                                            .isBlank()
+                                                                            ? positions.findById(
+                                                                                    position
+                                                                                            .getParentId())
+                                                                            : Mono.empty())
+                                                    .distinct(PositionEntity::getId)
+                                                    .take(200);
+                                        }))
                 .collectList()
                 .filter(rows -> !rows.isEmpty())
                 .flatMapMany(
@@ -58,13 +76,19 @@ public class PositionRoleProvider implements DimensionProvider {
                                                                     ? java.util.stream.Stream
                                                                             .empty()
                                                                     : p.getRoles().stream())
+                                            .filter(Objects::nonNull)
                                             .map(role -> role.get("id"))
+                                            .filter(id -> id != null && !id.isBlank())
                                             .distinct()
                                             .toList();
                             List<String> orgIds =
-                                    rows.stream().map(p -> p.getOrgId()).distinct().toList();
+                                    rows.stream()
+                                            .map(PositionEntity::getOrgId)
+                                            .filter(id -> id != null && !id.isBlank())
+                                            .distinct()
+                                            .toList();
                             List<String> positionIds =
-                                    rows.stream().map(p -> p.getId()).distinct().toList();
+                                    rows.stream().map(PositionEntity::getId).toList();
                             return Flux.concat(
                                     roleIds.isEmpty()
                                             ? Flux.empty()

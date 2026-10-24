@@ -82,6 +82,22 @@ public class PrototypeVersionController {
         return versions.responses(access.readableVersions(projectId, input));
     }
 
+    @PostMapping("/versions/_deleted/_query")
+    @QueryAction
+    @Operation(summary = "分页查询活动项目下可恢复的已删除版本", description = "仅当前项目编辑者、所有者或有效管理员可见")
+    public Mono<PagerResult<VersionResponse>> deleted(
+            @RequestParam(required = false) String projectId,
+            @Valid @RequestBody PrototypeListQueryRequest input) {
+        return versions.responses(access.deletedVersions(projectId, input));
+    }
+
+    @PostMapping("/versions/{id}/_restore")
+    @SaveAction
+    @Operation(summary = "恢复已删除版本", description = "父项目必须活动且当前角色可编辑，重验版本额度；旧分享及预览授权不会复活")
+    public Mono<VersionResponse> restore(@PathVariable String id) {
+        return deletion.restoreVersion(id).flatMap(versions::response);
+    }
+
     /** 版本容量沿用版本查询权限；项目存在性由服务校验，不放宽为项目查询权限。 */
     @GetMapping("/versions/_usage")
     @QueryAction
@@ -206,7 +222,7 @@ public class PrototypeVersionController {
 
     @DeleteMapping("/versions/{id}")
     @DeleteAction
-    @Operation(summary = "软删除原型版本并撤销分享", description = "释放活动版本占用并阻断访问，保留不可变修订、分享引用及文件；不提供恢复入口")
+    @Operation(summary = "软删除原型版本并撤销分享", description = "释放活动版本占用并阻断访问，保留不可变修订、分享引用及文件，可从回收站单独恢复")
     public Mono<VersionResponse> delete(@PathVariable String id) {
         return deletion.deleteVersion(id).flatMap(versions::response);
     }

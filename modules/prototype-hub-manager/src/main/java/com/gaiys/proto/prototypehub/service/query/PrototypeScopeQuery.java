@@ -30,7 +30,7 @@ public class PrototypeScopeQuery {
     private final QueryHelper queries;
 
     public Flux<ProjectResponse> projects(String userId, boolean administrator) {
-        return projectQuery(userId, administrator, null)
+        return projectQuery(userId, administrator, null, false)
                 .orderByDesc(PrototypeProjectEntity::getCreateTime)
                 .orderByAsc(PrototypeProjectEntity::getId)
                 .fetch()
@@ -40,7 +40,20 @@ public class PrototypeScopeQuery {
     /** 授权与关键词均在 COUNT 和分页前注入，同一时间值由 id 保持稳定顺序。 */
     public Mono<PagerResult<ProjectResponse>> projects(
             String userId, boolean administrator, PrototypeListQueryRequest request) {
-        var query = projectQuery(userId, administrator, pageParameter(request));
+        return projects(userId, administrator, request, false);
+    }
+
+    public Mono<PagerResult<ProjectResponse>> deletedProjects(
+            String userId, boolean administrator, PrototypeListQueryRequest request) {
+        return projects(userId, administrator, request, true);
+    }
+
+    private Mono<PagerResult<ProjectResponse>> projects(
+            String userId,
+            boolean administrator,
+            PrototypeListQueryRequest request,
+            boolean deleted) {
+        var query = projectQuery(userId, administrator, pageParameter(request), deleted);
         String keyword = keyword(request);
         if (!keyword.isEmpty())
             query.where(
@@ -66,7 +79,7 @@ public class PrototypeScopeQuery {
     }
 
     private QueryHelper.JoinSpec<ProjectScope> projectQuery(
-            String userId, boolean administrator, QueryParamEntity page) {
+            String userId, boolean administrator, QueryParamEntity page, boolean deleted) {
         var query =
                 queries.select(ProjectScope.class)
                         .all(PrototypeProjectEntity.class, ProjectScope::setProject)
@@ -89,7 +102,11 @@ public class PrototypeScopeQuery {
                                                 UserEntity::getId,
                                                 PrototypeProjectEntity::getOwnerId));
         if (page != null) query.where(page);
-        applyScope(query, userId, administrator);
+        if (deleted) {
+            query.where(condition -> condition.notNull(PrototypeProjectEntity::getDeletedTime));
+            if (!administrator)
+                query.where(condition -> condition.is(PrototypeProjectEntity::getOwnerId, userId));
+        } else applyScope(query, userId, administrator, false);
         return query;
     }
 
@@ -106,7 +123,7 @@ public class PrototypeScopeQuery {
     }
 
     public Flux<PrototypeVersionEntity> versions(String userId, boolean administrator) {
-        return versionQuery(userId, administrator, null)
+        return versionQuery(userId, administrator, null, false)
                 .orderByDesc(PrototypeVersionEntity::getCreateTime)
                 .orderByAsc(PrototypeVersionEntity::getId)
                 .fetch()
@@ -119,7 +136,24 @@ public class PrototypeScopeQuery {
             boolean administrator,
             String projectId,
             PrototypeListQueryRequest request) {
-        var query = versionQuery(userId, administrator, pageParameter(request));
+        return versions(userId, administrator, projectId, request, false);
+    }
+
+    public Mono<PagerResult<PrototypeVersionEntity>> deletedVersions(
+            String userId,
+            boolean administrator,
+            String projectId,
+            PrototypeListQueryRequest request) {
+        return versions(userId, administrator, projectId, request, true);
+    }
+
+    private Mono<PagerResult<PrototypeVersionEntity>> versions(
+            String userId,
+            boolean administrator,
+            String projectId,
+            PrototypeListQueryRequest request,
+            boolean deleted) {
+        var query = versionQuery(userId, administrator, pageParameter(request), deleted);
         String keyword = keyword(request);
         if (!keyword.isEmpty())
             query.where(
@@ -140,7 +174,7 @@ public class PrototypeScopeQuery {
     }
 
     private QueryHelper.JoinSpec<VersionScope> versionQuery(
-            String userId, boolean administrator, QueryParamEntity page) {
+            String userId, boolean administrator, QueryParamEntity page, boolean deleted) {
         var query =
                 queries.select(VersionScope.class)
                         .all(PrototypeVersionEntity.class, VersionScope::setVersion)
@@ -161,13 +195,17 @@ public class PrototypeScopeQuery {
                                                         PrototypeProjectMemberEntity::getUserId,
                                                         userId));
         if (page != null) query.where(page);
-        query.where(condition -> condition.isNull(PrototypeVersionEntity::getDeletedTime));
-        applyScope(query, userId, administrator);
+        query.where(
+                condition -> {
+                    if (deleted) condition.notNull(PrototypeVersionEntity::getDeletedTime);
+                    else condition.isNull(PrototypeVersionEntity::getDeletedTime);
+                });
+        applyScope(query, userId, administrator, deleted);
         return query;
     }
 
     private static <T> void applyScope(
-            QueryHelper.JoinSpec<T> query, String userId, boolean administrator) {
+            QueryHelper.JoinSpec<T> query, String userId, boolean administrator, boolean editOnly) {
         // 删除状态约束也适用于 ADMIN，且必须在 COUNT/分页之前注入。
         query.where(condition -> condition.isNull(PrototypeProjectEntity::getDeletedTime));
         if (administrator) return;
@@ -183,7 +221,11 @@ public class PrototypeScopeQuery {
                                 .nest()
                                 .is(PrototypeProjectEntity::getOwnerId, userId)
                                 .or()
-                                .in(PrototypeProjectMemberEntity::getRole, "editor", "viewer")
+                                .in(
+                                        PrototypeProjectMemberEntity::getRole,
+                                        editOnly
+                                                ? new String[] {"editor"}
+                                                : new String[] {"editor", "viewer"})
                                 .end());
     }
 

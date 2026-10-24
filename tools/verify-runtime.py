@@ -721,6 +721,134 @@ SELECT json_build_object(
             'membershipLineageRetained': True, 'internalSessionsRemoved': True,
             'fileHashesVerified': True}
 
+    def create_restored_fixture(self, api, zip_path, replacement_zip, storage):
+        """Restore a separate graph; the deleted fixture remains a backup tombstone sample."""
+        occupied = api.usage()['projects']['used']
+        before_files = storage_manifest(storage)
+        project_key, version_key = uuid.uuid4().hex, uuid.uuid4().hex
+        name = 'Runtime recovered project'
+        project = api.project(name, project_key)
+        original = api.upload(project['id'], zip_path, version_key)
+        current = api.replace(original, replacement_zip)
+        original_hashes, current_hashes = self.preview(api, original), self.preview(api, current)
+        path = '/api/prototype-hub/versions/' + original['id']
+        old_internal = api.request('POST', path + '/preview-session')
+        old_share = api.request('POST', path + '/shares', {'password': self.share_password})
+        anonymous = Api(api.origin, self.secrets_seen)
+        old_public = anonymous.request('POST', '/api/prototype-hub/public/shares/' +
+                                       old_share['token'] + '/verify', {'password': self.share_password})
+        files = {name: digest for name, digest in storage_manifest(storage).items()
+                 if name not in before_files}
+        require(files, 'Recovered fixture has no files before deletion')
+        api.request('DELETE', path)
+        api.request('DELETE', '/api/prototype-hub/projects/' + project['id'])
+        require(api.usage()['projects']['used'] == occupied,
+                'Recovered fixture deletion did not release project capacity')
+        api.request('POST', path + '/_restore', expected=404)
+        require(api.project(name, project_key, expected=409).get('code') ==
+                'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT', 'Deleted recovery project replay was accepted')
+        require(api.upload(project['id'], zip_path, version_key, expected=409).get('code') ==
+                'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT', 'Deleted recovery version replay was accepted')
+        restored = api.request('POST', '/api/prototype-hub/projects/' + project['id'] + '/_restore')
+        require(restored['id'] == project['id'] and restored.get('deletedTime') is None,
+                'Project recovery replaced the identity or kept its tombstone')
+        api.request('GET', path, expected=404)
+        deleted = api.request('POST', '/api/prototype-hub/versions/_deleted/_query?projectId=' +
+                              project['id'], {'pageSize': 100})
+        require(any(row['id'] == original['id'] and row.get('deletedTime') is not None
+                    for row in deleted['data']), 'Parent recovery also restored a deleted child')
+        restored_version = api.request('POST', path + '/_restore')
+        require(restored_version['id'] == original['id'] and restored_version.get('deletedTime') is None
+                and restored_version['currentRevisionId'] == current['revisionId'],
+                'Version recovery replaced its identity or immutable current pointer')
+        require(api.usage()['projects']['used'] == occupied + 1,
+                'Recovery did not consume exactly one project slot')
+        api.request('POST', '/api/prototype-hub/projects/' + project['id'] + '/_restore', expected=409)
+        api.request('POST', path + '/_restore', expected=409)
+        new_share = api.request('POST', path + '/shares', {'password': self.share_password})
+        fixture = {'project': project, 'projectName': name, 'projectKey': project_key,
+                   'original': original, 'current': current, 'versionKey': version_key,
+                   'originalHashes': original_hashes, 'currentHashes': current_hashes,
+                   'oldShare': old_share, 'oldPublic': old_public, 'oldInternal': old_internal,
+                   'newShare': new_share, 'files': files}
+        fixture['state'] = self.restored_fixture_state('runtime_source', fixture)
+        return fixture
+
+    def restored_fixture_state(self, database, fixture):
+        # The snapshot excludes short-lived sessions: new previews may legitimately add them.
+        statement = """
+SELECT json_build_object(
+ 'projects',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(p) ORDER BY id)::text,'[]'))) FROM p_project p
+  WHERE id=:'project' AND deleted_time IS NULL),
+ 'versions',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::text,'[]'))) FROM p_version v
+  WHERE id=:'version' AND project_id=:'project' AND deleted_time IS NULL),
+ 'revisions',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,'[]'))) FROM p_revision r
+  WHERE version_id=:'version' AND project_id=:'project'),
+ 'oldShares',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))) FROM p_share s
+  WHERE id=:'old_share' AND project_id=:'project' AND version_id=:'version'
+  AND revoked=true AND enabled=false),
+ 'newShares',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(s) ORDER BY id)::text,'[]'))) FROM p_share s
+  WHERE id=:'new_share' AND project_id=:'project' AND version_id=:'version'
+  AND revoked=false AND enabled=true),
+ 'receipts',(SELECT json_build_object('count',count(*),'contentMd5',
+  md5(coalesce(jsonb_agg(to_jsonb(c) ORDER BY id)::text,'[]'))) FROM p_creation_receipt c
+  WHERE resource_id IN (:'project',:'version')),
+ 'invalidReferences',(SELECT count(*) FROM p_creation_receipt c
+  LEFT JOIN p_revision r ON r.id=c.revision_id WHERE c.resource_id=:'version'
+  AND (r.id IS NULL OR r.version_id<>c.resource_id OR r.project_id<>:'project')));
+"""
+        state = json.loads(self.sql(database, statement, variables={
+            'project': fixture['project']['id'], 'version': fixture['original']['id'],
+            'old_share': fixture['oldShare']['id'], 'new_share': fixture['newShare']['id']}))
+        for table, count in (('projects', 1), ('versions', 1), ('revisions', 2),
+                             ('oldShares', 1), ('newShares', 1), ('receipts', 2)):
+            require(state[table]['count'] == count, 'Recovered fixture changed retained ' + table)
+        require(state['invalidReferences'] == 0, 'Recovered fixture broke a receipt revision binding')
+        return state
+
+    def verify_restored_fixture(self, api, fixture, zip_path, storage, database):
+        project, original, current = fixture['project'], fixture['original'], fixture['current']
+        path = '/api/prototype-hub/versions/' + original['id']
+        project_usage = api.usage()['projects']['used']
+        require(api.project(fixture['projectName'], fixture['projectKey'])['id'] == project['id'],
+                'Recovered project creation replay changed its identity')
+        self.verify_revisions(api, project, original, current, zip_path, fixture['versionKey'],
+                              fixture['originalHashes'], fixture['currentHashes'])
+        require(api.usage()['projects']['used'] == project_usage,
+                'Recovered creation replay consumed project capacity')
+        anonymous = Api(api.origin, self.secrets_seen)
+        old_share = '/api/prototype-hub/public/shares/' + fixture['oldShare']['token']
+        anonymous.request('GET', old_share, expected=404)
+        anonymous.request('POST', old_share + '/verify', {'password': self.share_password}, expected=404)
+        for target in (fixture['oldPublic']['previewUrl'], fixture['oldPublic']['pagesUrl'],
+                       fixture['oldPublic']['runtimeBaseUrl'] + '/assets/style.css'):
+            anonymous.request('GET', target, expected=404)
+        for target in (fixture['oldInternal']['previewUrl'],
+                       fixture['oldInternal']['runtimeBaseUrl'] + '/assets/style.css'):
+            anonymous.request('GET', target, expected=403)
+        shares = api.request('GET', path + '/shares')
+        old = next((share for share in shares if share['id'] == fixture['oldShare']['id']), {})
+        require(old.get('revoked') is True and old.get('enabled') is False,
+                'Recovery re-enabled a retained share')
+        self.verify_share(api, fixture['newShare'], fixture['currentHashes'])
+        require(self.restored_fixture_state(database, fixture) == fixture['state'],
+                'Recovered identities, references or share policies changed')
+        files = storage_manifest(storage)
+        require(all(files.get(name) == digest for name, digest in fixture['files'].items()),
+                'Recovered fixture file identities or bytes changed')
+        self.report['recoveredDeletion'] = {
+            'projectCount': 1, 'versionCount': 1, 'revisionCount': 2,
+            'sameIdsAndCurrentPointerVerified': True, 'parentAndChildRestoredSeparately': True,
+            'oldInternalAndPublicGrantsRejected': True, 'newShareAndInternalPreviewVerified': True,
+            'originalCreationReplaysVerified': True, 'quotaReappliedWithoutReplayIncrease': True,
+            'stateAndReferenceHashesVerified': True, 'fileHashesVerified': True,
+            'retainedFileCount': len(fixture['files'])}
+
     def create_system_files(self, api):
         profile = api.request('GET', '/api/user/detail')
         expected = {'userId': profile['id']}
@@ -805,11 +933,14 @@ SELECT json_build_object(
                                           '/shares', {'revisionMode': 'latest'})
             deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
+            recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
+            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
         with self.phase('full-process-restart'):
             self.stop(process)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
             self.verify_system_files(api, system_files)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source')
             require(api.usage()['installationId'] == installation_id,
                     'Installation identity changed on restart')
             require(api.project('Runtime restore project', project_key)['id'] == project['id'],
@@ -828,24 +959,33 @@ SELECT json_build_object(
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
             self.verify_system_files(other, system_files)
             self.verify_deleted_fixture(other, deleted, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(other, recovered, zip_path, storage, 'runtime_source')
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
-            for index in range(3):
+            contested = api.project('Runtime contested recovery')
+            api.request('DELETE', '/api/prototype-hub/projects/' + contested['id'])
+            for index in range(4 - api.usage()['projects']['used']):
                 api.project('Runtime capacity filler ' + str(index))
             barrier = Barrier(2)
-            def compete(client):
+            def compete(candidate):
                 # Two different HTTP requests reach separate JVMs and independent transactions.
+                client, restore = candidate
                 barrier.wait(timeout=10)
-                result = client.project('Runtime contested ' + uuid.uuid4().hex,
-                                        expected=(200, 409))
+                result = (client.request('POST', '/api/prototype-hub/projects/' + contested['id'] +
+                                         '/_restore', expected=(200, 409)) if restore else
+                          client.project('Runtime contested ' + uuid.uuid4().hex, expected=(200, 409)))
                 if result.get('id'):
+                    require(not restore or result['id'] == contested['id'],
+                            'Contested recovery replaced the project identity')
                     return 200
                 require(result.get('code') == 'PROTOTYPE_HUB_PROJECT_LIMIT_REACHED',
                         'The rejected replica did not report project capacity')
                 return 409
             with ThreadPoolExecutor(max_workers=2) as pool:
-                outcomes = list(pool.map(compete, (api, other)))
+                outcomes = list(pool.map(compete, ((api, False), (other, True))))
             require(sorted(outcomes) == [200, 409], 'Replicas exceeded the last project slot')
+            self.report['projectCreateRestoreCompetition'] = {'replicas': 2, 'outcomes': sorted(outcomes),
+                                                               'used': 5, 'limit': 5}
             usage = api.usage()['projects']
             require(usage['used'] == 5 and not usage['canCreate'], 'Final project capacity differs')
             self.stop(second_process)
@@ -891,6 +1031,7 @@ SELECT json_build_object(
                                                     restored_system_storage, 'restored')
             system_hashes = self.verify_system_files(restored, system_files)
             self.verify_deleted_fixture(restored, deleted, zip_path, restored_storage, 'runtime_restored')
+            self.verify_restored_fixture(restored, recovered, zip_path, restored_storage, 'runtime_restored')
             require(restored.usage()['installationId'] == installation_id,
                     'Installation identity changed after restore')
             require(restored.usage()['projects']['used'] == 5, 'Restored occupancy differs')
@@ -930,8 +1071,9 @@ SELECT json_build_object(
                     'Startup changed restored system file ownership')
             self.report['restoredTables'] = before_database
             self.report['restoredRevisions'] = {
-                'count': before_database['p_revision']['count'], 'activeSampleCount': 2,
-                'retainedDeletedCount': 3, 'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
+                'count': before_database['p_revision']['count'], 'activeSampleCount': 4,
+                'retainedDeletedCount': 3, 'recoveredSampleCount': 2,
+                'currentPointerPreserved': True, 'sharePinnedToOriginal': True,
                 'creationReceiptPinnedToOriginal': True, 'manifestSha256': manifest_hashes,
                 'historicalAndCurrentBytesVerified': True}
             self.report['restoredFileCount'] = len(before_files)
