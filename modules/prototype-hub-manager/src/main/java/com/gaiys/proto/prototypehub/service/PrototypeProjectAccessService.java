@@ -292,7 +292,10 @@ public class PrototypeProjectAccessService {
 
     /** 管理和公开分享均使用持久化关联；坏旧关联不能把 A 的分享指到 B 的版本。 */
     public Mono<PrototypeVersionEntity> correlatedVersion(PrototypeShareEntity share) {
-        return versions.findById(share.getVersionId())
+        return versions.createQuery()
+                .where(PrototypeVersionEntity::getId, share.getVersionId())
+                .fetch()
+                .singleOrEmpty()
                 .filter(
                         version ->
                                 version.getDeletedTime() == null
@@ -301,7 +304,12 @@ public class PrototypeProjectAccessService {
                 // 公开资源不经过登录授权；关联边界也必须核验父项目尚活动。
                 .flatMap(
                         version ->
-                                projects.findById(version.getProjectId())
+                                projects.createQuery()
+                                        .where(
+                                                PrototypeProjectEntity::getId,
+                                                version.getProjectId())
+                                        .fetch()
+                                        .singleOrEmpty()
                                         .filter(project -> project.getDeletedTime() == null)
                                         .map(project -> version))
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("share")));

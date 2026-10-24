@@ -25,6 +25,7 @@ python3 tools/test_audit_storage.py
 # boundaries. Optional real Playwright lifecycle probes require the documented
 # PROTO_RUNTIME_PLAYWRIGHT_DIR installation; unittest reports those skips.
 python3 tools/test_verify_runtime.py
+python3 tools/test_runtime_mailbox.py
 python3 tools/test_security_gates.py
 ./mvnw -B -ntp "$@" clean verify -Prelease-audit
 python3 tools/verify-distribution.py

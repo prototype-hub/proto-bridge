@@ -78,9 +78,8 @@ public class PrototypeRevisionService
                         .and(PrototypeRevisionEntity::getProjectId, version.getProjectId());
         // 常规资源与元数据请求不传大清单；仅显式对比和质量检查读取有界清单，不缓存权限。
         if (!includeManifest) query.selectExcludes(PrototypeRevisionEntity::getManifestJson);
-        // EasyORM fetchOne 使用 take(1) 取消源；重文本入口须等待 fetch 正常完成及异步连接归还。
-        Mono<PrototypeRevisionEntity> row =
-                includeManifest ? query.fetch().singleOrEmpty() : query.fetchOne();
+        // 唯一行正常完成后再交给文件/BCrypt工作；fetchOne的take(1)取消不等待异步连接归还。
+        Mono<PrototypeRevisionEntity> row = query.fetch().singleOrEmpty();
         return row.switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("revision")));
     }
 

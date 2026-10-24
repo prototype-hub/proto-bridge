@@ -9,6 +9,7 @@ environments and private temporary files; reports contain only bounded evidence.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from http.cookies import SimpleCookie
 import hashlib
 import json
 import os
@@ -31,9 +32,12 @@ import uuid
 import zipfile
 import zlib
 
+from runtime_mailbox import LocalMailbox
+
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
 TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_share',
+          'p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
           'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
@@ -166,7 +170,7 @@ class Api:
     def remember_secrets(self, value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl') and item:
+                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
         elif isinstance(value, list):
@@ -218,6 +222,8 @@ class RuntimeCheck:
         self.database_port = None
         self.stage = 'initialization'
         self.external_failure = None
+        self.mailbox = None
+        self.ui_port = None
         self.report = {'schemaVersion': 1, 'status': 'running', 'checks': [],
                        'jarSha256': digest_file(args.jar), 'postgresImage': args.postgres_image,
                        'sample': {'kind': 'original-html-fixture', 'fileCount': 5}}
@@ -302,6 +308,13 @@ class RuntimeCheck:
             'UPLOAD_TEMP': str(working_directory / 'uploads'),
             'SYSTEM_LOG_ENABLED': 'false', 'ACCESS_LOG_ENABLED': 'false',
             'LOG_FILE': str(working_directory / 'application.log')})
+        if self.mailbox:
+            environment.update({
+                'SPRING_MAIL_HOST': '127.0.0.1', 'SPRING_MAIL_PORT': str(self.mailbox.port),
+                'SPRING_MAIL_USERNAME': 'identity@example.invalid',
+                'PROTOTYPEHUB_REVIEW_COOKIESECURE': 'false'})
+            if self.ui_port:
+                environment['PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN'] = 'http://127.0.0.1:' + str(self.ui_port)
         output = (working_directory / 'process.log').open('wb')
         try:
             process = subprocess.Popen([str(self.args.java), '-Xms128m', '-Xmx512m', '-jar',
@@ -525,6 +538,71 @@ class RuntimeCheck:
         elif expected_preview is not None:
             require(self.preview(api, anonymous.request('GET', path)) == expected_preview,
                     'Restored latest-share content changed')
+
+    def review_call(self, api, grant, operation, payload, *, cookie=None, csrf=None, expected=200):
+        headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
+        if cookie:
+            headers['Cookie'] = 'prototype-review=' + cookie
+        if csrf:
+            headers['X-Review-CSRF'] = csrf
+        body, response_headers = Api(api.origin, self.secrets_seen).request(
+            'POST', '/api/prototype-hub/public/shares/' + grant['token'] + '/review/' + operation,
+            dict(revisionId=grant['revisionId'], accessKey=grant['accessKey'], **payload),
+            expected=expected, headers=headers, raw=True)
+        data = json.loads(body)
+        self.secrets_seen.update((cookie, csrf) if cookie and csrf else ())
+        Api(api.origin, self.secrets_seen).remember_secrets(data)
+        updated = SimpleCookie()
+        for header in response_headers.get_all('Set-Cookie', []):
+            updated.load(header)
+        if 'prototype-review' in updated:
+            morsel = updated['prototype-review']
+            require(morsel['httponly'] and morsel['samesite'].lower() == 'strict',
+                    'Review cookie omitted HttpOnly or SameSite')
+            require(morsel['path'] == '/api/prototype-hub/public/shares/' + grant['token'] + '/review',
+                    'Review cookie escaped its dedicated API path')
+            require(not morsel['domain'], 'Review cookie widened its domain')
+            cookie = morsel.value
+            self.secrets_seen.add(cookie)
+        require(data.get('success') is True if expected == 200 else not data.get('success'),
+                'Review API wrapper differs')
+        return (data.get('result') if expected == 200 else data), cookie
+
+    def create_review_identity(self, api, version):
+        share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] + '/shares', {})
+        policy = api.request('PUT', '/api/prototype-hub/shares/' + share['id'] + '/review',
+                             {'enabled': True, 'expectedVersion': share['configVersion']})
+        require(policy['enabled'] and policy['mailAvailable'], 'Local verification mail is unavailable')
+        grant = Api(api.origin, self.secrets_seen).request(
+            'GET', '/api/prototype-hub/public/shares/' + share['token'])
+        context, cookie = self.review_call(api, grant, 'context', {})
+        require(context['session'] is None and cookie, 'Review bootstrap unexpectedly has an identity')
+        recipient = 'review-' + uuid.uuid4().hex + '@example.invalid'
+        self.secrets_seen.add(recipient)
+        users_before = self.sql('runtime_source', 'select count(*) from s_user;')
+        challenge, cookie = self.review_call(api, grant, 'challenges',
+            {'email': recipient, 'displayName': 'Local mailbox reviewer', 'company': 'Original fixture'},
+            cookie=cookie, csrf=context['csrfToken'])
+        mail = self.mailbox.latest(recipient)
+        require(mail is not None, 'SMTP did not deliver the local verification message')
+        verified, cookie = self.review_call(api, grant, 'verify',
+            {'challengeId': challenge['challengeId'], 'code': mail['code']},
+            cookie=cookie, csrf=context['csrfToken'])
+        identity = verified['session']
+        require(identity and identity['verificationLevel'] == 'email' and
+                identity['displayName'] == 'Local mailbox reviewer' and
+                identity['maskedEmail'] != recipient, 'Email identity response differs')
+        require(self.sql('runtime_source', 'select count(*) from s_user;') == users_before,
+                'Guest verification created an internal platform user')
+        self.report['reviewIdentity'] = {'localSmtpAccepted': True, 'mailboxOnlyVerification': True,
+                                         'noInternalAccountCreated': True,
+                                         'cookiePathAndFlagsVerified': True}
+        return {'grant': grant, 'cookie': cookie, 'guestId': identity['guestId']}
+
+    def verify_review_identity(self, api, fixture):
+        context, _ = self.review_call(api, fixture['grant'], 'context', {}, cookie=fixture['cookie'])
+        require(context['session'] and context['session']['guestId'] == fixture['guestId'],
+                'Persisted review identity did not survive process or database restore')
 
     def verify_revisions(self, api, project, original, current, zip_path, key,
                          original_hashes, current_hashes, foreign_revision=None):
@@ -1122,6 +1200,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         return hashes
 
     def execute(self):
+        self.ui_port = free_port() if self.args.frontend_dir else None
+        self.mailbox = LocalMailbox(self.workspace / 'review-mailbox.json', self.secrets_seen)
         self.postgres()
         storage = self.workspace / 'source-storage'
         system_storage = self.workspace / 'source-system-files'
@@ -1165,6 +1245,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 api, latest_share, latest_first_grant, version, current, preview_hashes, current_hashes)
             following_share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
                                           '/shares', {'revisionMode': 'latest'})
+            review = self.create_review_identity(api, version)
             deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
@@ -1201,6 +1282,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share(api, share, preview_hashes)
             self.verify_share_policy(api, retired_share, grant=retired_grant)
             self.verify_share_policy(api, following_share, expected_preview=current_hashes)
+            self.verify_review_identity(api, review)
             require(self.verify_revisions(api, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
                     'Revision manifests changed on process restart')
@@ -1212,6 +1294,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                          version['revisionId'])
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
+            self.verify_review_identity(other, review)
             contested = api.project('Runtime contested recovery')
             api.request('DELETE', '/api/prototype-hub/projects/' + contested['id'])
             for index in range(4 - api.usage()['projects']['used']):
@@ -1301,6 +1384,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share(restored, share, preview_hashes)
             self.verify_share_policy(restored, retired_share, grant=retired_grant)
             self.verify_share_policy(restored, following_share, expected_preview=current_hashes)
+            self.verify_review_identity(restored, review)
+            self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True
             self.verify_project_member(restored, member, project, version, preview_hashes)
             require(self.verify_revisions(restored, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
@@ -1362,6 +1447,10 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                            PROTO_E2E_USERNAME=self.username,
                            PROTO_E2E_PASSWORD=self.password,
                            PROTO_E2E_ZIP_PATH=str(zip_path))
+        if self.mailbox:
+            environment['PROTO_E2E_REVIEW_MAILBOX_PATH'] = str(self.mailbox.path)
+        if self.ui_port:
+            environment['PROTO_E2E_UI_PORT'] = str(self.ui_port)
         output_path = self.workspace / 'browser.log'
         cli = self.args.frontend_dir / 'node_modules/@playwright/test/cli.js'
         require(cli.is_file(), 'Built frontend is missing the public Playwright CLI')
@@ -1407,6 +1496,12 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.cleanup_container()
         except (OSError, subprocess.TimeoutExpired, VerificationFailure, ValueError, KeyError):
             failures.append('postgres-container')
+        if self.mailbox:
+            try:
+                self.mailbox.close()
+                self.mailbox = None
+            except (OSError, RuntimeError):
+                failures.append('local-mailbox')
         require(not failures, 'Cleanup failed for owned ' + ','.join(failures))
 
     def redact(self, text):

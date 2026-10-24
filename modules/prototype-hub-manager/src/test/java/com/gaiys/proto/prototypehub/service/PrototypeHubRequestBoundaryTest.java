@@ -97,7 +97,15 @@ class PrototypeHubRequestBoundaryTest {
         try (var work = new FileWork()) {
             var shares =
                     new PrototypeShareService(
-                            projects, versions, work, transaction, access, revisions);
+                            projects,
+                            versions,
+                            work,
+                            transaction,
+                            access,
+                            revisions,
+                            mock(
+                                    com.gaiys.proto.prototypehub.service.notification
+                                            .NotificationGateway.class));
             StepVerifier.create(
                             shares.createShare(
                                     "version",

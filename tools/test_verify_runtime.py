@@ -20,10 +20,52 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from email.message import Message
 
 spec = importlib.util.spec_from_file_location('verify_runtime', Path(__file__).with_name('verify-runtime.py'))
 runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
+
+
+class ReviewIdentityRuntimeTest(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='runtime-review-test-')
+        self.addCleanup(self.temporary.cleanup)
+        root = Path(self.temporary.name)
+        jar = root / 'fixture.jar'
+        jar.write_bytes(b'not executed')
+        self.check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), root)
+        self.grant = {'token': 'share', 'revisionId': 'fixed-r1', 'accessKey': 'grant-proof'}
+        self.api = runtime.Api('http://127.0.0.1:10001', self.check.secrets_seen)
+
+    def test_review_http_uses_scoped_cookie_csrf_and_explicit_ui_origin_without_admin_token(self):
+        self.api.token = 'internal-token-must-not-leak'
+        self.check.ui_port = 10002
+        headers = Message()
+        headers.add_header('Set-Cookie', 'prototype-review=rotated; HttpOnly; SameSite=Strict; '
+                           'Path=/api/prototype-hub/public/shares/share/review')
+        body = json.dumps({'success': True, 'result': {'csrfToken': 'next-csrf'}}).encode()
+        with patch.object(runtime.Api, 'request', return_value=(body, headers)) as request:
+            result, cookie = self.check.review_call(self.api, self.grant, 'context', {},
+                                                    cookie='old-cookie', csrf='old-csrf')
+        self.assertEqual('rotated', cookie)
+        self.assertEqual('next-csrf', result['csrfToken'])
+        args = request.call_args
+        self.assertEqual('/api/prototype-hub/public/shares/share/review/context', args.args[1])
+        self.assertEqual({'revisionId': 'fixed-r1', 'accessKey': 'grant-proof'}, args.args[2])
+        self.assertEqual({'Origin': 'http://127.0.0.1:10002', 'Cookie': 'prototype-review=old-cookie',
+                          'X-Review-CSRF': 'old-csrf'}, args.kwargs['headers'])
+        for value in ('old-cookie', 'old-csrf', 'rotated', 'next-csrf'):
+            self.assertIn(value, self.check.secrets_seen)
+        self.assertNotIn('internal-token-must-not-leak', str(args))
+
+    def test_restore_identity_check_rejects_anonymous_or_wrong_guest_instead_of_passing(self):
+        fixture = {'grant': self.grant, 'cookie': 'private-cookie', 'guestId': 'stable-guest'}
+        for session in (None, {'guestId': 'different-guest'}):
+            with self.subTest(authenticated=session is not None), \
+                    patch.object(self.check, 'review_call', return_value=({'session': session}, None)):
+                with self.assertRaises(runtime.VerificationFailure):
+                    self.check.verify_review_identity(self.api, fixture)
 
 
 class RuntimeSafetyTest(unittest.TestCase):

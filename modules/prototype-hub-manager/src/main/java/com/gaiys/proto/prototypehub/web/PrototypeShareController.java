@@ -7,6 +7,7 @@ import com.gaiys.proto.prototypehub.web.request.ShareEnabledRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareMutationRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareUpdateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareVerifyRequest;
+import com.gaiys.proto.prototypehub.web.response.ReviewPolicyResponse;
 import com.gaiys.proto.prototypehub.web.response.ShareResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -43,6 +44,21 @@ import reactor.core.publisher.Mono;
 public class PrototypeShareController {
     private final PrototypeShareService shares;
     private final PrototypeProjectAccessService access;
+
+    @GetMapping("/shares/{id}/review")
+    @QueryAction
+    @Operation(summary = "查询分享邮箱身份策略")
+    public Mono<ReviewPolicyResponse> review(@PathVariable String id) {
+        return shares.reviewPolicy(id);
+    }
+
+    @PutMapping("/shares/{id}/review")
+    @SaveAction
+    @Operation(summary = "设置分享邮箱身份策略", description = "按配置版本CAS更新并轮换旧凭据，仅该入口修改邮箱身份开关")
+    public Mono<ReviewPolicyResponse> review(
+            @PathVariable String id, @Valid @RequestBody ShareEnabledRequest input) {
+        return shares.reviewPolicy(id, input);
+    }
 
     @GetMapping("/versions/{versionId}/shares")
     @QueryAction

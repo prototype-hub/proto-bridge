@@ -185,6 +185,29 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 新规范路径为 `/prototype-hub/public/shares/{token}/{derivedKey}/revisions/{rid}/runtime/**` 和同级 `/pages`。已发布的无 rid 分享资源路径仅作为固定分享兼容入口，接受原有效访问密钥或当前固定修订的派生密钥，均固定到持久化的修订；跟随模式不接受该入口。既有空 revisionId 分享仍须显式旧内容迁移，不能退回读取当前版本。已发给浏览器的内容无法远程收回，外围代理与日志也须避免记录完整凭据。
 
+## 分享邮箱身份
+
+邮箱身份由分享管理员逐条开启，默认关闭，不影响免账号预览；当前提供邮箱OTP和短期身份，不含邀请、未验证访客、批注/回复及业务邮件提醒，不创建平台用户。姓名/公司由访客自填，邮箱已验证不代表实名或公司认证。
+
+`GET /prototype-hub/shares/{id}/review` 返回 `{enabled,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,expectedVersion}`，需要分享save及同一范围。成功修改递增配置版本并轮换分享凭据，旧预览和身份均失效；旧空值按关闭处理，普通分享编辑保留身份开关。已通过密码的公开分享增加 `reviewEnabled/reviewAvailable`。
+
+公开入口相对于 `/prototype-hub/public/shares/{token}/review`，均为JSON POST，始终提交当前分享证明 `{revisionId,accessKey}`。固定与跟随模式都绑定本次明确修订，不隐式切换current。所有请求要求精确受信Origin，拒绝缺失、null及其他站点；代理配置见[运维说明](OPERATIONS.md#邮箱身份与smtp)。
+
+| 子路径 | 额外字段 | `result` |
+| --- | --- | --- |
+| `/context` | 无 | `{revisionId,enabled,mailAvailable,csrfToken,session}`，匿名session为null |
+| `/challenges` | `email,displayName,company?` | `{challengeId,expiresAt,resendAfter}`，不返回验证码或邮箱 |
+| `/verify` | `challengeId,code` | 同context，成功session非空，轮换Cookie与CSRF |
+| `/logout` | 无 | `{loggedOut:true}`，仅撤销当前身份并轮换匿名Cookie |
+
+context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Strict、无Domain、最长八小时，Path固定为 `/api/prototype-hub/public/shares/{token}/review`。其余三项同时要求Cookie与context返回的 `X-Review-CSRF`。退出后重取context；Cookie/CSRF不进入原型iframe、URL、postMessage或本地持久存储。只有专用review客户端使用同源Cookie，其他公开预览客户端仍省略凭据。
+
+身份为 `{guestId,displayName,company,maskedEmail,verificationLevel:'email',expiresAt}`，不返回完整邮箱。姓名trim后非空且最多100字符，公司可空且最多200字符；邮箱trim并整段按不区分大小写规范化，最多254字符。同项目同邮箱跨设备重新OTP恢复相同guestId，不按姓名合并，其他项目独立；恢复仍需当前分享和密码证明。
+
+验证码六位ASCII数字、五分钟有效、最多五次错误、一次使用；错误尝试持久提交，并发正确验证仅一次成功。同项目同邮箱重发使旧码失效。每项目每小时最多60封，项目内每邮箱5封并冷却60秒，数据库保证跨副本一致；SMTP失败也占发送限额。pending、失败或取消发送不能验证，不自动重试不确定发送或降低验证等级。
+
+未知、错误、过期、已用或不匹配的challenge统一400 / `PROTOTYPE_HUB_REVIEW_CODE_INVALID`。非法输入400，分享证明/Origin/CSRF不符403，分享不可用404，限频429，SMTP未配置或失败503。分享修改、停用、撤销、到期或软删均逐请求阻断旧身份，重新启用不复活旧授权；会话到期需重新验证。
+
 ## HTML 文件夹上传
 
 可以上传已有 ZIP，也可以选择已从 Axure 等工具导出的 HTML 文件夹。文件夹在浏览器 Worker 中打包为 ZIP，保留全部所选文件及中文、空格、嵌套子路径，只剥离所选目录本身这一层；打包完成后仍需确认上传。空目录不由浏览器文件列表表示，零字节文件会保留。此功能不读取 `.rp`，不监听目录变化，也不自动采集本地预览。
