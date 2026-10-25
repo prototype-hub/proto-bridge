@@ -3,6 +3,9 @@ package com.gaiys.proto;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.system.configuration.initializer.AdministratorInitializer;
 import com.gaiys.proto.system.configuration.initializer.MenuStartupInitializer;
@@ -313,6 +316,50 @@ class EasyormSchemaIntegrationTest {
                 scalar(
                         "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND"
                                 + " indexname='addition_future_idx'"));
+    }
+
+    @Test
+    void unverifiedUpgradeAddsIndependentTableAndSessionLevelWithoutRelaxingLegacyEmail()
+            throws Exception {
+        execute(
+                "INSERT INTO p_review_guest(id,project_id,email,display_name,create_time,modify_time) VALUES ('legacy-review-upgrade','legacy-project','retained@example.invalid','Retained',1,1)");
+        execute(
+                "INSERT INTO p_review_session(id,project_id,version_id,share_id,revision_id,config_version,share_generation,guest_id,create_time,expires_at) VALUES ('legacy-session-upgrade','legacy-project','legacy-version','legacy-share','legacy-revision',0,'generation','legacy-review-upgrade',1,2)");
+        try {
+            execute("DROP TABLE p_review_unverified_guest");
+            execute("ALTER TABLE p_review_session DROP COLUMN verification_level");
+            execute("ALTER TABLE p_share DROP COLUMN review_allow_unverified");
+            synchronize(PrototypeReviewUnverifiedGuestEntity.class);
+            synchronize(PrototypeReviewSessionEntity.class);
+            synchronize(PrototypeShareEntity.class);
+            synchronize(PrototypeReviewSessionEntity.class);
+            assertEquals(
+                    "NO",
+                    scalar(
+                            "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_guest' AND column_name='email'"));
+            assertEquals(
+                    "retained@example.invalid|Retained",
+                    scalar(
+                            "SELECT email||'|'||display_name FROM p_review_guest WHERE id='legacy-review-upgrade'"));
+            assertEquals(
+                    "legacy-review-upgrade|email",
+                    scalar(
+                            "SELECT guest_id||'|'||coalesce(verification_level,'email') FROM p_review_session WHERE id='legacy-session-upgrade'"));
+            assertEquals(
+                    "YES",
+                    scalar(
+                            "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='p_share' AND column_name='review_allow_unverified'"));
+            execute(
+                    "INSERT INTO p_review_unverified_guest(id,project_id,display_name,enabled,config_version,create_time,modify_time,expires_at) VALUES ('new-independent-guest','legacy-project','Unverified',true,0,1,1,2)");
+            assertEquals(
+                    "0",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_unverified_guest' AND column_name='email'"));
+        } finally {
+            execute("DELETE FROM p_review_unverified_guest WHERE id='new-independent-guest'");
+            execute("DELETE FROM p_review_session WHERE id='legacy-session-upgrade'");
+            execute("DELETE FROM p_review_guest WHERE id='legacy-review-upgrade'");
+        }
     }
 
     @Test

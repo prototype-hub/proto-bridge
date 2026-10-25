@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
+import com.gaiys.proto.prototypehub.service.PrototypeReviewService;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -101,6 +102,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
     @Autowired WebTestClient client;
     @Autowired DatabaseClient database;
     @Autowired PrototypeRetentionService retention;
+    @Autowired PrototypeReviewService review;
     private String admin;
 
     @BeforeEach
@@ -623,7 +625,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         "enabled",
                         "configVersion",
                         "createTime",
-                        "modifyTime"),
+                        "modifyTime",
+                        "expiresAt"),
                 fields);
         for (String rawEmail :
                 List.of(
@@ -921,6 +924,419 @@ class PrototypeHubReviewIdentityIntegrationTest {
                 status);
     }
 
+    @Test
+    void explicitUnverifiedPolicyIsOffByDefaultAndLegacyPolicyUpdatesPreserveIt() throws Exception {
+        Fixture fixture = fixture(true, false);
+        assertFalse(
+                management(HttpMethod.GET, manage(fixture), admin, null, 200)
+                        .path("allowUnverified")
+                        .asBoolean());
+        assertFalse(fixture.grant.path("reviewUnverifiedAllowed").asBoolean());
+        Browser browser = context(fixture, null);
+        unverified(fixture, browser, "Visitor", null, 403);
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "allowUnverified", true, "expectedVersion", 2),
+                200);
+        fixture = refresh(fixture);
+        assertTrue(fixture.grant.path("reviewUnverifiedAllowed").asBoolean());
+        assertTrue(context(fixture, null).data.path("allowUnverified").asBoolean());
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "expectedVersion", 3),
+                200);
+        assertTrue(
+                management(HttpMethod.GET, manage(fixture), admin, null, 200)
+                        .path("allowUnverified")
+                        .asBoolean());
+        fixture = refresh(fixture);
+        browser = context(fixture, null);
+        for (Map<String, Object> invalid :
+                List.<Map<String, Object>>of(
+                        Map.of("displayName", " "), Map.of("displayName", "\u2003"),
+                        Map.of("displayName", "\u3000"), Map.of("displayName", "x".repeat(101)),
+                        Map.of("displayName", "Visitor\n"),
+                                Map.of("displayName", "Visitor", "company", "x\u0085")))
+            exchange(fixture, "unverified", invalid, browser.cookie, browser.csrf(), ORIGIN, 400);
+        assertEquals(0, count("p_review_unverified_guest"));
+        for (String blank : List.of("\u2003", "\u3000"))
+            exchange(
+                    fixture,
+                    "challenges",
+                    Map.of("email", "invalid@example.invalid", "displayName", blank),
+                    browser.cookie,
+                    browser.csrf(),
+                    ORIGIN,
+                    400);
+        assertEquals(0, MAILBOX.pendingMessages());
+        unverified(fixture, browser, "张三", null, 200);
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "allowUnverified", false, "expectedVersion", 4),
+                200);
+        fixture = refresh(fixture);
+        unverified(fixture, context(fixture, null), "Visitor", null, 403);
+    }
+
+    @Test
+    void unverifiedIdentityIsRandomPrivateFixedEightHoursAndReuseDoesNotChangeProfileOrQuota()
+            throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser anonymous = context(fixture, null);
+        Browser first = unverified(fixture, anonymous, " Visitor ", " Company ", 200);
+        assertNotEquals(anonymous.cookie, first.cookie);
+        assertEquals(43, first.guest().length());
+        assertEquals("unverified", first.data.path("session").path("verificationLevel").asText());
+        assertTrue(first.data.path("session").path("maskedEmail").isNull());
+        assertEquals("Visitor", first.data.path("session").path("displayName").asText());
+        long expiry = first.data.path("session").path("expiresAt").asLong();
+        assertEquals(
+                PrototypeReviewService.SESSION_TTL,
+                number(
+                        "select expires_at-create_time as value from p_review_unverified_guest where id=:id",
+                        first.guest()));
+        Browser reused = unverified(fixture, first, "Changed", null, 200);
+        assertEquals(first.cookie, reused.cookie);
+        assertEquals(first.guest(), reused.guest());
+        assertEquals(expiry, reused.data.path("session").path("expiresAt").asLong());
+        assertEquals("Visitor", reused.data.path("session").path("displayName").asText());
+        assertEquals("Company", reused.data.path("session").path("company").asText());
+        assertEquals(1, count("p_review_unverified_guest"));
+        assertEquals(2, count("p_review_rate"));
+        Browser different = unverified(fixture, context(fixture, null), "Visitor", null, 200);
+        assertNotEquals(first.guest(), different.guest());
+        assertEquals(0, count("p_review_guest"));
+        assertEquals(0, count("p_review_challenge"));
+        assertEquals(0, MAILBOX.pendingMessages());
+        assertFalse(first.data.toString().contains(first.cookie));
+        assertNotNull(context(fixture, first.cookie).guest());
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "expectedVersion", 3),
+                200);
+        exchange(fixture, "context", Map.of(), first.cookie, null, ORIGIN, 403);
+        fixture = refresh(fixture);
+        assertNull(context(fixture, first.cookie).guest());
+        Browser fresh = unverified(fixture, first, "Explicit fresh identity", null, 200);
+        assertNotEquals(first.guest(), fresh.guest());
+        assertNotEquals(first.cookie, fresh.cookie);
+        assertNotEquals(expiry, fresh.data.path("session").path("expiresAt").asLong());
+        assertNull(context(fixture, first.cookie).guest());
+        assertEquals(
+                expiry,
+                number(
+                        "select expires_at as value from p_review_unverified_guest where id=:id",
+                        first.guest()));
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "allowUnverified", false, "expectedVersion", 4),
+                200);
+        exchange(fixture, "context", Map.of(), first.cookie, null, ORIGIN, 403);
+        fixture = refresh(fixture);
+        assertNull(context(fixture, first.cookie).guest());
+        unverified(fixture, first, "Visitor", null, 403);
+    }
+
+    @Test
+    void unverifiedStartKeepsOriginCookieCsrfGrantAndVerifiedIdentityBoundaries() throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser anonymous = context(fixture, null);
+        var fields = Map.<String, Object>of("displayName", "Visitor");
+        exchange(
+                fixture,
+                "unverified",
+                fields,
+                anonymous.cookie,
+                anonymous.csrf(),
+                "https://foreign.example.invalid",
+                403);
+        exchange(fixture, "unverified", fields, null, anonymous.csrf(), ORIGIN, 403);
+        exchange(fixture, "unverified", fields, anonymous.cookie, "invalid", ORIGIN, 403);
+        Browser verified =
+                verify(fixture, anonymous, "ownership@example.invalid", "Verified", null);
+        Browser conflict = unverified(fixture, verified, "Visitor", null, 409);
+        assertEquals("PROTOTYPE_HUB_REVIEW_IDENTITY_EXISTS", conflict.data.path("code").asText());
+        assertEquals(0, count("p_review_unverified_guest"));
+        // 持久化历史会话没有新增等级，仍按邮箱身份；未知值不得当作新低保障入口恢复。
+        sql(
+                "update p_review_session set verification_level=null where guest_id=:id",
+                verified.guest());
+        assertEquals(
+                "email",
+                context(fixture, verified.cookie)
+                        .data
+                        .path("session")
+                        .path("verificationLevel")
+                        .asText());
+        sql(
+                "update p_review_session set verification_level='unknown' where guest_id=:id",
+                verified.guest());
+        unverified(fixture, verified, "Visitor", null, 403);
+        assertEquals(0, count("p_review_unverified_guest"));
+        sql(
+                "update p_review_session set verification_level=null where guest_id=:id",
+                verified.guest());
+        Fixture foreign = unverifiedFixture();
+        Browser separate = unverified(foreign, verified, "Visitor", null, 200);
+        assertNotEquals(verified.guest(), separate.guest());
+        assertNotEquals(verified.cookie, separate.cookie);
+        assertEquals(1, count("p_review_unverified_guest"));
+    }
+
+    @Test
+    void unverifiedManagementUsesSeparateSelectorPermissionsAndNeverTouchesEmailOtp()
+            throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser email =
+                verify(
+                        fixture,
+                        context(fixture, null),
+                        "independent@example.invalid",
+                        "Verified",
+                        null);
+        Browser first = unverified(fixture, context(fixture, null), "Low", null, 200);
+        JsonNode page = unverifiedPage(fixture, admin, 0, 1, 200);
+        assertEquals(1, page.path("total").asInt());
+        assertEquals(first.guest(), page.path("data").get(0).path("id").asText());
+        assertTrue(page.path("data").get(0).path("maskedEmail").isNull());
+        assertEquals(1, guestPage(fixture, admin, 0, 20, 200).path("total").asInt());
+        assertTrue(unverifiedPage(fixture, admin, 10000, 1, 200).path("data").isEmpty());
+        for (Object invalidLevel : List.of("unknown", "", 0, 1, "0", "1"))
+            management(
+                    HttpMethod.POST,
+                    guestPath(fixture) + "/_query",
+                    admin,
+                    Map.of("verificationLevel", invalidLevel),
+                    400);
+        Map<String, Object> nullLevel = new HashMap<>();
+        nullLevel.put("verificationLevel", null);
+        management(HttpMethod.POST, guestPath(fixture) + "/_query", admin, nullLevel, 400);
+        for (String selector :
+                List.of(
+                        "unknown",
+                        "",
+                        "email&verificationLevel=unverified",
+                        "unverified&verificationLevel=unverified"))
+            management(
+                    HttpMethod.PUT,
+                    guestPath(fixture)
+                            + "/"
+                            + first.guest()
+                            + "/enabled?verificationLevel="
+                            + selector,
+                    admin,
+                    Map.of("enabled", false, "expectedVersion", 0),
+                    400);
+        guestEnabled(fixture, first.guest(), admin, false, 0, 404);
+        unverifiedEnabled(fixture, email.guest(), admin, false, 0, 404);
+        Actor viewer = actor(List.of("query", "save"));
+        management(
+                HttpMethod.PUT,
+                "/prototype-hub/projects/" + fixture.project + "/members/" + viewer.id,
+                admin,
+                Map.of("role", "viewer"),
+                200);
+        unverifiedPage(fixture, viewer.token, 0, 20, 403);
+        unverifiedEnabled(fixture, first.guest(), viewer.token, false, 0, 403);
+        unverifiedPage(fixture, null, 0, 20, 401);
+        long quota = count("p_review_rate");
+        unverifiedEnabled(fixture, first.guest(), admin, false, 0, 200);
+        assertNull(context(fixture, first.cookie).guest());
+        assertNotNull(context(fixture, email.cookie).guest());
+        unverifiedEnabled(fixture, first.guest(), admin, true, 0, 409);
+        unverifiedEnabled(fixture, first.guest(), admin, true, 1, 200);
+        assertNull(context(fixture, first.cookie).guest());
+        assertEquals(quota, count("p_review_rate"));
+        sql("update p_review_unverified_guest set expires_at=0 where id=:id", first.guest());
+        unverifiedEnabled(fixture, first.guest(), admin, false, 2, 404);
+    }
+
+    @Test
+    void unverifiedCookieQuotaCooldownAndProjectQuotaAreDistinctFromEmailAndAtomic()
+            throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser anonymous = context(fixture, null);
+        unverified(fixture, anonymous, "Visitor", null, 200);
+        unverified(fixture, anonymous, "Visitor", null, 429);
+        for (int i = 1; i < 5; i++) {
+            sql("update p_review_rate set next_allowed_at=0");
+            unverified(fixture, anonymous, "Visitor", null, 200);
+        }
+        sql("update p_review_rate set next_allowed_at=0");
+        unverified(fixture, anonymous, "Visitor", null, 429);
+        assertEquals(5, count("p_review_unverified_guest"));
+        // 找出项目账本（跨Cookie唯一共享的行），保留Cookie账本的独立五次限制。
+        String projectRate =
+                com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys.digest(
+                        "review-rate-v1:" + fixture.project + ":unverified-project");
+        sql("update p_review_rate set send_count=59 where id=:id", projectRate);
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        Browser one = context(fixture, null), two = context(fixture, null);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            Future<Browser> a =
+                    pool.submit(
+                            () -> {
+                                barrier.await(10, TimeUnit.SECONDS);
+                                return unverified(fixture, one, "A", null, 200, 429);
+                            });
+            Future<Browser> b =
+                    pool.submit(
+                            () -> {
+                                barrier.await(10, TimeUnit.SECONDS);
+                                return unverified(fixture, two, "B", null, 200, 429);
+                            });
+            var statuses =
+                    new ArrayList<>(
+                            List.of(
+                                    a.get(30, TimeUnit.SECONDS).status,
+                                    b.get(30, TimeUnit.SECONDS).status));
+            statuses.sort(Integer::compareTo);
+            assertEquals(List.of(200, 429), statuses);
+        }
+        assertEquals(
+                60,
+                number("select send_count as value from p_review_rate where id=:id", projectRate));
+        assertEquals(6, count("p_review_unverified_guest"));
+        challenge(
+                fixture,
+                context(fixture, null),
+                "otp-independent@example.invalid",
+                "Verified",
+                null,
+                200);
+        assertEquals(1, MAILBOX.pendingMessages());
+    }
+
+    @Test
+    void simultaneousSameCookieStartsCreateOnlyOneIdentityAndTransactionFailureLeavesNoRows()
+            throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser browser = context(fixture, null);
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var tasks = new ArrayList<Future<Browser>>();
+            for (int i = 0; i < 2; i++)
+                tasks.add(
+                        pool.submit(
+                                () -> {
+                                    barrier.await(10, TimeUnit.SECONDS);
+                                    return unverified(fixture, browser, "Visitor", null, 200, 429);
+                                }));
+            var statuses = new ArrayList<Integer>();
+            for (var task : tasks) statuses.add(task.get(30, TimeUnit.SECONDS).status);
+            statuses.sort(Integer::compareTo);
+            assertEquals(List.of(200, 429), statuses);
+        }
+        assertEquals(1, count("p_review_unverified_guest"));
+        assertEquals(1, count("p_review_session"));
+        long rateRows = count("p_review_rate");
+        sql(
+                "create function reject_unverified_session_fixture() returns trigger language plpgsql as $$ begin if NEW.verification_level='unverified' then raise exception 'fixture failure'; end if; return NEW; end $$");
+        sql(
+                "create trigger reject_unverified_session_fixture before insert on p_review_session for each row execute function reject_unverified_session_fixture()");
+        try {
+            unverified(fixture, context(fixture, null), "Rollback", null, 500);
+            assertEquals(1, count("p_review_unverified_guest"));
+            assertEquals(1, count("p_review_session"));
+            assertEquals(rateRows, count("p_review_rate"));
+        } finally {
+            sql("drop trigger reject_unverified_session_fixture on p_review_session");
+            sql("drop function reject_unverified_session_fixture()");
+        }
+    }
+
+    @Test
+    void expiredUnverifiedIdentityCannotRecoverAndCleanupIsBoundedWhileEmailGuestRemains()
+            throws Exception {
+        Fixture fixture = unverifiedFixture();
+        Browser email =
+                verify(
+                        fixture,
+                        context(fixture, null),
+                        "retained@example.invalid",
+                        "Verified",
+                        null);
+        Browser first = unverified(fixture, context(fixture, null), "Expired", null, 200);
+        sql("update p_review_unverified_guest set expires_at=1 where id=:id", first.guest());
+        sql("update p_review_session set expires_at=1 where guest_id=:id", first.guest());
+        assertNull(context(fixture, first.cookie).guest());
+        Browser replacement = unverified(fixture, first, "Fresh", null, 200);
+        assertNotEquals(first.guest(), replacement.guest());
+        for (int i = 0; i < 55; i++)
+            database.sql(
+                            "insert into p_review_unverified_guest(id,project_id,display_name,enabled,config_version,create_time,modify_time,expires_at) select :id,project_id,display_name,enabled,config_version,create_time,modify_time,1 from p_review_unverified_guest where id=:source")
+                    .bind("id", "expired-" + i)
+                    .bind("source", first.guest())
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        review.cleanupExpired().block(TIMEOUT);
+        assertEquals(7, count("p_review_unverified_guest"));
+        review.cleanupExpired().block(TIMEOUT);
+        assertEquals(1, count("p_review_unverified_guest"));
+        assertNotNull(context(fixture, replacement.cookie).guest());
+        assertNotNull(context(fixture, email.cookie).guest());
+        assertEquals(1, count("p_review_guest"));
+        review.purgeProject(fixture.project).block(TIMEOUT);
+        assertEquals(0, count("p_review_unverified_guest"));
+        assertEquals(0, count("p_review_session"));
+        assertEquals(0, count("p_review_guest"));
+    }
+
+    private Fixture unverifiedFixture() throws IOException {
+        Fixture fixture = fixture(true, false);
+        management(
+                HttpMethod.PUT,
+                manage(fixture),
+                admin,
+                Map.of("enabled", true, "allowUnverified", true, "expectedVersion", 2),
+                200);
+        return refresh(fixture);
+    }
+
+    private Browser unverified(
+            Fixture fixture, Browser browser, String name, String company, int... status) {
+        var fields = new HashMap<String, Object>();
+        fields.put("displayName", name);
+        if (company != null) fields.put("company", company);
+        return exchange(
+                fixture, "unverified", fields, browser.cookie, browser.csrf(), ORIGIN, status);
+    }
+
+    private JsonNode unverifiedPage(Fixture fixture, String token, int page, int size, int status) {
+        return management(
+                HttpMethod.POST,
+                guestPath(fixture) + "/_query",
+                token,
+                Map.of("pageIndex", page, "pageSize", size, "verificationLevel", "unverified"),
+                status);
+    }
+
+    private JsonNode unverifiedEnabled(
+            Fixture fixture,
+            String guest,
+            String token,
+            boolean enabled,
+            long version,
+            int status) {
+        return management(
+                HttpMethod.PUT,
+                guestPath(fixture) + "/" + guest + "/enabled?verificationLevel=unverified",
+                token,
+                Map.of("enabled", enabled, "expectedVersion", version),
+                status);
+    }
+
     private JsonNode guestEnabled(
             Fixture fixture,
             String guest,
@@ -1185,6 +1601,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         switch (table) {
                             case "s_user" -> "select count(*) as value from s_user";
                             case "p_review_guest" -> "select count(*) as value from p_review_guest";
+                            case "p_review_unverified_guest" ->
+                                    "select count(*) as value from p_review_unverified_guest";
                             case "p_review_challenge" ->
                                     "select count(*) as value from p_review_challenge";
                             case "p_review_session" ->

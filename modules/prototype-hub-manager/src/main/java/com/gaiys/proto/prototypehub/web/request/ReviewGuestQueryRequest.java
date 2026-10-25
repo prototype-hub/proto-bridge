@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.web.request;
 
+import com.gaiys.proto.prototypehub.enums.ReviewVerificationLevel;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -7,11 +8,15 @@ import jakarta.validation.constraints.NotNull;
 import lombok.Getter;
 import lombok.Setter;
 
-/** 项目邮箱访客的有界分页输入，不接受邮箱检索或任意数据库条件。 */
+/** 按保障等级选择身份仓库的有界分页输入，不接受邮箱检索或任意数据库条件。 */
 @Getter
 @Setter
-@Schema(description = "项目邮箱访客分页请求")
+@Schema(description = "项目访客按保障等级分页请求")
 public class ReviewGuestQueryRequest {
+    @NotNull
+    @Schema(description = "身份保障等级，默认查询已验证邮箱访客", defaultValue = "email")
+    private ReviewVerificationLevel verificationLevel = ReviewVerificationLevel.email;
+
     @NotNull
     @Min(0)
     @Max(10000)

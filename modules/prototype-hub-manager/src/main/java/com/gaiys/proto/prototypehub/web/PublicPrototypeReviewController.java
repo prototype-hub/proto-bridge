@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeReviewService;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import com.gaiys.proto.prototypehub.web.request.ReviewChallengeRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewGrantRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewUnverifiedRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewChallengeResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewContextResponse;
@@ -23,11 +24,11 @@ import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
-/** 公开分享邮箱身份的独立POST入口；仅服务可信外壳，iframe资源请求不使用此Cookie或CSRF。 */
+/** 公开分享访客身份的独立POST入口；邮箱验证和显式低保障路径分离，iframe不使用身份Cookie或CSRF。 */
 @RestController
 @RequiredArgsConstructor
 @Authorize(ignore = true)
-@Tag(name = "公开分享邮箱身份")
+@Tag(name = "公开分享访客身份")
 @RequestMapping(
         value = "/prototype-hub/public/shares/{token}/review",
         consumes = MediaType.APPLICATION_JSON_VALUE)
@@ -35,8 +36,23 @@ public class PublicPrototypeReviewController {
     private final PrototypeReviewService review;
     private final ReviewRequestSecurity security;
 
+    @PostMapping("/unverified")
+    @Operation(summary = "显式创建未验证访客身份", description = "仅分享管理员允许时可用；资料未经核验，固定八小时且不可找回")
+    public Mono<ReviewContextResponse> unverified(
+            @PathVariable String token,
+            @Valid @RequestBody ReviewUnverifiedRequest input,
+            ServerWebExchange exchange) {
+        security.origin(exchange);
+        return review.unverified(token, input, security.unsafeCookie(exchange))
+                .map(
+                        result -> {
+                            security.cookie(exchange, token, result.cookie());
+                            return result.context();
+                        });
+    }
+
     @PostMapping("/context")
-    @Operation(summary = "读取固定分享修订邮箱身份上下文")
+    @Operation(summary = "读取固定分享修订访客身份上下文")
     public Mono<ReviewContextResponse> context(
             @PathVariable String token,
             @Valid @RequestBody ReviewGrantRequest input,
@@ -73,7 +89,7 @@ public class PublicPrototypeReviewController {
     }
 
     @PostMapping("/logout")
-    @Operation(summary = "结束当前邮箱身份并轮换为匿名Cookie")
+    @Operation(summary = "结束当前访客身份并轮换为匿名Cookie")
     public Mono<Map<String, Boolean>> logout(
             @PathVariable String token,
             @Valid @RequestBody ReviewGrantRequest input,

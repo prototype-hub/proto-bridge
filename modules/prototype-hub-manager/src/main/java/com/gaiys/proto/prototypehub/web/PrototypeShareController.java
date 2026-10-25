@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.web;
 
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
+import com.gaiys.proto.prototypehub.web.request.ReviewPolicyRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareEnabledRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareMutationRequest;
@@ -47,16 +48,16 @@ public class PrototypeShareController {
 
     @GetMapping("/shares/{id}/review")
     @QueryAction
-    @Operation(summary = "查询分享邮箱身份策略")
+    @Operation(summary = "查询分享访客身份策略")
     public Mono<ReviewPolicyResponse> review(@PathVariable String id) {
         return shares.reviewPolicy(id);
     }
 
     @PutMapping("/shares/{id}/review")
     @SaveAction
-    @Operation(summary = "设置分享邮箱身份策略", description = "按配置版本CAS更新并轮换旧凭据，仅该入口修改邮箱身份开关")
+    @Operation(summary = "设置分享访客身份策略", description = "按配置版本CAS更新并轮换旧凭据，未传低保障开关时保留现值")
     public Mono<ReviewPolicyResponse> review(
-            @PathVariable String id, @Valid @RequestBody ShareEnabledRequest input) {
+            @PathVariable String id, @Valid @RequestBody ReviewPolicyRequest input) {
         return shares.reviewPolicy(id, input);
     }
 
