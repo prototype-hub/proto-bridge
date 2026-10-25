@@ -82,6 +82,7 @@ class MenuStartupInitializationIntegrationTest {
                 Set.of(
                         "131a644480a0c3253a08103fedfe3280",
                         "protohub",
+                        "prototype-hub-recycle",
                         "615414e79a20b30ea5e0babd4e2ef756",
                         "system-basis",
                         "system-user",
@@ -98,10 +99,10 @@ class MenuStartupInitializationIntegrationTest {
                 menus.createQuery().fetch().collectMap(MenuEntity::getId).block(TIMEOUT);
         assertNotNull(existing);
         assertEquals(expected, existing.keySet());
-        assertEquals(38, existing.values().stream().mapToInt(row -> row.getButtons().size()).sum());
+        assertEquals(39, existing.values().stream().mapToInt(row -> row.getButtons().size()).sum());
         assertFalse(
                 Boolean.TRUE.equals(initialization.initializeIfEmpty(unreadable()).block(TIMEOUT)));
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
         assertEquals("原型项目", existing.get("protohub").getName());
         assertEquals("基础配置", existing.get("system-basis").getName());
         assertEquals("用户管理", existing.get("system-user").getName());
@@ -199,7 +200,7 @@ class MenuStartupInitializationIntegrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getId).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(14, actual.size());
+        assertEquals(15, actual.size());
         assertPackagedButtonPermissions(actual);
         List<MenuEntity> expected;
         try (var input =
@@ -245,7 +246,7 @@ class MenuStartupInitializationIntegrationTest {
         String admin = login("admin");
         JsonNode tree = call("POST", "/menu/_all/tree", admin, Map.of());
         assertEquals(2, tree.size());
-        assertEquals(14, menuCodes(tree).size());
+        assertEquals(15, menuCodes(tree).size());
         assertEquals("system/Log/Access", find(tree, "system-access-log").path("code").asText());
         JsonNode englishTree = call("POST", "/menu/_all/tree", admin, Map.of(), "en-US");
         JsonNode chineseTree = call("POST", "/menu/_all/tree", admin, Map.of(), "zh-CN");
@@ -288,7 +289,7 @@ class MenuStartupInitializationIntegrationTest {
     @Test
     void startupRunnerImportsResourceWithAdministratorAndMemberHttpVisibility() {
         startup.run(new DefaultApplicationArguments());
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
         String admin = login("admin");
         JsonNode administratorTree = call("POST", "/menu/user-own/tree", admin, Map.of());
         Set<String> administratorCodes = menuCodes(administratorTree);
@@ -296,6 +297,7 @@ class MenuStartupInitializationIntegrationTest {
                 Set.of(
                         "prototype-hub",
                         "prototype-hub/Project",
+                        "prototype-hub/Recycle",
                         "system",
                         "system/Basis",
                         "system/User",
@@ -329,7 +331,7 @@ class MenuStartupInitializationIntegrationTest {
         // Raw legacy payloads retain empty folders. Page permissions must still hide every
         // management leaf; the frontend menu adapter handles these empty group containers.
         memberCodes.removeAll(Set.of("prototype-hub", "system", "system/Log"));
-        assertEquals(Set.of("prototype-hub/Project"), memberCodes);
+        assertEquals(Set.of("prototype-hub/Project", "prototype-hub/Recycle"), memberCodes);
         JsonNode project = find(memberTree, "protohub");
         assertTrue(project.path("granted").asBoolean());
         assertEquals(3, project.path("buttons").size());
@@ -397,7 +399,7 @@ class MenuStartupInitializationIntegrationTest {
                 () -> initialization.initializeIfEmpty(mismatched).block(TIMEOUT));
         assertEquals(0, menus.createQuery().count().block(TIMEOUT));
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
         assertTrue(
                 menus.createQuery()
                         .fetch()
@@ -422,7 +424,7 @@ class MenuStartupInitializationIntegrationTest {
             assertEquals(0, menus.createQuery().count().block(TIMEOUT));
         }
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
     }
 
     @Test
@@ -466,7 +468,7 @@ class MenuStartupInitializationIntegrationTest {
                     .block(TIMEOUT);
         }
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
     }
 
     @Test
@@ -494,7 +496,174 @@ class MenuStartupInitializationIntegrationTest {
         assertNotNull(result);
         assertNotEquals(result.getT1(), result.getT2());
         assertEquals(1, reads.get());
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
+    }
+
+    @Test
+    void existingProductGetsOnlyMissingRecycleWithoutChangingMenusOrGrantingRoles()
+            throws Exception {
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        menus.deleteById("prototype-hub-recycle").block(TIMEOUT);
+        menus.createUpdate()
+                .set(MenuEntity::getName, "自定义项目入口")
+                .where(MenuEntity::getId, "protohub")
+                .execute()
+                .block(TIMEOUT);
+        Map<String, String> before = menuSnapshot();
+        long grants =
+                database.sql("SELECT count(*) AS total FROM s_role_menu_grant")
+                        .map((row, metadata) -> row.get("total", Long.class))
+                        .one()
+                        .block(TIMEOUT);
+        assertTrue(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        var recycle = menus.findById("prototype-hub-recycle").block(TIMEOUT);
+        assertNotNull(recycle);
+        assertEquals("回收站", recycle.getName());
+        assertEquals("prototype-hub/Recycle", recycle.getComponentCode());
+        assertEquals("/prototype-hub/recycle-bin", recycle.getUrl());
+        assertEquals(
+                Map.of("prototype-hub-project", Set.of("query")),
+                MenuGrantService.permissions(recycle, List.of()));
+        assertEquals(
+                Map.of("prototype-hub-project", Set.of("query", "save")),
+                MenuGrantService.permissions(recycle, List.of("restore")));
+        var after = menuSnapshot();
+        after.remove("prototype-hub-recycle");
+        assertEquals(before, after);
+        assertEquals(
+                grants,
+                database.sql("SELECT count(*) AS total FROM s_role_menu_grant")
+                        .map((row, metadata) -> row.get("total", Long.class))
+                        .one()
+                        .block(TIMEOUT));
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+    }
+
+    @Test
+    void foreignOwnerParentNeverReceivesProductMenuAdditions() throws Exception {
+        var foreignParent = new MenuEntity();
+        foreignParent.setId("131a644480a0c3253a08103fedfe3280");
+        foreignParent.setName("Other owner parent");
+        foreignParent.setCode("prototype-hub");
+        foreignParent.setOwner("custom");
+        menus.save(Mono.just(foreignParent)).block(TIMEOUT);
+        var foreignTree = menuSnapshot();
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        assertEquals(foreignTree, menuSnapshot());
+    }
+
+    @Test
+    void targetedAdditionPreservesDisabledAndCustomEntriesAndRequiresTheProductParent()
+            throws Exception {
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        menus.createUpdate()
+                .set(MenuEntity::getEnabled, false)
+                .where(MenuEntity::getId, "prototype-hub-recycle")
+                .execute()
+                .block(TIMEOUT);
+        var disabled = menuSnapshot();
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        assertEquals(disabled, menuSnapshot());
+        menus.deleteById("prototype-hub-recycle").block(TIMEOUT);
+        menus.createUpdate()
+                .set(MenuEntity::getEnabled, false)
+                .where(MenuEntity::getId, "131a644480a0c3253a08103fedfe3280")
+                .execute()
+                .block(TIMEOUT);
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        menus.createUpdate()
+                .set(MenuEntity::getEnabled, true)
+                .where(MenuEntity::getId, "131a644480a0c3253a08103fedfe3280")
+                .execute()
+                .block(TIMEOUT);
+        var custom = new MenuEntity();
+        custom.setId("custom-recycle-route");
+        custom.setName("Custom disabled recycle route");
+        custom.setOwner("custom");
+        custom.setCode("custom-recycle");
+        custom.setUrl("/prototype-hub/recycle-bin");
+        custom.setEnabled(false);
+        menus.save(Mono.just(custom)).block(TIMEOUT);
+        var customized = menuSnapshot();
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        assertEquals(customized, menuSnapshot());
+        menus.createUpdate()
+                .set(MenuEntity::getUrl, "/custom/recycle")
+                .set(MenuEntity::getComponentCode, "prototype-hub/Recycle")
+                .where(MenuEntity::getId, "custom-recycle-route")
+                .execute()
+                .block(TIMEOUT);
+        var componentOverride = menuSnapshot();
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+        assertEquals(componentOverride, menuSnapshot());
+        menus.deleteById("custom-recycle-route").block(TIMEOUT);
+        // 已有产品标识被管理员改作其他菜单时，同样不恢复或重写它。
+        menus.createUpdate()
+                .set(MenuEntity::getCode, "custom-parent")
+                .where(MenuEntity::getId, "131a644480a0c3253a08103fedfe3280")
+                .execute()
+                .block(TIMEOUT);
+        assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+    }
+
+    @Test
+    void concurrentTargetedAdditionsCreateOneTreeEntry() {
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        menus.deleteById("prototype-hub-recycle").block(TIMEOUT);
+        var outcomes =
+                Mono.zip(
+                                initialization.ensureRecycleMenuIfMissing(),
+                                initialization.ensureRecycleMenuIfMissing())
+                        .block(TIMEOUT);
+        assertNotNull(outcomes);
+        assertNotEquals(outcomes.getT1(), outcomes.getT2());
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
+        var parent = menus.findById("131a644480a0c3253a08103fedfe3280").block(TIMEOUT);
+        var recycle = menus.findById("prototype-hub-recycle").block(TIMEOUT);
+        assertTrue(recycle.getPath().startsWith(parent.getPath()));
+        assertEquals(parent.getLevel() + 1, recycle.getLevel());
+    }
+
+    @Test
+    void failedTargetedAdditionRollsBackAndCanBeRetriedWithoutChangingExistingTree()
+            throws Exception {
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        menus.deleteById("prototype-hub-recycle").block(TIMEOUT);
+        var before = menuSnapshot();
+        database.sql(
+                        "CREATE FUNCTION reject_recycle_menu() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='prototype-hub-recycle' THEN RAISE EXCEPTION 'forced recycle failure'; END IF; RETURN NEW; END $$")
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        database.sql(
+                        "CREATE TRIGGER reject_recycle_menu BEFORE INSERT ON s_menu FOR EACH ROW EXECUTE FUNCTION reject_recycle_menu()")
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        try {
+            assertThrows(
+                    RuntimeException.class,
+                    () -> initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+            assertEquals(before, menuSnapshot());
+        } finally {
+            database.sql("DROP TRIGGER reject_recycle_menu ON s_menu")
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+            database.sql("DROP FUNCTION reject_recycle_menu()")
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        }
+        assertTrue(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+    }
+
+    private Map<String, String> menuSnapshot() throws Exception {
+        Map<String, String> snapshot = new LinkedHashMap<>();
+        for (MenuEntity menu : menus.createQuery().fetch().collectList().block(TIMEOUT))
+            snapshot.put(menu.getId(), mapper.writeValueAsString(menu));
+        return snapshot;
     }
 
     private Resource text(String value) {

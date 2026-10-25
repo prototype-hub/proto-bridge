@@ -158,4 +158,4 @@ SMTP_LOCALHOST: 'localhost' # 可改为邮件服务要求的 EHLO 域名
 SMTP_DEFAULT_ENCODING: 'UTF-8'
 
 PROTOTYPEHUB_REVIEW_COOKIESECURE: 'true' # 仅 localhost HTTP 测试可显式 false
-PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN: '' # 完整可信前端 Origin，如 https://prototype.example.com
+PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN: '' # 完整可信前端 Origin；本地按浏览器填 http://127.0.0.1:5173 或 http://localhost:5173，二者不同

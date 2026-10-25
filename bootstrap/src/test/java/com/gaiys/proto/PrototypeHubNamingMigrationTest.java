@@ -283,7 +283,7 @@ class PrototypeHubNamingMigrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getCode).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(14, actual.size());
+        assertEquals(15, actual.size());
         assertTrue(actual.containsKey("prototype-hub"));
         MenuEntity project = actual.get("prototype-hub/Project");
         assertNotNull(project);
@@ -292,7 +292,8 @@ class PrototypeHubNamingMigrationTest {
         assertEquals(actual.get("prototype-hub").getId(), project.getParentId());
         assertEquals("原型项目", project.getName());
         assertEquals("Prototype Projects", project.getI18nMessages().get("name").get("en_US"));
-        assertEquals(38, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
+        assertEquals(39, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
+        assertEquals("/prototype-hub/recycle-bin", actual.get("prototype-hub/Recycle").getUrl());
         assertEquals(3, project.getButtons().size());
         for (Map<String, Object> button : project.getButtons()) {
             JsonNode value = mapper.valueToTree(button);
@@ -306,7 +307,7 @@ class PrototypeHubNamingMigrationTest {
             assertEquals(PERMISSIONS, resources);
         }
         assertFalse(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(14, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
     }
 
     private void assertConflict(String conflictSql, String expectedMessage) throws Exception {

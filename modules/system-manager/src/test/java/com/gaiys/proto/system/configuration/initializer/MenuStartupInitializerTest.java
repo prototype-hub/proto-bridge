@@ -14,9 +14,11 @@ class MenuStartupInitializerTest {
         for (boolean imported : new boolean[] {true, false}) {
             var service = mock(MenuStartupInitializationService.class);
             when(service.initializeIfEmpty()).thenReturn(Mono.just(imported));
+            when(service.ensureRecycleMenuIfMissing()).thenReturn(Mono.just(false));
             var initializer = new MenuStartupInitializer(service);
             assertDoesNotThrow(() -> initializer.run(new DefaultApplicationArguments()));
             verify(service).initializeIfEmpty();
+            verify(service).ensureRecycleMenuIfMissing();
         }
     }
 
@@ -25,6 +27,7 @@ class MenuStartupInitializerTest {
         var service = mock(MenuStartupInitializationService.class);
         var failure = new IllegalStateException("Invalid default menu resource");
         when(service.initializeIfEmpty()).thenReturn(Mono.error(failure));
+        when(service.ensureRecycleMenuIfMissing()).thenReturn(Mono.just(false));
         var initializer = new MenuStartupInitializer(service);
         assertSame(
                 failure,

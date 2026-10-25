@@ -18,19 +18,23 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Imports the packaged default menu tree only when the entire menu table is empty after EasyORM
- * startup.
+ * Imports the packaged default menu tree into an empty table and adds a missing built-in recycle
+ * entry to an existing product tree after EasyORM startup.
  *
  * <p>Every invocation takes the shared initialization row lock and rechecks the table in the same
- * reactive transaction as the existing tree save. Any existing row, including disabled menus and
- * previously initialized menus, prevents import. Classpath I/O is bounded and isolated; this
- * service never reads the source export or local config.
+ * reactive transaction as the existing tree save. Existing rows prevent full import; the targeted
+ * addition preserves customized or disabled entries and never assigns role grants. Classpath I/O is
+ * bounded and isolated; this service never reads the source export or local config.
  */
 @Service
 public class MenuStartupInitializationService {
     static final String DEFAULT_RESOURCE = "menus/default-menus.json";
     // 启动仅导入当前产品的内置资源；既有 iot 等归属由非空表保护保留，不做迁移或覆盖。
     static final String DEFAULT_OWNER = "proto";
+    private static final String PROTOTYPE_PARENT = "131a644480a0c3253a08103fedfe3280";
+    private static final String RECYCLE_ID = "prototype-hub-recycle";
+    private static final String RECYCLE_CODE = "prototype-hub/Recycle";
+    private static final String RECYCLE_URL = "/prototype-hub/recycle-bin";
     private static final int MAX_RESOURCE_BYTES = 1024 * 1024;
     private final SystemInitializationLockService initializationLock;
     private final MenuService menus;
@@ -54,6 +58,63 @@ public class MenuStartupInitializationService {
 
     public Mono<Boolean> initializeIfEmpty() {
         return initializeIfEmpty(new ClassPathResource(DEFAULT_RESOURCE));
+    }
+
+    /** 仅补已存在产品树中缺失的回收站入口；不重写自定义菜单、禁用项或任何角色授权。 */
+    public Mono<Boolean> ensureRecycleMenuIfMissing() {
+        return Mono.defer(
+                        () ->
+                                initializationLock
+                                        .acquire()
+                                        .then(menus.findById(PROTOTYPE_PARENT))
+                                        .filter(
+                                                parent ->
+                                                        DEFAULT_OWNER.equals(parent.getOwner())
+                                                                && "prototype-hub"
+                                                                        .equals(parent.getCode())
+                                                                && Boolean.TRUE.equals(
+                                                                        parent.getEnabled()))
+                                        .flatMap(
+                                                parent ->
+                                                        menus.createQuery()
+                                                                .where(
+                                                                        MenuEntity::getId,
+                                                                        RECYCLE_ID)
+                                                                .or(
+                                                                        MenuEntity::getCode,
+                                                                        RECYCLE_CODE)
+                                                                .or(
+                                                                        MenuEntity
+                                                                                ::getComponentCode,
+                                                                        RECYCLE_CODE)
+                                                                .or(MenuEntity::getUrl, RECYCLE_URL)
+                                                                .count()
+                                                                .flatMap(
+                                                                        count ->
+                                                                                count > 0
+                                                                                        ? Mono.just(
+                                                                                                false)
+                                                                                        : insertRecycleMenu()))
+                                        .defaultIfEmpty(false))
+                .as(transactions::transactional);
+    }
+
+    private Mono<Boolean> insertRecycleMenu() {
+        return Mono.fromCallable(() -> readMenus(new ClassPathResource(DEFAULT_RESOURCE)))
+                .subscribeOn(Schedulers.boundedElastic())
+                .map(
+                        rows ->
+                                rows.stream()
+                                        .filter(row -> PROTOTYPE_PARENT.equals(row.getId()))
+                                        .flatMap(row -> row.getChildren().stream())
+                                        .filter(row -> RECYCLE_ID.equals(row.getId()))
+                                        .findFirst()
+                                        .orElseThrow(
+                                                () ->
+                                                        new IllegalStateException(
+                                                                "Packaged recycle menu is missing")))
+                // 复用官方树保存补齐path/level，并保留已有父节点的展示配置。
+                .flatMap(row -> menus.save(Mono.just(row)).thenReturn(true));
     }
 
     // Package-private resource seam keeps failure tests independent of the production classpath.

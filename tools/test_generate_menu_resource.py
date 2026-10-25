@@ -106,8 +106,13 @@ class MenuResourceLanguageTest(unittest.TestCase):
         roots = json.loads(PACKAGED.read_text())
         rows = flatten(roots)
         self.assertEqual(2, len(roots))
-        self.assertEqual(14, len(rows))
-        self.assertEqual(38, sum(len(row["buttons"]) for row in rows.values()))
+        self.assertEqual(15, len(rows))
+        self.assertEqual(39, sum(len(row["buttons"]) for row in rows.values()))
+        recycle = rows["prototype-hub-recycle"]
+        self.assertEqual("prototype-hub/Recycle", recycle["componentCode"])
+        self.assertEqual("/prototype-hub/recycle-bin", recycle["url"])
+        self.assertEqual([{"permission": "prototype-hub-project", "actions": ["query"]}], recycle["permissions"])
+        self.assertEqual([{"permission": "prototype-hub-project", "actions": ["save"]}], recycle["buttons"][0]["permissions"])
         for row in rows.values():
             self.assertEqual("proto", row["owner"])
             self.assertEqual(row["name"], row["i18nMessages"]["name"]["zh_CN"])
