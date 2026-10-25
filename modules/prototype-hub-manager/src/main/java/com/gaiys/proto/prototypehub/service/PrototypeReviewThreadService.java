@@ -62,6 +62,22 @@ public class PrototypeReviewThreadService {
         return memberPage(versionId, input).flatMap(scope -> queryThreads(scope, input));
     }
 
+    /** 深链只定位当前访客有权读取的页面线程，不依赖列表分页或放宽身份范围。 */
+    public Mono<ReviewThreadResponse> detailVisitor(
+            String token, String threadId, ReviewPageRequest input, String cookie) {
+        return visitorPage(token, input, cookie)
+                .flatMap(scope -> requireThread(scope, threadId))
+                .map(PrototypeReviewThreadService::response);
+    }
+
+    /** 管理详情沿用页面读取的项目EDIT检查，不因持有线程标识而获得额外权限。 */
+    public Mono<ReviewThreadResponse> detailMember(
+            String versionId, String threadId, ReviewPageRequest input) {
+        return memberPage(versionId, input)
+                .flatMap(scope -> requireThread(scope, threadId))
+                .map(PrototypeReviewThreadService::response);
+    }
+
     public Mono<PagerResult<ReviewMessageResponse>> messagesVisitor(
             String token, String threadId, ReviewMessageQueryRequest input, String cookie) {
         return visitorPage(token, input, cookie)

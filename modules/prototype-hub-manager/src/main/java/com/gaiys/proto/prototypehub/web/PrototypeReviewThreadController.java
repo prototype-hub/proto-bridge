@@ -3,6 +3,7 @@ package com.gaiys.proto.prototypehub.web;
 import com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService;
 import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
@@ -40,6 +41,16 @@ public class PrototypeReviewThreadController {
     public Mono<PagerResult<ReviewThreadResponse>> query(
             @PathVariable String versionId, @Valid @RequestBody ReviewThreadQueryRequest input) {
         return threads.queryMember(versionId, input);
+    }
+
+    @PostMapping("/{threadId}/_detail")
+    @QueryAction
+    @Operation(summary = "按固定页面定位评审线程")
+    public Mono<ReviewThreadResponse> detail(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            @Valid @RequestBody ReviewPageRequest input) {
+        return threads.detailMember(versionId, threadId, input);
     }
 
     @PostMapping("/{threadId}/messages/_query")

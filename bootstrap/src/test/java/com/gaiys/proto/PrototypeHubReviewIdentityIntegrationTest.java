@@ -1886,6 +1886,194 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     @Test
+    void pageFeedbackDetailsLocateBothIdentityLevelsOutsideListPagesWithoutMutation()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser email = verify(f, context(f, null), "detail@example.invalid", "邮箱作者", "客户公司");
+        Browser unverified = unverified(f, context(f, null), "未验证作者", null, 200);
+        JsonNode emailThread =
+                feedback(f, email, HttpMethod.POST, "threads", feedbackFields("定位旧线程"), 200);
+        String id = emailThread.path("id").asText();
+        JsonNode newest =
+                feedback(f, email, HttpMethod.POST, "threads", feedbackFields("列表新线程"), 200);
+        JsonNode lowThread =
+                feedback(f, unverified, HttpMethod.POST, "threads", feedbackFields("未验证线程"), 200);
+        String note = "仅供内部使用的定位备注";
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                admin,
+                Map.of(
+                        "text",
+                        note,
+                        "visibility",
+                        "internal",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        Actor editor = actor(List.of("query"), "prototype-hub-version");
+        member(f, editor, "editor");
+        Actor owner = actor(List.of("query"), "prototype-hub-version");
+        database.sql("update p_project set owner_id=:owner where id=:id")
+                .bind("owner", owner.id)
+                .bind("id", f.project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        long events = count("p_review_event");
+        long receipts =
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        f.grant.path("revisionId").asText());
+        JsonNode firstPage =
+                feedback(f, email, HttpMethod.POST, "threads/_query", Map.of("pageSize", 1), 200);
+        assertEquals(2, firstPage.path("total").asInt());
+        assertEquals(newest.path("id"), firstPage.path("data").get(0).path("id"));
+        assertFalse(firstPage.path("data").toString().contains(id));
+        assertEquals(
+                0,
+                feedback(
+                                f,
+                                email,
+                                HttpMethod.POST,
+                                "threads/_query",
+                                Map.of("state", "resolved"),
+                                200)
+                        .path("total")
+                        .asInt());
+        for (var entry : Map.of(email, emailThread, unverified, lowThread).entrySet()) {
+            JsonNode expected = entry.getValue();
+            String detail = expected.path("id").asText() + "/_detail";
+            JsonNode actual =
+                    feedback(
+                            f, entry.getKey(), HttpMethod.POST, "threads/" + detail, Map.of(), 200);
+            assertEquals(expected, actual);
+            assertFalse(actual.has("guestId"));
+            assertFalse(actual.has("email"));
+            assertFalse(actual.has("messages"));
+            assertFalse(actual.toString().contains(note));
+            for (String token : List.of(admin, owner.token, editor.token))
+                assertEquals(
+                        expected, pmFeedback(f, detail, HttpMethod.POST, token, Map.of(), 200));
+        }
+        assertEquals(3, count("p_review_thread"));
+        assertEquals(4, count("p_review_message"));
+        assertEquals(events, count("p_review_event"));
+        assertEquals(
+                receipts,
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        f.grant.path("revisionId").asText()));
+    }
+
+    @Test
+    void pageFeedbackDetailsRetainScopeSecurityAndCurrentLifecycleChecks() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "作者", null, 200);
+        Browser other = unverified(f, context(f, null), "作者", null, 200);
+        Browser email = verify(f, context(f, null), "foreign-detail@example.invalid", "作者", null);
+        String id =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("不能越界定位"), 200)
+                        .path("id")
+                        .asText();
+        String path = "threads/" + id + "/_detail";
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED",
+                feedback(f, context(f, null), HttpMethod.POST, path, Map.of(), 403)
+                        .path("code")
+                        .asText());
+        for (Browser visitor : List.of(other, email))
+            assertEquals(
+                    "PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE",
+                    feedback(f, visitor, HttpMethod.POST, path, Map.of(), 404)
+                            .path("code")
+                            .asText());
+        feedback(
+                f, guest, HttpMethod.POST, "threads/" + "x".repeat(43) + "/_detail", Map.of(), 404);
+        feedback(f, guest, HttpMethod.POST, path, Map.of("pageId", "f".repeat(64)), 404);
+        feedback(f, guest, HttpMethod.POST, path, Map.of("revisionId", "wrong-revision"), 403);
+        feedback(f, guest, HttpMethod.POST, path, Map.of("pageId", ""), 400);
+        for (var entry :
+                Map.of(
+                                "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED", "origin",
+                                "PROTOTYPE_HUB_REVIEW_CSRF_INVALID", "csrf",
+                                "PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED", "cookie")
+                        .entrySet()) {
+            String boundary = entry.getValue();
+            JsonNode denied =
+                    exchange(
+                                    f,
+                                    path,
+                                    Map.of("pageId", feedbackPage()),
+                                    boundary.equals("cookie") ? null : guest.cookie,
+                                    boundary.equals("csrf") ? "wrong" : guest.csrf(),
+                                    boundary.equals("origin") ? null : ORIGIN,
+                                    403)
+                            .data;
+            assertEquals(entry.getKey(), denied.path("code").asText());
+        }
+        JsonNode share =
+                management(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + f.version.path("id").asText() + "/shares",
+                        admin,
+                        Map.of(),
+                        200);
+        Fixture second = new Fixture(f.project, f.version, share, null);
+        management(
+                HttpMethod.PUT,
+                manage(second),
+                admin,
+                Map.of(
+                        "enabled", true,
+                        "allowComment", true,
+                        "allowUnverified", true,
+                        "expectedVersion", 1),
+                200);
+        second = refresh(second);
+        Browser secondGuest = unverified(second, context(second, null), "作者", null, 200);
+        feedback(second, secondGuest, HttpMethod.POST, path, Map.of(), 404);
+        Fixture foreign = feedbackFixture();
+        Browser foreignGuest = unverified(foreign, context(foreign, null), "作者", null, 200);
+        feedback(foreign, foreignGuest, HttpMethod.POST, path, Map.of(), 404);
+        pmFeedback(foreign, id + "/_detail", HttpMethod.POST, admin, Map.of(), 404);
+        Actor viewer = actor(List.of("query"), "prototype-hub-version");
+        Actor noQuery = actor(List.of("save"), "prototype-hub-version");
+        Actor outsider = actor(List.of("query"), "prototype-hub-version");
+        member(f, viewer, "viewer");
+        member(f, noQuery, "editor");
+        pmFeedback(f, id + "/_detail", HttpMethod.POST, viewer.token, Map.of(), 403);
+        pmFeedback(f, id + "/_detail", HttpMethod.POST, noQuery.token, Map.of(), 403);
+        pmFeedback(f, id + "/_detail", HttpMethod.POST, outsider.token, Map.of(), 404);
+        management(
+                HttpMethod.PUT,
+                "/prototype-hub/projects/"
+                        + f.project
+                        + "/review-guests/"
+                        + guest.guest()
+                        + "/enabled?verificationLevel=unverified",
+                admin,
+                Map.of("enabled", false, "expectedVersion", 0),
+                200);
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED",
+                feedback(f, guest, HttpMethod.POST, path, Map.of(), 403).path("code").asText());
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", true, "allowComment", false, "expectedVersion", 3),
+                200);
+        feedback(f, other, HttpMethod.POST, path, Map.of(), 403);
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_COMMENTS_DISABLED",
+                feedback(refresh(f), other, HttpMethod.POST, path, Map.of(), 403)
+                        .path("code")
+                        .asText());
+    }
+
+    @Test
     void pageFeedbackScopeSessionAndPermissionIntersectionsAreAuthoritative() throws Exception {
         Fixture f = feedbackFixture();
         Browser guest = unverified(f, context(f, null), "同名", null, 200);
