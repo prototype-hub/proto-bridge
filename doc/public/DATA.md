@@ -22,9 +22,66 @@
 
 已有用户、密码、自定义菜单和手工授权保留；重复启动不重新赋予已撤销的权限、不启用已禁用角色。初始化所需的 ADMIN/MEMBER 角色及权限属于用户体系前提。生产不需要额外初始化 SQL；若后续增加部署初始化脚本，其范围仅限菜单和用户及必要的角色授权数据，不把建表、原型项目或其他业务种子混入其中。
 
-菜单全量初始化仅在 `s_menu` **全表没有任何记录**时导入 classpath 的 `menus/default-menus.json`。资源随 JAR 打包，运行时不读取工程根目录 `data.json`。生成资源保留 **2 个根、15 个菜单节点和 39 个按钮**；任何已有菜单（包括其他 owner 或禁用菜单）都会阻止全量重新导入。多个应用实例先通过官方 upsert 确保角色维度行存在，在同一事务锁住该行后再次判断空表；解析、校验或保存失败整体回滚。该锁用于配合本版本的应用启动初始化，不替代部署期间对外部写库工具的停写管理。
+菜单全量初始化仅在 `s_menu` **全表没有任何记录**时导入 classpath 的 `menus/default-menus.json`。资源随 JAR 打包，运行时不读取工程根目录 `data.json`。生成资源保留 **2 个根、15 个菜单节点和 42 个按钮**；任何已有菜单（包括其他 owner 或禁用菜单）都会阻止全量重新导入。多个应用实例先通过官方 upsert 确保角色维度行存在，在同一事务锁住该行后再次判断空表；解析、校验或保存失败整体回滚。该锁用于配合本版本的应用启动初始化，不替代部署期间对外部写库工具的停写管理。
 
-回收站入口是针对旧产品树的单项补充：启动时只有内置 `proto` 原型管理父节点仍启用、且没有相同标识、组件编码或路由的菜单时，才新增 `prototype-hub/Recycle`（`/prototype-hub/recycle-bin`）。已有自定义或禁用入口保持原样，不删除/替换菜单，不自动给角色追加授权。入口需要项目查询权限，“恢复”按钮需要项目保存权限；数据仍受项目所有权和原恢复规则约束。多个实例的补充沿用同一初始化事务锁，保存失败可在下次启动重试。
+回收站入口是针对旧产品树的单项补充：启动时只有内置 `proto` 原型管理父节点仍启用、且没有相同标识、组件编码或路由的菜单时，才新增 `prototype-hub/Recycle`（`/prototype-hub/recycle-bin`）。已有自定义或禁用入口保持原样，不删除/替换菜单，不自动给角色追加授权。多个实例的补充沿用同一初始化事务锁，保存失败可在下次启动重试。已安装的旧回收站入口也不会自动追加版本权限或按钮，需管理员按下节审核更新。
+
+### 手动配置统一回收站入口
+
+前端在同一回收站页提供“项目回收站”和“版本回收站”两个标签，不增加“历史记录”页面或菜单。新建入口时，使用以下字段；已有入口先导出备份，在原菜单上调整，保留其实际 `id`、`parentId`、`owner`、自定义名称和展示配置，避免创建相同路由的第二个入口。下例的父节点为默认“原型管理”，菜单编码与组件编码均为 `prototype-hub/Recycle`，路由为 `/prototype-hub/recycle-bin`。父节点须启用且没有额外查询权限限制，才能供单一查询权限的账号进入。
+
+```json
+{
+  "id": "prototype-hub-recycle",
+  "parentId": "131a644480a0c3253a08103fedfe3280",
+  "owner": "proto",
+  "name": "回收站",
+  "code": "prototype-hub/Recycle",
+  "componentCode": "prototype-hub/Recycle",
+  "url": "/prototype-hub/recycle-bin",
+  "icon": "DeleteOutlined",
+  "sortIndex": 2,
+  "enabled": true,
+  "accessSupport": "unsupported",
+  "permissions": [],
+  "options": { "show": true },
+  "i18nMessages": {
+    "name": { "zh_CN": "回收站", "en_US": "Recycle bin", "en": "Recycle bin" }
+  },
+  "buttons": [
+    {
+      "id": "queryProjects",
+      "name": "查询项目回收站",
+      "permissions": [{ "permission": "prototype-hub-project", "actions": ["query"] }],
+      "i18nMessages": { "zh_CN": "查询项目回收站", "en_US": "Query Project Recycle Bin", "en": "Query Project Recycle Bin" }
+    },
+    {
+      "id": "queryVersions",
+      "name": "查询版本回收站",
+      "permissions": [{ "permission": "prototype-hub-version", "actions": ["query"] }],
+      "i18nMessages": { "zh_CN": "查询版本回收站", "en_US": "Query Version Recycle Bin", "en": "Query Version Recycle Bin" }
+    },
+    {
+      "id": "restore",
+      "name": "恢复项目",
+      "permissions": [{ "permission": "prototype-hub-project", "actions": ["query", "save"] }],
+      "i18nMessages": { "zh_CN": "恢复项目", "en_US": "Restore Project", "en": "Restore Project" }
+    },
+    {
+      "id": "restoreVersion",
+      "name": "恢复版本",
+      "permissions": [{ "permission": "prototype-hub-version", "actions": ["query", "save"] }],
+      "i18nMessages": { "zh_CN": "恢复版本", "en_US": "Restore Version", "en": "Restore Version" }
+    }
+  ]
+}
+```
+
+在菜单管理中将页面“权限配置”设为空，分别维护上述四个按钮。菜单的多个资源要求按 **AND** 合并，不能把两个 `query` 资源同时放进页面 `permissions` 来表达“任一权限”；历史兼容字段 `permission/action` 若非空也会参与授权，需先核对现存配置，不能直接套用默认菜单示例。按钮的 `permissions` 是对象数组，使用 `permission` 和字符串数组 `actions`，不是 `prototype-hub-project:query` 字符串或布尔值。已有 `restore` 按钮保留原 ID，补足查询动作后仍仅管理项目；不要将版本保存权限混入该按钮。
+
+在角色管理中**显式选择该菜单**，再按职责选择“查询项目回收站”或“查询版本回收站”；需要恢复时只选择对应恢复按钮，恢复按钮已包含该类的查询动作。页面和接口读取真实资源动作：只有项目 `query` 时仅可使用项目标签，只有版本 `query` 时仅可使用版本标签，`save` 再配合相应数据范围决定能否恢复。页面入口本身不授予查询或恢复能力；未授予任何查询动作时显示无可用权限状态，不请求回收站列表。沿用旧资源授权、尚未建立菜单选择记录的角色，可能看到该空权限入口，但不会由此获得资源动作。
+
+保存菜单元数据不等于给已有角色追加授权；旧角色是否增加版本查询或恢复应逐个审查，再显式保存角色授权并刷新当前菜单。管理员只能分配自身拥有的资源动作。项目恢复仍仅当前 owner/admin 可操作；版本恢复要求活动父项目及 owner/editor/admin 的编辑能力，viewer 不可恢复。30 天保留期和后端所有权、额度、状态校验保持不变，见[回收站接口](API.md#回收站与逐项恢复)。
 
 需要重新生成资源时，先导出自己有权使用的菜单 JSON，并把下面的示例路径替换为实际文件（项目不依赖根目录历史 data.json）：
 

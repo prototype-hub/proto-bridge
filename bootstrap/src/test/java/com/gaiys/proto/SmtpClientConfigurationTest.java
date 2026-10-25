@@ -2,6 +2,10 @@ package com.gaiys.proto;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.notification.SmtpNotificationGateway;
+import com.gaiys.proto.prototypehub.storage.work.FileWork;
+import io.micrometer.observation.ObservationRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.Map;
@@ -13,7 +17,9 @@ import org.springframework.boot.env.YamlPropertySourceLoader;
 import org.springframework.boot.test.context.runner.ApplicationContextRunner;
 import org.springframework.core.env.SystemEnvironmentPropertySource;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.mail.javamail.JavaMailSender;
 import org.springframework.mail.javamail.JavaMailSenderImpl;
+import reactor.test.StepVerifier;
 
 /** 从实际主YAML装配Boot邮件客户端；不连接外部SMTP，也不复制另一套默认配置。 */
 class SmtpClientConfigurationTest {
@@ -174,5 +180,64 @@ class SmtpClientConfigurationTest {
                             assertEquals(
                                     "message@example.invalid", values.getProperty("mail.from"));
                         });
+    }
+
+    @Test
+    void blankFromFallbackSendsThroughRealLoopbackSmtpAndProviderRejectionStaysPrivate()
+            throws IOException {
+        try (var mailbox = new LocalReviewMailbox();
+                var work = new FileWork()) {
+            configured()
+                    .withPropertyValues(
+                            "spring.mail.host=127.0.0.1",
+                            "spring.mail.port=" + mailbox.port(),
+                            "spring.mail.protocol=smtp",
+                            "spring.mail.username=identity@example.invalid",
+                            "spring.mail.password=",
+                            "spring.mail.properties.mail.smtp.from=",
+                            "spring.mail.properties.mail.smtp.auth=false",
+                            "spring.mail.properties.mail.smtp.starttls.enable=false",
+                            "spring.mail.properties.mail.smtp.starttls.required=false",
+                            "spring.mail.properties.mail.smtp.ssl.enable=false",
+                            "spring.mail.properties.mail.smtp.connectiontimeout=2000",
+                            "spring.mail.properties.mail.smtp.timeout=2000",
+                            "spring.mail.properties.mail.smtp.writetimeout=2000")
+                    .run(
+                            context -> {
+                                assertNull(context.getStartupFailure());
+                                var gateway =
+                                        new SmtpNotificationGateway(
+                                                context.getBeanProvider(JavaMailSender.class),
+                                                context.getEnvironment(),
+                                                work,
+                                                ObservationRegistry.NOOP);
+                                StepVerifier.create(
+                                                gateway.sendVerification(
+                                                        "recipient@example.invalid", "123456"))
+                                        .verifyComplete();
+                                var mail = assertDoesNotThrow(mailbox::receive);
+                                assertEquals("recipient@example.invalid", mail.recipient());
+                                assertEquals("123456", mail.code());
+                                mailbox.reject(true);
+                                StepVerifier.create(
+                                                gateway.sendVerification(
+                                                        "recipient@example.invalid", "654321"))
+                                        .expectErrorSatisfies(
+                                                failure -> {
+                                                    assertEquals(
+                                                            503,
+                                                            ((PrototypeHubException) failure)
+                                                                    .getStatus());
+                                                    assertNull(failure.getCause());
+                                                    assertFalse(
+                                                            failure.toString()
+                                                                    .contains("recipient"));
+                                                    assertFalse(
+                                                            failure.toString().contains("654321"));
+                                                })
+                                        .verify();
+                                assertEquals(0, mailbox.pendingMessages());
+                            });
+        }
     }
 }

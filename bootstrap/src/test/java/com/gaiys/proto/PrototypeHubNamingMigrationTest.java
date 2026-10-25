@@ -208,7 +208,8 @@ class PrototypeHubNamingMigrationTest {
                     1,
                     count(
                             connection,
-                            "SELECT count(*) FROM flyway_schema_history WHERE version='18' AND success=true"));
+                            "SELECT count(*) FROM flyway_schema_history WHERE version='18' AND"
+                                    + " success=true"));
         }
     }
 
@@ -221,27 +222,33 @@ class PrototypeHubNamingMigrationTest {
                     3,
                     count(
                             connection,
-                            "SELECT count(*) FROM s_permission WHERE id IN ('prototype-hub-project','prototype-hub-version','prototype-hub-share')"));
+                            "SELECT count(*) FROM s_permission WHERE id IN"
+                                    + " ('prototype-hub-project','prototype-hub-version','prototype-hub-share')"));
             assertEquals(
                     0,
                     count(
                             connection,
-                            "SELECT count(*) FROM s_permission WHERE id IN ('protohub-project','protohub-version','protohub-share')"));
+                            "SELECT count(*) FROM s_permission WHERE id IN"
+                                    + " ('protohub-project','protohub-version','protohub-share')"));
             assertEquals(
                     0,
                     count(
                             connection,
-                            "SELECT count(*) FROM s_autz_setting_info WHERE permission IN ('protohub-project','protohub-version','protohub-share')"));
+                            "SELECT count(*) FROM s_autz_setting_info WHERE permission IN"
+                                    + " ('protohub-project','protohub-version','protohub-share')"));
             assertEquals(
                     6,
                     count(
                             connection,
-                            "SELECT count(*) FROM s_autz_setting_info WHERE permission IN ('prototype-hub-project','prototype-hub-version','prototype-hub-share')"));
+                            "SELECT count(*) FROM s_autz_setting_info WHERE permission IN"
+                                    + " ('prototype-hub-project','prototype-hub-version','prototype-hub-share')"));
             assertEquals(
                     1,
                     count(
                             connection,
-                            "SELECT count(*) FROM s_menu WHERE id='protohub' AND code='prototype-hub/Project' AND url='/prototype-hub' AND permission='prototype-hub-project'"));
+                            "SELECT count(*) FROM s_menu WHERE id='protohub' AND"
+                                    + " code='prototype-hub/Project' AND url='/prototype-hub' AND"
+                                    + " permission='prototype-hub-project'"));
             var before = snapshot(connection);
             assertEquals(0, migrations(schema, "18").migrate().migrationsExecuted);
             assertEquals(before, snapshot(connection));
@@ -251,28 +258,37 @@ class PrototypeHubNamingMigrationTest {
     @Test
     void existingNewPermissionFailsWithoutOverwritingEitherSide() throws Exception {
         assertConflict(
-                "INSERT INTO s_permission(id,name,status,actions) VALUES ('prototype-hub-share','独立新权限',0,'[{\"action\":\"query\",\"name\":\"自定义\"}]')",
+                "INSERT INTO s_permission(id,name,status,actions) VALUES"
+                        + " ('prototype-hub-share','独立新权限',0,'[{\"action\":\"query\",\"name\":\"自定义\"}]')",
                 "permission identifier conflict");
     }
 
     @Test
     void existingNewAuthorizationTupleFailsWithoutMergingDataBoundaries() throws Exception {
         assertConflict(
-                "INSERT INTO s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge) VALUES ('new-authorization','prototype-hub-project','role','ADMIN',0,'[\"save\"]','[{\"type\":\"CUSTOM\",\"config\":{\"scope\":\"new-only\"}}]',30,false)",
+                "INSERT INTO"
+                        + " s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge)"
+                        + " VALUES"
+                        + " ('new-authorization','prototype-hub-project','role','ADMIN',0,'[\"save\"]','[{\"type\":\"CUSTOM\",\"config\":{\"scope\":\"new-only\"}}]',30,false)",
                 "authorization tuple conflict");
     }
 
     @Test
     void existingNewMenuCodeFailsWithoutDiscardingEitherMenu() throws Exception {
         assertConflict(
-                "INSERT INTO s_menu(id,name,code,enabled,owner,access_support,path,sort_index,_level) VALUES ('new-menu','独立新菜单','prototype-hub/Project',false,'custom','unsupported','new-tree',8,1)",
+                "INSERT INTO"
+                        + " s_menu(id,name,code,enabled,owner,access_support,path,sort_index,_level)"
+                        + " VALUES"
+                        + " ('new-menu','独立新菜单','prototype-hub/Project',false,'custom','unsupported','new-tree',8,1)",
                 "menu code conflict");
     }
 
     @Test
     void nestedMetadataKeyConflictRollsBackEarlierPermissionAndMenuUpdates() throws Exception {
         assertConflict(
-                "UPDATE s_menu SET options='{\"nested\":{\"protohub.project\":\"old metadata\",\"prototypeHub.project\":\"new metadata\"}}' WHERE id='protohub'",
+                "UPDATE s_menu SET options='{\"nested\":{\"protohub.project\":\"old"
+                        + " metadata\",\"prototypeHub.project\":\"new metadata\"}}' WHERE"
+                        + " id='protohub'",
                 "JSON key conflict");
     }
 
@@ -292,7 +308,7 @@ class PrototypeHubNamingMigrationTest {
         assertEquals(actual.get("prototype-hub").getId(), project.getParentId());
         assertEquals("原型项目", project.getName());
         assertEquals("Prototype Projects", project.getI18nMessages().get("name").get("en_US"));
-        assertEquals(39, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
+        assertEquals(42, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
         assertEquals("/prototype-hub/recycle-bin", actual.get("prototype-hub/Recycle").getUrl());
         assertEquals(3, project.getButtons().size());
         for (Map<String, Object> button : project.getButtons()) {
@@ -326,42 +342,81 @@ class PrototypeHubNamingMigrationTest {
                     0,
                     count(
                             connection,
-                            "SELECT count(*) FROM flyway_schema_history WHERE version='18' AND success=true"));
+                            "SELECT count(*) FROM flyway_schema_history WHERE version='18' AND"
+                                    + " success=true"));
         }
     }
 
     private void legacyFixture(Connection connection) throws Exception {
         try (var sql = connection.createStatement()) {
             sql.execute(
-                    "INSERT INTO s_dimension(id,type_id,name,path,sort_index,_level,properties) VALUES ('CUSTOM','role','定制角色','custom-role',7,1,'{\"retain\":true}')");
+                    "INSERT INTO s_dimension(id,type_id,name,path,sort_index,_level,properties)"
+                            + " VALUES ('CUSTOM','role','定制角色','custom-role',7,1,'{\"retain\":true}')");
             sql.execute(
-                    "INSERT INTO s_user(id,name,username,password,salt,status,create_time) VALUES ('custom-user','定制用户','custom-user','opaque-hash','opaque-salt',1,1710000000000)");
+                    "INSERT INTO s_user(id,name,username,password,salt,status,create_time) VALUES"
+                            + " ('custom-user','定制用户','custom-user','opaque-hash','opaque-salt',1,1710000000000)");
             sql.execute(
-                    "INSERT INTO s_dimension_user(id,dimension_type_id,dimension_id,dimension_name,user_id,user_name,relation,relation_name,relation_time) VALUES ('custom-member','role','CUSTOM','定制角色','custom-user','定制用户','custom','定制关系',1710000000001)");
+                    "INSERT INTO"
+                            + " s_dimension_user(id,dimension_type_id,dimension_id,dimension_name,user_id,user_name,relation,relation_name,relation_time)"
+                            + " VALUES"
+                            + " ('custom-member','role','CUSTOM','定制角色','custom-user','定制用户','custom','定制关系',1710000000001)");
             sql.execute(
-                    "UPDATE s_permission SET name='手工版本管理',status=0,actions='[{\"action\":\"query\",\"name\":\"自定义查看\",\"vendor\":true}]' WHERE id='protohub-version'");
+                    "UPDATE s_permission SET"
+                            + " name='手工版本管理',status=0,actions='[{\"action\":\"query\",\"name\":\"自定义查看\",\"vendor\":true}]'"
+                            + " WHERE id='protohub-version'");
             sql.execute(
-                    "INSERT INTO s_permission(id,name,status,actions,parents,properties,i18n_messages) VALUES ('vendor-extra','边界不变',0,'[{\"action\":\"vendor\",\"name\":\"手工操作\"}]','[\"protohub-project\",\"vendor-extra\"]','{\"resources\":[{\"id\":\"protohub-share\"}],\"note\":\"protohub-project\"}','{\"name\":{\"zh_CN\":\"边界不变\",\"en\":\"protohub-share\"},\"hswebframework.web.system.permission.protohub-share\":{\"en\":\"Share label\"}}')");
+                    "INSERT INTO"
+                            + " s_permission(id,name,status,actions,parents,properties,i18n_messages)"
+                            + " VALUES"
+                            + " ('vendor-extra','边界不变',0,'[{\"action\":\"vendor\",\"name\":\"手工操作\"}]','[\"protohub-project\",\"vendor-extra\"]','{\"resources\":[{\"id\":\"protohub-share\"}],\"note\":\"protohub-project\"}','{\"name\":{\"zh_CN\":\"边界不变\",\"en\":\"protohub-share\"},\"hswebframework.web.system.permission.protohub-share\":{\"en\":\"Share"
+                            + " label\"}}')");
             sql.execute(
-                    "INSERT INTO s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge) VALUES ('manual-authorization','protohub-project','role','CUSTOM',0,'[\"query\",\"vendor\"]','[{\"type\":\"CUSTOM\",\"config\":{\"scope\":\"protohub-project\",\"url\":\"/protohub/raw\"}}]',17,false)");
+                    "INSERT INTO"
+                            + " s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge)"
+                            + " VALUES"
+                            + " ('manual-authorization','protohub-project','role','CUSTOM',0,'[\"query\",\"vendor\"]','[{\"type\":\"CUSTOM\",\"config\":{\"scope\":\"protohub-project\",\"url\":\"/protohub/raw\"}}]',17,false)");
             sql.execute(
-                    "INSERT INTO s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge) VALUES ('extra-authorization','vendor-extra','role','CUSTOM',1,'[\"vendor\"]','[{\"type\":\"OWN_CREATED\",\"config\":{\"creatorId\":\"custom-user\"}}]',21,true)");
+                    "INSERT INTO"
+                            + " s_autz_setting_info(id,permission,dimension_type,dimension_target,state,actions,data_accesses,priority,merge)"
+                            + " VALUES"
+                            + " ('extra-authorization','vendor-extra','role','CUSTOM',1,'[\"vendor\"]','[{\"type\":\"OWN_CREATED\",\"config\":{\"creatorId\":\"custom-user\"}}]',21,true)");
             sql.execute(
-                    "UPDATE s_menu SET name='自定义中文名称',permissions='[{\"id\":\"protohub-version\",\"actions\":[\"query\"]},{\"permission\":\"vendor-extra\",\"actions\":[\"vendor\"]}]',buttons='[{\"id\":\"save\",\"name\":\"保存定制名称\",\"permissions\":[{\"permission\":\"protohub-share\",\"actions\":[\"save\"]}],\"options\":{\"componentCode\":\"protohub/Project\",\"i18nKey\":\"protohub.share\"},\"i18nMessages\":{\"zh_CN\":\"保存定制名称\",\"en\":\"protohub-share\"}}]',options='{\"meta\":{\"parentCode\":\"protohub\",\"componentCode\":\"protohub/Project\"},\"nested\":[{\"url\":\"/protohub/project?mode=readonly#top\"}],\"prototypeurl\":\"https://outside.example/protohub/project\",\"note\":\"protohub-project\"}',i18n_messages='{\"name\":{\"zh_CN\":\"自定义中文名称\",\"en\":\"Existing Projects\"},\"protohub.project\":{\"zh_CN\":\"定制翻译\",\"en\":\"Custom Translation\"}}' WHERE id='protohub'");
+                    "UPDATE s_menu SET"
+                            + " name='自定义中文名称',permissions='[{\"id\":\"protohub-version\",\"actions\":[\"query\"]},{\"permission\":\"vendor-extra\",\"actions\":[\"vendor\"]}]',buttons='[{\"id\":\"save\",\"name\":\"保存定制名称\",\"permissions\":[{\"permission\":\"protohub-share\",\"actions\":[\"save\"]}],\"options\":{\"componentCode\":\"protohub/Project\",\"i18nKey\":\"protohub.share\"},\"i18nMessages\":{\"zh_CN\":\"保存定制名称\",\"en\":\"protohub-share\"}}]',options='{\"meta\":{\"parentCode\":\"protohub\",\"componentCode\":\"protohub/Project\"},\"nested\":[{\"url\":\"/protohub/project?mode=readonly#top\"}],\"prototypeurl\":\"https://outside.example/protohub/project\",\"note\":\"protohub-project\"}',i18n_messages='{\"name\":{\"zh_CN\":\"自定义中文名称\",\"en\":\"Existing"
+                            + " Projects\"},\"protohub.project\":{\"zh_CN\":\"定制翻译\",\"en\":\"Custom"
+                            + " Translation\"}}' WHERE id='protohub'");
             sql.execute(
-                    "INSERT INTO s_menu(id,parent_id,name,code,url,enabled,owner,access_support,path,sort_index,_level,buttons) VALUES ('child-menu','protohub','定制子菜单','protohub/Custom','/protohub/custom',false,'custom','unsupported','protohub/Project-child',9,2,'[]')");
+                    "INSERT INTO"
+                            + " s_menu(id,parent_id,name,code,url,enabled,owner,access_support,path,sort_index,_level,buttons)"
+                            + " VALUES"
+                            + " ('child-menu','protohub','定制子菜单','protohub/Custom','/protohub/custom',false,'custom','unsupported','protohub/Project-child',9,2,'[]')");
             sql.execute(
-                    "INSERT INTO s_menu(id,name,code,url,enabled,owner,access_support,path,sort_index,_level,options) VALUES ('unrelated-menu','protohub-project','vendor/protohub','https://outside.example/protohub',true,'custom','unsupported','vendor-tree',12,1,'{\"note\":\"protohub-project\"}')");
+                    "INSERT INTO"
+                            + " s_menu(id,name,code,url,enabled,owner,access_support,path,sort_index,_level,options)"
+                            + " VALUES"
+                            + " ('unrelated-menu','protohub-project','vendor/protohub','https://outside.example/protohub',true,'custom','unsupported','vendor-tree',12,1,'{\"note\":\"protohub-project\"}')");
             sql.execute(
-                    "INSERT INTO s_role_menu_grant(id,menus,managed_permissions) VALUES ('CUSTOM','{\"protohub\":[\"save\"],\"child-menu\":[\"vendor\"]}','[\"protohub-project\",\"protohub-share\",\"vendor-extra\"]')");
+                    "INSERT INTO s_role_menu_grant(id,menus,managed_permissions) VALUES"
+                            + " ('CUSTOM','{\"protohub\":[\"save\"],\"child-menu\":[\"vendor\"]}','[\"protohub-project\",\"protohub-share\",\"vendor-extra\"]')");
             sql.execute(
-                    "INSERT INTO p_project(id,name,creator_id,create_time,modifier_id,modify_time) VALUES ('preserved-project','原型数据','custom-user',1710000000000,'custom-user',1710000000001)");
+                    "INSERT INTO p_project(id,name,creator_id,create_time,modifier_id,modify_time)"
+                            + " VALUES"
+                            + " ('preserved-project','原型数据','custom-user',1710000000000,'custom-user',1710000000001)");
             sql.execute(
-                    "INSERT INTO p_version(id,project_id,version_name,storage_path,entry_file,preview_key,status,creator_id,create_time) VALUES ('preserved-version','preserved-project','版本一','projects/preserved-project/versions/preserved-version/site','nested/index.html','preserved-preview','ready','custom-user',1710000000002)");
+                    "INSERT INTO"
+                            + " p_version(id,project_id,version_name,storage_path,entry_file,preview_key,status,creator_id,create_time)"
+                            + " VALUES"
+                            + " ('preserved-version','preserved-project','版本一','projects/preserved-project/versions/preserved-version/site','nested/index.html','preserved-preview','ready','custom-user',1710000000002)");
             sql.execute(
-                    "INSERT INTO p_share(id,project_id,version_id,token,access_key,password_hash,enabled,creator_id,create_time) VALUES ('preserved-share','preserved-project','preserved-version','retained-token','retained-key','opaque-bcrypt',true,'custom-user',1710000000003)");
+                    "INSERT INTO"
+                            + " p_share(id,project_id,version_id,token,access_key,password_hash,enabled,creator_id,create_time)"
+                            + " VALUES"
+                            + " ('preserved-share','preserved-project','preserved-version','retained-token','retained-key','opaque-bcrypt',true,'custom-user',1710000000003)");
             sql.execute(
-                    "INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,create_time,next_attempt,attempts) VALUES ('preserved-cleanup','version','preserved-project','preserved-version','projects/preserved-project/versions/preserved-version/site',1710000000004,1710000000005,2)");
+                    "INSERT INTO"
+                            + " p_file_cleanup(id,resource_type,project_id,version_id,storage_path,create_time,next_attempt,attempts)"
+                            + " VALUES"
+                            + " ('preserved-cleanup','version','preserved-project','preserved-version','projects/preserved-project/versions/preserved-version/site',1710000000004,1710000000005,2)");
         }
     }
 
