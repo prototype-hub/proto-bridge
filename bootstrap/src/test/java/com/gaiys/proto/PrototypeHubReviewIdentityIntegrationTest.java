@@ -91,6 +91,11 @@ class PrototypeHubReviewIdentityIntegrationTest {
         properties.add("spring.mail.host", () -> "127.0.0.1");
         properties.add("spring.mail.port", MAILBOX::port);
         properties.add("spring.mail.username", () -> "identity@example.invalid");
+        // 本地私密配置可能使用SMTPS和真实凭据；夹具必须固定为loopback明文SMTP且不继承它们。
+        properties.add("spring.mail.protocol", () -> "smtp");
+        properties.add("spring.mail.password", () -> "");
+        properties.add("spring.mail.properties.mail.smtp.from", () -> "identity@example.invalid");
+        properties.add("spring.mail.properties.mail.from", () -> "identity@example.invalid");
     }
 
     @Autowired WebTestClient client;
@@ -265,23 +270,51 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         "null",
                         "https://attacker.example.invalid",
                         "https://review.example.invalid:444"))
-            exchange(fixture, "context", Map.of(), null, null, origin, 403);
-        exchange(
-                fixture,
-                "challenges",
-                input("boundary@example.invalid", "Reviewer", null),
-                browser.cookie,
-                null,
-                ORIGIN,
-                403);
-        exchange(
-                fixture,
-                "challenges",
-                input("boundary@example.invalid", "Reviewer", null),
-                browser.cookie,
-                "wrong",
-                ORIGIN,
-                403);
+            assertEquals(
+                    "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED",
+                    exchange(fixture, "context", Map.of(), null, null, origin, 403)
+                            .data
+                            .path("code")
+                            .asText());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED",
+                exchange(
+                                fixture,
+                                "challenges",
+                                input("boundary@example.invalid", "Reviewer", null),
+                                null,
+                                browser.csrf(),
+                                ORIGIN,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_CSRF_INVALID",
+                exchange(
+                                fixture,
+                                "challenges",
+                                input("boundary@example.invalid", "Reviewer", null),
+                                browser.cookie,
+                                null,
+                                ORIGIN,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_CSRF_INVALID",
+                exchange(
+                                fixture,
+                                "challenges",
+                                input("boundary@example.invalid", "Reviewer", null),
+                                browser.cookie,
+                                "wrong",
+                                ORIGIN,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
         Browser other = context(fixture, null);
         exchange(
                 fixture,
@@ -295,13 +328,23 @@ class PrototypeHubReviewIdentityIntegrationTest {
                 new Fixture(
                         fixture.project, fixture.version, fixture.share, fixture.grant.deepCopy());
         ((com.fasterxml.jackson.databind.node.ObjectNode) wrongKey.grant).put("accessKey", "wrong");
-        exchange(wrongKey, "context", Map.of(), browser.cookie, null, ORIGIN, 403);
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_DENIED",
+                exchange(wrongKey, "context", Map.of(), browser.cookie, null, ORIGIN, 403)
+                        .data
+                        .path("code")
+                        .asText());
         Fixture wrongRevision =
                 new Fixture(
                         fixture.project, fixture.version, fixture.share, fixture.grant.deepCopy());
         ((com.fasterxml.jackson.databind.node.ObjectNode) wrongRevision.grant)
                 .put("revisionId", UUID.randomUUID().toString());
-        exchange(wrongRevision, "context", Map.of(), browser.cookie, null, ORIGIN, 403);
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_DENIED",
+                exchange(wrongRevision, "context", Map.of(), browser.cookie, null, ORIGIN, 403)
+                        .data
+                        .path("code")
+                        .asText());
         assertEquals(0, count("p_review_challenge"));
         ResponseCookie cookie = browser.cookieAttributes;
         assertNotNull(cookie);

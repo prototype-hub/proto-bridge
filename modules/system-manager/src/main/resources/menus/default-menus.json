@@ -151,6 +151,59 @@
             }
           }
         ]
+      },
+      {
+        "id": "prototype-hub-recycle",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "回收站",
+        "code": "prototype-hub/Recycle",
+        "url": "/prototype-hub/recycle-bin",
+        "icon": "DeleteOutlined",
+        "sortIndex": 2,
+        "describe": "已删除的原型项目保留30天，可在期限内恢复",
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "回收站",
+            "en_US": "Recycle bin",
+            "en": "Recycle bin"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/Recycle",
+        "permissions": [
+          {
+            "permission": "prototype-hub-project",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "restore",
+            "name": "恢复",
+            "permissions": [
+              {
+                "permission": "prototype-hub-project",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "恢复",
+              "en_US": "Restore",
+              "en": "Restore"
+            }
+          }
+        ]
       }
     ]
   },

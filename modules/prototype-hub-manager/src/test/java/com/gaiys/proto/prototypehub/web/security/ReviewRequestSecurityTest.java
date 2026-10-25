@@ -48,6 +48,34 @@ class ReviewRequestSecurityTest {
                                                 .header("Origin", "http://localhost:8080"))));
     }
 
+    @Test
+    void viteHostRewritingNeedsTheExactBrowserOriginAndNeverChangesTheGrantError() {
+        var request =
+                MockServerWebExchange.from(
+                        MockServerHttpRequest.post("http://backend.test:8080/api/review/context")
+                                .header("Origin", "http://127.0.0.1:5173"));
+        var defaultGuard = new ReviewRequestSecurity(new PrototypeReviewProperties());
+        var denied = assertThrows(PrototypeHubException.class, () -> defaultGuard.origin(request));
+        assertEquals("PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED", denied.getCode());
+        assertEquals(403, denied.getStatus());
+        var props = new PrototypeReviewProperties();
+        props.setTrustedOrigin("http://127.0.0.1:5173");
+        var configured = new ReviewRequestSecurity(props);
+        assertDoesNotThrow(() -> configured.origin(request));
+        var otherLoopback =
+                MockServerWebExchange.from(
+                        MockServerHttpRequest.post("http://backend.test:8080/api/review/context")
+                                .header("Origin", "http://localhost:5173"));
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED",
+                assertThrows(PrototypeHubException.class, () -> configured.origin(otherLoopback))
+                        .getCode());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_DENIED",
+                com.gaiys.proto.prototypehub.service.PrototypeReviewService.denied().getCode());
+        assertTrue(props.isCookieSecure());
+    }
+
     @ParameterizedTest
     @ValueSource(
             strings = {
@@ -157,5 +185,27 @@ class ReviewRequestSecurityTest {
                         .getCookies()
                         .getFirst(ReviewRequestSecurity.COOKIE)
                         .isSecure());
+    }
+
+    @Test
+    void absentCookieAndChangedCsrfHaveDistinctErrorsWithoutEchoingCredentials() {
+        var guard = new ReviewRequestSecurity(new PrototypeReviewProperties());
+        var missing =
+                MockServerWebExchange.from(MockServerHttpRequest.post("https://platform.test/a"));
+        var cookieError =
+                assertThrows(PrototypeHubException.class, () -> guard.unsafeCookie(missing));
+        assertEquals("PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED", cookieError.getCode());
+        String raw = PrototypeReviewKeys.random();
+        var changed =
+                MockServerWebExchange.from(
+                        MockServerHttpRequest.post("https://platform.test/a")
+                                .cookie(new HttpCookie(ReviewRequestSecurity.COOKIE, raw))
+                                .header("X-Review-CSRF", "stale-csrf"));
+        var csrfError =
+                assertThrows(PrototypeHubException.class, () -> guard.unsafeCookie(changed));
+        assertEquals("PROTOTYPE_HUB_REVIEW_CSRF_INVALID", csrfError.getCode());
+        assertEquals(403, csrfError.getStatus());
+        assertFalse(csrfError.getMessage().contains(raw));
+        assertFalse(csrfError.getMessage().contains("stale-csrf"));
     }
 }

@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.web.security;
 
 import com.gaiys.proto.prototypehub.configuration.properties.PrototypeReviewProperties;
+import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeReviewService;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import java.net.URI;
@@ -39,7 +40,7 @@ public class ReviewRequestSecurity {
     /** 缺省只信任请求自身Origin；反代/开发代理必须显式配置单一可信Origin，不信任新转发头。 */
     public void origin(ServerWebExchange exchange) {
         List<String> values = exchange.getRequest().getHeaders().get("Origin");
-        if (values == null || values.size() != 1) throw PrototypeReviewService.denied();
+        if (values == null || values.size() != 1) throw originDenied();
         String received = normalized(values.getFirst());
         URI target = exchange.getRequest().getURI();
         String expected =
@@ -50,7 +51,7 @@ public class ReviewRequestSecurity {
                 || "cross-site"
                         .equalsIgnoreCase(
                                 exchange.getRequest().getHeaders().getFirst("Sec-Fetch-Site")))
-            throw PrototypeReviewService.denied();
+            throw originDenied();
         exchange.getResponse().getHeaders().setCacheControl("no-store");
     }
 
@@ -66,7 +67,7 @@ public class ReviewRequestSecurity {
                     || uri.getFragment() != null
                     || (uri.getRawPath() != null && !uri.getRawPath().isEmpty())
                     || uri.getPort() == 0
-                    || uri.getPort() > 65535) throw PrototypeReviewService.denied();
+                    || uri.getPort() > 65535) throw originDenied();
             int port =
                     uri.getPort() < 0
                             ? (scheme.equalsIgnoreCase("https") ? 443 : 80)
@@ -77,7 +78,7 @@ public class ReviewRequestSecurity {
                     + ":"
                     + port;
         } catch (IllegalArgumentException malformed) {
-            throw PrototypeReviewService.denied();
+            throw originDenied();
         }
     }
 
@@ -89,14 +90,27 @@ public class ReviewRequestSecurity {
 
     public String unsafeCookie(ServerWebExchange exchange) {
         List<HttpCookie> values = exchange.getRequest().getCookies().get(COOKIE);
-        if (values == null || values.size() != 1) throw PrototypeReviewService.denied();
+        if (values == null || values.size() != 1) throw cookieRequired();
         String raw = values.getFirst().getValue();
-        if (!raw.matches("[A-Za-z0-9_-]{43}")
-                || !PrototypeReviewKeys.matches(
-                        PrototypeReviewKeys.csrf(raw),
-                        exchange.getRequest().getHeaders().getFirst("X-Review-CSRF")))
-            throw PrototypeReviewService.denied();
+        if (!raw.matches("[A-Za-z0-9_-]{43}")) throw cookieRequired();
+        if (!PrototypeReviewKeys.matches(
+                PrototypeReviewKeys.csrf(raw),
+                exchange.getRequest().getHeaders().getFirst("X-Review-CSRF")))
+            throw PrototypeHubException.forbidden(
+                    "error.prototype-hub.review_csrf_invalid", "PROTOTYPE_HUB_REVIEW_CSRF_INVALID");
         return raw;
+    }
+
+    // 只区分安全边界，错误响应不回显实际/预期Origin或Cookie；分享授权错误仍由服务层拥有。
+    private static PrototypeHubException originDenied() {
+        return PrototypeHubException.forbidden(
+                "error.prototype-hub.review_origin_denied", "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED");
+    }
+
+    private static PrototypeHubException cookieRequired() {
+        return PrototypeHubException.forbidden(
+                "error.prototype-hub.review_cookie_required",
+                "PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED");
     }
 
     public void cookie(ServerWebExchange exchange, String token, String raw) {

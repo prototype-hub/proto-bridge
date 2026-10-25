@@ -30,6 +30,10 @@ SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml
 
 HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.trusted-origin=https://your-platform.example`；本地Vite通常为 `http://localhost:5173`，以浏览器实际地址为准，localhost与127.0.0.1不同。该值只能是单一完整HTTP/HTTPS origin，不含路径、查询、片段或账号；设置后仅接受它，不同时放开后台地址。缺省严格比较请求URI，不为此新增任意Forwarded信任或凭据CORS。
 
+例如浏览器访问 `http://127.0.0.1:5173/share/...`，开发代理又把Host改为后端地址时，在本地私密配置中填写 `PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN: 'http://127.0.0.1:5173'`；不要填写代理目标或分享完整路径。生产必须替换为实际HTTPS平台源，通用CORS的allowed-origins不能代替此配置。
+
+邮箱身份接口的403保留不同原因：`PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED`表示来源未被信任，检查上述精确源；`PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED`表示路径Cookie没有回传，检查浏览器Cookie、HTTPS及代理路径；`PROTOTYPE_HUB_REVIEW_CSRF_INVALID`表示当前Cookie和CSRF不匹配，重新载入身份验证。`PROTOTYPE_HUB_REVIEW_DENIED`仍表示分享或身份策略授权失效，不应通过放宽Origin、Cookie或CSRF解决。错误响应不会回显这些凭据或请求头。
+
 `prototype-hub.review.cookie-secure` 默认true，仅本机HTTP测试设false。生产使用HTTPS；Cookie固定Path要求保留现有 `/api` 公开前缀及代理剥离语义，不能改为根路径解决代理问题。Cookie只发往review子路径，runtime与iframe不携带访客身份。
 
 原生环境变量为 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN`、`PROTOTYPEHUB_REVIEW_COOKIESECURE`，也可沿Compose现有格式填写 `- "prototype-hub.review.trusted-origin=https://your-platform.example"`。主配置同时声明SMTP/SMTPS的认证、STARTTLS/SSL、服务端身份校验、连接/读/写超时及EHLO身份，发件地址可用 `SMTP_FROM`；TLS等map参数建议使用私有YAML或精确命令行属性，不提交真实密码，完整可用项以application.yml为准。模板见 `application-local.yml.example`。只有隔离的loopback测试接收端显式关闭认证/TLS，不沿用到生产。

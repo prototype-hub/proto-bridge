@@ -24,6 +24,9 @@ public class MenuStartupInitializer implements ApplicationRunner {
     @Override
     public void run(ApplicationArguments args) {
         // Blocking is confined to the synchronous startup boundary, like administrator setup.
-        initialization.initializeIfEmpty().block(Duration.ofMinutes(2));
+        initialization
+                .initializeIfEmpty()
+                .then(initialization.ensureRecycleMenuIfMissing())
+                .block(Duration.ofMinutes(2));
     }
 }
