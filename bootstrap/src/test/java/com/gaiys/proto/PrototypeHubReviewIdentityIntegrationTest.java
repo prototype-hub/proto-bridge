@@ -103,6 +103,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
     @Autowired DatabaseClient database;
     @Autowired PrototypeRetentionService retention;
     @Autowired PrototypeReviewService review;
+    @Autowired com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService reviewThreads;
     private String admin;
 
     @BeforeEach
@@ -1673,6 +1674,785 @@ class PrototypeHubReviewIdentityIntegrationTest {
         return "/prototype-hub/shares/" + f.share.path("id").asText() + "/review-invitations";
     }
 
+    @Test
+    void pageFeedbackPolicyIsExplicitPreservedAndRestrictedToFixedShares() throws Exception {
+        Fixture f = fixture(true, false);
+        sql(
+                "update p_share set review_allow_comment=null where id=:id",
+                f.share.path("id").asText());
+        assertFalse(context(f, null).data.path("allowComment").asBoolean());
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", false, "allowComment", true, "expectedVersion", 2),
+                400);
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of(
+                        "enabled",
+                        true,
+                        "allowComment",
+                        true,
+                        "allowUnverified",
+                        true,
+                        "expectedVersion",
+                        2),
+                200);
+        f = refresh(f);
+        Browser guest = unverified(f, context(f, null), "客户", "公司", 200);
+        assertTrue(guest.data.path("allowComment").asBoolean());
+        var input = feedbackFields("首次反馈");
+        feedback(f, guest, HttpMethod.POST, "threads", input, 200);
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", false, "expectedVersion", 3),
+                200);
+        JsonNode disabled = management(HttpMethod.GET, manage(f), admin, null, 200);
+        assertFalse(disabled.path("allowComment").asBoolean());
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", true, "expectedVersion", 4),
+                200);
+        Fixture renewed = refresh(f);
+        assertTrue(
+                management(HttpMethod.GET, manage(f), admin, null, 200)
+                        .path("allowComment")
+                        .asBoolean());
+        feedback(renewed, guest, HttpMethod.POST, "threads/_query", Map.of(), 403);
+        Browser fresh = unverified(renewed, context(renewed, null), "新客户", null, 200);
+        sql(
+                "update p_share set revision_mode='latest',revision_id=null where id=:id",
+                f.share.path("id").asText());
+        feedback(renewed, fresh, HttpMethod.POST, "threads/_query", Map.of(), 403);
+    }
+
+    @Test
+    void pageFeedbackHappyPathNotesNeverAffectPublicMetadataAndOnlyPmResolves() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = verify(f, context(f, null), "feedback@example.invalid", "客户", "公司");
+        JsonNode thread =
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads",
+                        feedbackFields("<script>plain</script>\n客户意见"),
+                        200);
+        String id = thread.path("id").asText();
+        assertEquals("email", thread.path("verificationLevel").asText());
+        assertEquals("index.html", thread.path("pagePath").asText());
+        assertEquals(0, thread.path("configVersion").asLong());
+        JsonNode note =
+                pmFeedback(
+                        f,
+                        id + "/messages",
+                        HttpMethod.POST,
+                        admin,
+                        Map.of(
+                                "text",
+                                "内部机密",
+                                "visibility",
+                                "internal",
+                                "clientRequestId",
+                                UUID.randomUUID().toString()),
+                        200);
+        assertEquals("internal", note.path("visibility").asText());
+        assertTrue(note.path("verificationLevel").isNull());
+        JsonNode publicThreads =
+                feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of(), 200);
+        assertEquals(thread, publicThreads.path("data").get(0));
+        JsonNode visible =
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + id + "/messages/_query",
+                        Map.of(),
+                        200);
+        assertEquals(1, visible.path("total").asInt());
+        assertFalse(visible.toString().contains("内部机密"));
+        assertFalse(visible.toString().contains(note.path("id").asText()));
+        assertEquals(
+                2,
+                pmFeedback(f, id + "/messages/_query", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        var resolve =
+                Map.<String, Object>of(
+                        "state",
+                        "resolved",
+                        "expectedVersion",
+                        0,
+                        "clientRequestId",
+                        UUID.randomUUID().toString());
+        feedback(f, guest, HttpMethod.PUT, "threads/" + id + "/status", resolve, 400);
+        JsonNode resolved = pmFeedback(f, id + "/status", HttpMethod.PUT, admin, resolve, 200);
+        assertEquals(1, resolved.path("configVersion").asInt());
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                admin,
+                Map.of(
+                        "text",
+                        "对客答复",
+                        "visibility",
+                        "public",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        assertEquals(
+                "resolved",
+                feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of(), 200)
+                        .path("data")
+                        .get(0)
+                        .path("state")
+                        .asText());
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/" + id + "/messages",
+                feedbackFields("继续反馈"),
+                200);
+        JsonNode reopened =
+                feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of(), 200)
+                        .path("data")
+                        .get(0);
+        assertEquals("open", reopened.path("state").asText());
+        assertEquals(2, reopened.path("configVersion").asInt());
+        assertEquals(thread.path("summary"), reopened.path("summary"));
+        pmFeedback(
+                f,
+                id + "/status",
+                HttpMethod.PUT,
+                admin,
+                Map.of(
+                        "state",
+                        "resolved",
+                        "expectedVersion",
+                        1,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                409);
+        pmFeedback(
+                f,
+                id + "/status",
+                HttpMethod.PUT,
+                admin,
+                Map.of(
+                        "state",
+                        "resolved",
+                        "expectedVersion",
+                        2,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        var reopen =
+                Map.<String, Object>of(
+                        "state",
+                        "open",
+                        "expectedVersion",
+                        3,
+                        "clientRequestId",
+                        UUID.randomUUID().toString());
+        JsonNode open =
+                feedback(f, guest, HttpMethod.PUT, "threads/" + id + "/status", reopen, 200);
+        assertEquals(4, open.path("configVersion").asInt());
+        long events = count("p_review_event");
+        feedback(f, guest, HttpMethod.PUT, "threads/" + id + "/status", reopen, 200);
+        feedback(
+                f,
+                guest,
+                HttpMethod.PUT,
+                "threads/" + id + "/status",
+                Map.of(
+                        "state",
+                        "open",
+                        "expectedVersion",
+                        4,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        assertEquals(events, count("p_review_event"));
+        assertFalse(publicThreads.toString().contains("feedback@example.invalid"));
+    }
+
+    @Test
+    void pageFeedbackScopeSessionAndPermissionIntersectionsAreAuthoritative() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "同名", null, 200);
+        String id =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("范围"), 200)
+                        .path("id")
+                        .asText();
+        Browser other = unverified(f, context(f, null), "同名", null, 200);
+        feedback(f, other, HttpMethod.POST, "threads/" + id + "/messages/_query", Map.of(), 404);
+        assertEquals(
+                0,
+                feedback(f, other, HttpMethod.POST, "threads/_query", Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED",
+                exchange(
+                                f,
+                                "threads/_query",
+                                Map.of("pageId", feedbackPage()),
+                                guest.cookie,
+                                guest.csrf(),
+                                null,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_CSRF_INVALID",
+                exchange(
+                                f,
+                                "threads/_query",
+                                Map.of("pageId", feedbackPage()),
+                                guest.cookie,
+                                "wrong",
+                                ORIGIN,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED",
+                exchange(
+                                f,
+                                "threads/_query",
+                                Map.of("pageId", feedbackPage()),
+                                null,
+                                guest.csrf(),
+                                ORIGIN,
+                                403)
+                        .data
+                        .path("code")
+                        .asText());
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/_query",
+                Map.of("revisionId", "wrong-revision"),
+                403);
+        Browser email = verify(f, context(f, null), "same-name@example.invalid", "同名", null);
+        feedback(f, email, HttpMethod.POST, "threads/" + id + "/messages/_query", Map.of(), 404);
+        feedback(
+                f, guest, HttpMethod.POST, "threads/_query", Map.of("pageId", "f".repeat(64)), 404);
+        feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of("pageSize", 101), 400);
+        for (String whitespace : List.of("\u2003\u3000", "\u00a0", "\u2007", "\u202f", "\u0085"))
+            feedback(f, guest, HttpMethod.POST, "threads", feedbackFields(whitespace), 400);
+        feedback(f, guest, HttpMethod.POST, "threads", Map.of("text", "缺请求键"), 400);
+        feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of("state", 1), 400);
+        JsonNode secondShare =
+                management(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + f.version.path("id").asText() + "/shares",
+                        admin,
+                        Map.of(),
+                        200);
+        Fixture second = new Fixture(f.project, f.version, secondShare, null);
+        management(
+                HttpMethod.PUT,
+                manage(second),
+                admin,
+                Map.of(
+                        "enabled",
+                        true,
+                        "allowComment",
+                        true,
+                        "allowUnverified",
+                        true,
+                        "expectedVersion",
+                        1),
+                200);
+        second = refresh(second);
+        String emailThread =
+                feedback(f, email, HttpMethod.POST, "threads", feedbackFields("邮箱范围"), 200)
+                        .path("id")
+                        .asText();
+        // 跨分享恢复仍遵守OTP的冷却；只推进夹具的时间边界，不放宽生产限频。
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser secondEmail =
+                verify(second, context(second, null), "same-name@example.invalid", "同名", null);
+        assertEquals(email.guest(), secondEmail.guest());
+        feedback(
+                second,
+                secondEmail,
+                HttpMethod.POST,
+                "threads/" + emailThread + "/messages/_query",
+                Map.of(),
+                404);
+        feedback(
+                second,
+                secondEmail,
+                HttpMethod.POST,
+                "threads/" + id + "/messages/_query",
+                Map.of(),
+                404);
+        Fixture foreign = feedbackFixture();
+        Browser foreignGuest = unverified(foreign, context(foreign, null), "同名", null, 200);
+        feedback(
+                foreign,
+                foreignGuest,
+                HttpMethod.POST,
+                "threads/" + id + "/messages/_query",
+                Map.of(),
+                404);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version");
+        Actor viewer = actor(List.of("query", "save"), "prototype-hub-version");
+        Actor noSave = actor(List.of("query"), "prototype-hub-version");
+        Actor noQuery = actor(List.of("save"), "prototype-hub-version");
+        for (Actor actor : List.of(editor, noSave, noQuery)) member(f, actor, "editor");
+        member(f, viewer, "viewer");
+        pmFeedback(f, "_query", HttpMethod.POST, editor.token, Map.of(), 200);
+        Actor owner = actor(List.of("query", "save"), "prototype-hub-version");
+        database.sql("update p_project set owner_id=:owner where id=:id")
+                .bind("owner", owner.id)
+                .bind("id", f.project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        pmFeedback(f, "_query", HttpMethod.POST, owner.token, Map.of(), 200);
+        pmFeedback(f, "_query", HttpMethod.POST, admin, Map.of(), 200);
+
+        pmFeedback(f, "_query", HttpMethod.POST, viewer.token, Map.of(), 403);
+        pmFeedback(f, "_query", HttpMethod.POST, noQuery.token, Map.of(), 403);
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                noSave.token,
+                Map.of(
+                        "text",
+                        "禁止",
+                        "visibility",
+                        "internal",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                403);
+        Actor outsider = actor(List.of("query", "save"), "prototype-hub-version");
+        pmFeedback(f, "_query", HttpMethod.POST, outsider.token, Map.of(), 404);
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                editor.token,
+                Map.of(
+                        "text",
+                        "错误类型",
+                        "visibility",
+                        0,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                400);
+        // 公开DTO不包含visibility，无法把公开消息变成内部备注。
+        JsonNode forced =
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + id + "/messages",
+                        Map.of(
+                                "text",
+                                "始终公开",
+                                "visibility",
+                                "internal",
+                                "clientRequestId",
+                                UUID.randomUUID().toString()),
+                        200);
+        assertEquals("public", forced.path("visibility").asText());
+        sql(
+                "update p_review_session set verification_level='unknown' where guest_id=:id",
+                guest.guest());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED",
+                feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of(), 403)
+                        .path("code")
+                        .asText());
+    }
+
+    @Test
+    void pageFeedbackIdempotencyConcurrencyAndRollbackAreAtomic() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        var fields = feedbackFields("只创建一次");
+        var barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            List<Future<JsonNode>> responses = new ArrayList<>();
+            for (int i = 0; i < 2; i++)
+                responses.add(
+                        pool.submit(
+                                () -> {
+                                    barrier.await(5, TimeUnit.SECONDS);
+                                    return feedback(
+                                            f, guest, HttpMethod.POST, "threads", fields, 200);
+                                }));
+            assertEquals(
+                    responses.get(0).get(20, TimeUnit.SECONDS).path("id"),
+                    responses.get(1).get(20, TimeUnit.SECONDS).path("id"));
+        }
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(1, count("p_review_message"));
+        assertEquals(1, count("p_review_event"));
+        var changed = new HashMap<String, Object>(fields);
+        changed.put("text", "不同内容");
+        feedback(f, guest, HttpMethod.POST, "threads", changed, 409);
+        String id = feedback(f, guest, HttpMethod.POST, "threads", fields, 200).path("id").asText();
+        var reply = feedbackFields("一次回复");
+        JsonNode one =
+                feedback(f, guest, HttpMethod.POST, "threads/" + id + "/messages", reply, 200);
+        assertEquals(
+                one,
+                feedback(f, guest, HttpMethod.POST, "threads/" + id + "/messages", reply, 200));
+        assertEquals(2, count("p_review_message"));
+        assertEquals(2, count("p_review_event"));
+        long receipts =
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        f.grant.path("revisionId").asText());
+        sql(
+                "create function reject_feedback_event_fixture() returns trigger language plpgsql as $$ begin raise exception 'fixture event failure'; end $$");
+        sql(
+                "create trigger reject_feedback_event_fixture before insert on p_review_event for each row execute function reject_feedback_event_fixture()");
+        try {
+            feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("必须回滚"), 500);
+        } finally {
+            sql("drop trigger reject_feedback_event_fixture on p_review_event");
+            sql("drop function reject_feedback_event_fixture()");
+        }
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(2, count("p_review_message"));
+        assertEquals(2, count("p_review_event"));
+        assertEquals(
+                receipts,
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        f.grant.path("revisionId").asText()));
+    }
+
+    @Test
+    void pageFeedbackRatesAreIndependentReplayPrecedesLimitAndPmHasNoQuota() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        var fields = feedbackFields("限频前创建");
+        JsonNode thread = feedback(f, guest, HttpMethod.POST, "threads", fields, 200);
+        String id = thread.path("id").asText();
+        String guestRate =
+                com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys.digest(
+                        "review-rate-v1:"
+                                + f.project
+                                + ":comment-guest:unverified:"
+                                + guest.guest());
+        sql("update p_review_rate set send_count=60 where id=:id", guestRate);
+        assertEquals(thread, feedback(f, guest, HttpMethod.POST, "threads", fields, 200));
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/" + id + "/messages",
+                feedbackFields("超额"),
+                429);
+        String projectRate =
+                com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys.digest(
+                        "review-rate-v1:" + f.project + ":comment-project");
+        sql("update p_review_rate set send_count=300 where id=:id", projectRate);
+        Browser other = unverified(f, context(f, null), "其他", null, 200);
+        feedback(f, other, HttpMethod.POST, "threads", feedbackFields("项目超额"), 429);
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                admin,
+                Map.of(
+                        "text",
+                        "PM不占公开额度",
+                        "visibility",
+                        "public",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        assertEquals(1, count("p_review_thread"));
+    }
+
+    @Test
+    void pageFeedbackExpiredGuestDisabledPolicyAndArchiveDoNotLeakOrEraseHistory()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String id =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("保留历史"), 200)
+                        .path("id")
+                        .asText();
+        Browser anonymous = context(f, null);
+        JsonNode denied = feedback(f, anonymous, HttpMethod.POST, "threads/_query", Map.of(), 403);
+        assertEquals("PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED", denied.path("code").asText());
+        sql("update p_review_session set expires_at=1 where guest_id=:id", guest.guest());
+        feedback(f, guest, HttpMethod.POST, "threads/" + id + "/messages/_query", Map.of(), 403);
+        sql("update p_review_unverified_guest set expires_at=1 where id=:id", guest.guest());
+        review.cleanupExpired().block(TIMEOUT);
+        Browser replacement = unverified(f, context(f, null), "客户", null, 200);
+        feedback(
+                f,
+                replacement,
+                HttpMethod.POST,
+                "threads/" + id + "/messages/_query",
+                Map.of(),
+                404);
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(1, count("p_review_message"));
+        Browser email = verify(f, context(f, null), "history@example.invalid", "客户", null);
+        String emailThread =
+                feedback(f, email, HttpMethod.POST, "threads", feedbackFields("邮箱历史"), 200)
+                        .path("id")
+                        .asText();
+        guestEnabled(f, email.guest(), admin, false, 0, 200);
+        feedback(
+                f,
+                email,
+                HttpMethod.POST,
+                "threads/" + emailThread + "/messages/_query",
+                Map.of(),
+                403);
+        sql("update p_share set enabled=false where id=:id", f.share.path("id").asText());
+        assertEquals(
+                2,
+                pmFeedback(f, "_query", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        sql("update p_version set deleted_time=1 where id=:id", f.version.path("id").asText());
+        pmFeedback(f, "_query", HttpMethod.POST, admin, Map.of(), 404);
+    }
+
+    @Test
+    void pageFeedbackEventRetentionIsBoundedAndHardPurgeIncludesReceipts() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String id =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("保留正文"), 200)
+                        .path("id")
+                        .asText();
+        pmFeedback(
+                f,
+                id + "/messages",
+                HttpMethod.POST,
+                admin,
+                Map.of(
+                        "text",
+                        "内部记录",
+                        "visibility",
+                        "internal",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        sql("update p_review_event set create_time=0");
+        for (int i = 0; i < 53; i++)
+            database.sql(
+                            "insert into p_review_event(id,project_id,version_id,revision_id,thread_id,message_id,event_type,actor_type,create_time) select :id,project_id,version_id,revision_id,thread_id,message_id,event_type,actor_type,0 from p_review_event limit 1")
+                    .bind("id", "old-feedback-event-" + i)
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        reviewThreads.cleanupEvents().block(TIMEOUT);
+        assertEquals(5, count("p_review_event"));
+        reviewThreads.cleanupEvents().block(TIMEOUT);
+        assertEquals(0, count("p_review_event"));
+        assertEquals(2, count("p_review_message"));
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + f.version.path("id").asText(),
+                admin,
+                null,
+                200);
+        database.sql("update p_version set deleted_time=:expired where id=:id")
+                .bind("expired", System.currentTimeMillis() - Duration.ofDays(31).toMillis())
+                .bind("id", f.version.path("id").asText())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(retention.purgeVersion(f.version.path("id").asText()).block(TIMEOUT));
+        assertEquals(0, count("p_review_thread"));
+        assertEquals(0, count("p_review_message"));
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        f.grant.path("revisionId").asText()));
+        Fixture orphan = feedbackFixture();
+        Browser orphanGuest = unverified(orphan, context(orphan, null), "客户", null, 200);
+        feedback(orphan, orphanGuest, HttpMethod.POST, "threads", feedbackFields("残留资源项目清理"), 200);
+        // 项目清理也必须覆盖已缺少版本父行的历史评审图。
+        sql("delete from p_version where id=:id", orphan.version.path("id").asText());
+        management(
+                HttpMethod.DELETE, "/prototype-hub/projects/" + orphan.project, admin, null, 200);
+        database.sql("update p_project set deleted_time=:expired where id=:id")
+                .bind("expired", System.currentTimeMillis() - Duration.ofDays(31).toMillis())
+                .bind("id", orphan.project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(retention.purgeProject(orphan.project).block(TIMEOUT));
+        assertEquals(0, count("p_review_thread"));
+        assertEquals(0, count("p_review_message"));
+        assertEquals(0, count("p_review_event"));
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_creation_receipt where revision_id=:id",
+                        orphan.grant.path("revisionId").asText()));
+    }
+
+    private Fixture feedbackFixture() throws IOException {
+        Fixture f = fixture(true, false);
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of(
+                        "enabled",
+                        true,
+                        "allowComment",
+                        true,
+                        "allowUnverified",
+                        true,
+                        "expectedVersion",
+                        2),
+                200);
+        return refresh(f);
+    }
+
+    private Map<String, Object> feedbackFields(String text) {
+        return Map.of("text", text, "clientRequestId", UUID.randomUUID().toString());
+    }
+
+    private String feedbackPage() {
+        return com.gaiys.proto.prototypehub.web.info.PrototypePageInfo.page("index", "index.html")
+                .pageId();
+    }
+
+    private JsonNode feedback(
+            Fixture f,
+            Browser b,
+            HttpMethod method,
+            String path,
+            Map<String, Object> values,
+            int status) {
+        var body = new HashMap<String, Object>();
+        body.put("revisionId", f.grant.path("revisionId").asText());
+        body.put("accessKey", f.grant.path("accessKey").asText());
+        body.put("pageId", feedbackPage());
+        body.putAll(values);
+        var response =
+                client.method(method)
+                        .uri(
+                                "/api/prototype-hub/public/shares/"
+                                        + f.share.path("token").asText()
+                                        + "/review/"
+                                        + path)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .header("Origin", ORIGIN)
+                        .header("X-Review-CSRF", b.csrf())
+                        .cookie("prototype-review", b.cookie)
+                        .bodyValue(body)
+                        .exchange();
+        response.expectStatus()
+                .isEqualTo(status)
+                .expectHeader()
+                .valueEquals("Cache-Control", "no-store");
+        JsonNode data = response.expectBody(JsonNode.class).returnResult().getResponseBody();
+        return status == 200 ? data.path("result") : data;
+    }
+
+    private JsonNode pmFeedback(
+            Fixture f,
+            String path,
+            HttpMethod method,
+            String actor,
+            Map<String, Object> values,
+            int status) {
+        var body = new HashMap<String, Object>();
+        body.put("revisionId", f.grant.path("revisionId").asText());
+        body.put("pageId", feedbackPage());
+        body.putAll(values);
+        return management(
+                method,
+                "/prototype-hub/versions/"
+                        + f.version.path("id").asText()
+                        + "/review-threads/"
+                        + path,
+                actor,
+                body,
+                status);
+    }
+
+    private void member(Fixture f, Actor actor, String role) {
+        management(
+                HttpMethod.PUT,
+                "/prototype-hub/projects/" + f.project + "/members/" + actor.id,
+                admin,
+                Map.of("role", role),
+                200);
+    }
+
+    @Test
+    void pageFeedbackMemberNamesUseExistingUserModelLimitWithoutTruncation() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String id =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("姓名快照"), 200)
+                        .path("id")
+                        .asText();
+        for (int length : List.of(101, 128)) {
+            String name = "名".repeat(length);
+            Actor member = actor(List.of("query", "save"), "prototype-hub-version", name);
+            member(f, member, "editor");
+            for (String visibility : List.of("public", "internal")) {
+                JsonNode response =
+                        pmFeedback(
+                                f,
+                                id + "/messages",
+                                HttpMethod.POST,
+                                member.token,
+                                Map.of(
+                                        "text",
+                                        "完整姓名",
+                                        "visibility",
+                                        visibility,
+                                        "clientRequestId",
+                                        UUID.randomUUID().toString()),
+                                200);
+                assertEquals(name, response.path("authorName").asText());
+            }
+        }
+        assertEquals(
+                5,
+                pmFeedback(f, id + "/messages/_query", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                3,
+                feedback(
+                                f,
+                                guest,
+                                HttpMethod.POST,
+                                "threads/" + id + "/messages/_query",
+                                Map.of(),
+                                200)
+                        .path("total")
+                        .asInt());
+    }
+
     private JsonNode invite(Fixture f, String email, int status) {
         return management(
                 HttpMethod.POST,
@@ -1968,6 +2748,14 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     private Actor actor(List<String> actions) {
+        return actor(actions, "prototype-hub-share");
+    }
+
+    private Actor actor(List<String> actions, String permission) {
+        return actor(actions, permission, "Review test");
+    }
+
+    private Actor actor(List<String> actions, String permission, String displayName) {
         String role = UUID.randomUUID().toString().replace("-", "");
         management(HttpMethod.POST, "/role", admin, Map.of("id", role, "name", "Review test"), 200);
         management(
@@ -1978,7 +2766,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         "id",
                         role,
                         "permission",
-                        "prototype-hub-share",
+                        permission,
                         "dimensionType",
                         "role",
                         "dimensionTarget",
@@ -1996,7 +2784,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
                                 admin,
                                 Map.of(
                                         "name",
-                                        "Review test",
+                                        displayName,
                                         "username",
                                         username,
                                         "password",
@@ -2020,6 +2808,11 @@ class PrototypeHubReviewIdentityIntegrationTest {
     private long count(String table) {
         return database.sql(
                         switch (table) {
+                            case "p_review_thread" ->
+                                    "select count(*) as value from p_review_thread";
+                            case "p_review_message" ->
+                                    "select count(*) as value from p_review_message";
+                            case "p_review_event" -> "select count(*) as value from p_review_event";
                             case "p_review_invitation" ->
                                     "select count(*) as value from p_review_invitation";
                             case "s_user" -> "select count(*) as value from s_user";

@@ -74,7 +74,10 @@ public class PrototypeProjectAccessService {
         if (!auth.hasDimension("role", "ADMIN")) return Mono.just(false);
         // hsweb 可保留 disabled 维度本身而只过滤其权限设置；例外必须同时核验当前角色与绑定。
         return dimensions
-                .findById("ADMIN")
+                .createQuery()
+                .where(DimensionEntity::getId, "ADMIN")
+                .fetch()
+                .singleOrEmpty()
                 .filter(
                         role ->
                                 "role".equals(role.getTypeId())
@@ -102,7 +105,11 @@ public class PrototypeProjectAccessService {
 
     public Mono<UserEntity> activeUser(String userId) {
         if (userId == null || userId.isBlank()) return Mono.error(userUnavailable());
-        return users.findById(userId)
+        return userRepository
+                .createQuery()
+                .where(UserEntity::getId, userId)
+                .fetch()
+                .singleOrEmpty()
                 .filter(user -> Byte.valueOf((byte) 1).equals(user.getStatus()))
                 .switchIfEmpty(Mono.error(PrototypeProjectAccessService::userUnavailable));
     }
@@ -148,7 +155,10 @@ public class PrototypeProjectAccessService {
     }
 
     public Mono<Grant> requireProject(Actor actor, String id, Action action, boolean audit) {
-        return projects.findById(id)
+        return projects.createQuery()
+                .where(PrototypeProjectEntity::getId, id)
+                .fetch()
+                .singleOrEmpty()
                 .filter(project -> project.getDeletedTime() == null)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("project")))
                 .flatMap(project -> role(actor, project).map(role -> new Grant(project, role)))
@@ -271,7 +281,10 @@ public class PrototypeProjectAccessService {
 
     public Mono<PrototypeVersionEntity> requireVersion(
             Actor actor, String id, Action action, boolean audit) {
-        return versions.findById(id)
+        return versions.createQuery()
+                .where(PrototypeVersionEntity::getId, id)
+                .fetch()
+                .singleOrEmpty()
                 .filter(version -> version.getDeletedTime() == null)
                 .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("version")))
                 .flatMap(
@@ -442,7 +455,8 @@ public class PrototypeProjectAccessService {
                 .where(PrototypeProjectMemberEntity::getProjectId, project.getId())
                 .and(PrototypeProjectMemberEntity::getUserId, actor.userId())
                 .in(PrototypeProjectMemberEntity::getRole, "editor", "viewer")
-                .fetchOne()
+                .fetch()
+                .singleOrEmpty()
                 .map(PrototypeProjectMemberEntity::getRole);
     }
 

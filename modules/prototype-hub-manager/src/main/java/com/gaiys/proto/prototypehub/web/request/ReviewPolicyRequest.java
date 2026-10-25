@@ -9,4 +9,5 @@ import jakarta.validation.constraints.PositiveOrZero;
 public record ReviewPolicyRequest(
         @NotNull @PositiveOrZero @Schema(description = "读取到的分享配置版本") Long expectedVersion,
         @NotNull @Schema(description = "是否开启访客身份") Boolean enabled,
-        @Schema(description = "是否明确允许未验证访客；未传或空值保留现值") Boolean allowUnverified) {}
+        @Schema(description = "是否明确允许未验证访客；未传或空值保留现值") Boolean allowUnverified,
+        @Schema(description = "是否允许页面文本评审；未传或空值保留现值") Boolean allowComment) {}

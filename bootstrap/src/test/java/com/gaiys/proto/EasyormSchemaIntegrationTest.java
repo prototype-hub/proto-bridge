@@ -4,8 +4,11 @@ import static org.junit.jupiter.api.Assertions.*;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewEventEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewInvitationEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewThreadEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
@@ -318,6 +321,54 @@ class EasyormSchemaIntegrationTest {
                 scalar(
                         "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND"
                                 + " indexname='addition_future_idx'"));
+    }
+
+    @Test
+    void pageReviewUpgradeAddsThreeDocumentedTablesAndKeepsHistoricalPolicyClosed()
+            throws Exception {
+        execute(
+                "INSERT INTO p_share(id,project_id,version_id,token,access_key,creator_id,enabled,create_time) VALUES ('legacy-feedback-share','p','v','legacy-feedback-token','legacy-key','legacy-user',true,1)");
+        try {
+            execute("DROP TABLE p_review_thread,p_review_message,p_review_event");
+            execute("ALTER TABLE p_share DROP COLUMN review_allow_comment");
+            for (int attempt = 0; attempt < 2; attempt++) {
+                synchronize(PrototypeShareEntity.class);
+                synchronize(PrototypeReviewThreadEntity.class);
+                synchronize(PrototypeReviewMessageEntity.class);
+                synchronize(PrototypeReviewEventEntity.class);
+            }
+            assertEquals(
+                    "true|false",
+                    scalar(
+                            "SELECT (review_allow_comment IS NULL)::text||'|'||coalesce(review_allow_comment,false)::text FROM p_share WHERE id='legacy-feedback-share'"));
+            assertEquals(
+                    "YES",
+                    scalar(
+                            "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='p_share' AND column_name='review_allow_comment'"));
+            assertEquals(
+                    "128",
+                    scalar(
+                            "SELECT character_maximum_length::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_message' AND column_name='author_name'"));
+            for (String table : List.of("p_review_thread", "p_review_message", "p_review_event")) {
+                assertFalse(scalar("SELECT obj_description('" + table + "'::regclass)").isBlank());
+                assertEquals(
+                        "0",
+                        scalar(
+                                "SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='"
+                                        + table
+                                        + "' AND coalesce(col_description(('public.'||table_name)::regclass,ordinal_position),'')=''"));
+                assertTrue(
+                        Integer.parseInt(
+                                        scalar(
+                                                "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND tablename='"
+                                                        + table
+                                                        + "'"))
+                                >= 3);
+                assertEquals("0", scalar("SELECT count(*)::text FROM " + table));
+            }
+        } finally {
+            execute("DELETE FROM p_share WHERE id='legacy-feedback-share'");
+        }
     }
 
     @Test

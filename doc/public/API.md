@@ -187,15 +187,15 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 ## 分享邮箱身份
 
-访问者身份由分享管理员逐条开启，默认关闭，不影响免账号预览。默认使用邮箱OTP；管理员还可单独允许只填姓名的低保障身份，界面明确标为“未验证”。两种身份都不创建平台用户，姓名/公司均为自述，邮箱验证也不代表实名或公司认证。固定分享支持手动复制定向邀请，仍需指定邮箱重新OTP；当前不含人工身份关联、批注/回复及业务邮件提醒。
+访问者身份由分享管理员逐条开启，默认关闭，不影响免账号预览。默认使用邮箱OTP；管理员还可单独允许只填姓名的低保障身份，界面明确标为“未验证”。两种身份都不创建平台用户，姓名/公司均为自述，邮箱验证也不代表实名或公司认证。固定分享支持手动复制定向邀请，仍需指定邮箱重新OTP；开启页面反馈后可进行文字反馈与网页回复，不含人工身份关联或业务邮件提醒。
 
-`GET /prototype-hub/shares/{id}/review` 返回 `{enabled,allowUnverified,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,allowUnverified?,expectedVersion}`，需要分享save及同一范围。`allowUnverified`旧空值按false，旧客户端省略该字段或传null时保留已有设置，不因普通分享编辑或SMTP故障而开启。低保障入口要求身份总开关与该许可同时启用。策略更新沿现有CAS并轮换分享凭据，旧预览和身份失效；409后须刷新并重新确认。已通过密码授权的公开分享提供 `reviewEnabled/reviewAvailable/reviewUnverifiedAllowed`；最后一项仅在分享授权、身份总开关和低保障许可同时有效时为true，身份context也返回allowUnverified。
+`GET /prototype-hub/shares/{id}/review` 返回 `{enabled,allowUnverified,allowComment,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,allowUnverified?,allowComment?,expectedVersion}`，需要分享save及同一范围。两个许可的旧空值均按false，旧客户端省略或传null时保留已有设置，不因普通分享编辑或SMTP故障而开启。低保障入口要求身份总开关与该许可同时启用。页面反馈还要求有效固定分享及修订；enabled=false同时显式allowComment=true返回400，关闭身份时新界面同时提交allowComment=false。旧客户端关闭身份可保留存储标志，但返回的有效allowComment为false。策略更新沿现有CAS并轮换分享凭据，旧预览和身份失效，重新开启不恢复旧会话；409后须刷新并重新确认。已通过密码授权的公开分享提供 `reviewEnabled/reviewAvailable/reviewUnverifiedAllowed`；最后一项仅在分享授权、身份总开关和低保障许可同时有效时为true，身份context也返回两个许可的有效值。
 
 公开入口相对于 `/prototype-hub/public/shares/{token}/review`，均为JSON POST，始终提交当前分享证明 `{revisionId,accessKey}`。固定与跟随模式都绑定本次明确修订，不隐式切换current。所有请求要求精确受信Origin，拒绝缺失、null及其他站点；代理配置见[运维说明](OPERATIONS.md#邮箱身份与smtp)。
 
 | 子路径 | 额外字段 | `result` |
 | --- | --- | --- |
-| `/context` | 无 | `{revisionId,enabled,allowUnverified,mailAvailable,csrfToken,session}`，匿名session为null |
+| `/context` | 无 | `{revisionId,enabled,allowUnverified,allowComment,mailAvailable,csrfToken,session}`，匿名session为null |
 | `/challenges` | `email,displayName,company?,invitationToken?` | `{challengeId,expiresAt,resendAfter}`，不返回验证码或邮箱 |
 | `/verify` | `challengeId,code` | 同context，成功session非空，轮换Cookie与CSRF |
 | `/unverified` | `displayName,company?`，不收集邮箱 | 同context，明确返回未验证身份；仅显式允许时可用，不发送邮件 |
@@ -249,6 +249,41 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 旧邮箱行的enabled空值视为true、configVersion空值视为0。修改必须提交刚读取的版本；陈旧版本返回409，刷新后由操作者重新确认，不自动重试。相同版本和相同状态无副作用；实际转换才增加版本和修改时间，并在项目锁事务中移除对应身份会话，邮箱身份还撤销该项目规范邮箱的验证码。未验证身份没有邮箱验证码，操作它不会修改同名邮箱联系人。
 
 停用后已打开设备的context返回session:null，匿名原型预览仍依分享自身策略。重新启用不会恢复任何旧Cookie、旧验证码或到期时间：邮箱身份必须重新OTP且保留原guestId；未验证身份无法重新证明原身份，新建也不会找回旧ID。发送中的邮件可能已被SMTP受理，但状态切换阻止该旧验证码用于验证，平台不能撤回已投递邮件。管理状态变更不退还发送或身份创建限额，不改变其他身份或项目的数据。
+
+## 固定页面文字反馈
+
+反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持纯文字线程、网页双向回复、内部备注及解决/重开；不含点/矩形/椭圆、附件、指派、消息编辑删除或业务通知。
+
+公开接口基于 `/prototype-hub/public/shares/{token}/review`，所有请求均要求受信Origin、当前HttpOnly Cookie、`X-Review-CSRF`，返回no-store，并提交 `{revisionId,accessKey,pageId}`：
+
+| 请求 | 额外输入 | 结果 |
+| --- | --- | --- |
+| `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人线程的PagerResult |
+| `POST /threads` | `{text,clientRequestId}` | Thread，含初始公开消息的原子创建结果 |
+| `POST /threads/{threadId}/messages/_query` | `{pageIndex,pageSize}` | 仅公开消息的PagerResult |
+| `POST /threads/{threadId}/messages` | `{text,clientRequestId}` | Message，作者始终来自当前访客会话 |
+| `PUT /threads/{threadId}/status` | `{state:'open',expectedVersion,clientRequestId}` | Thread，访客只能重开 |
+
+本人范围同时匹配项目、逻辑版本、分享、固定修订、页面、保障等级命名空间和guestId；不能读取其他客户、其他分享或另一保障等级的线程。同项目邮箱重新OTP可找回同一身份，但仍须当前相同分享授权；新分享不继承原分享线程，未验证身份丢失或到期后不能按姓名/邮箱恢复。分享或访客停用、身份过期、禁反馈后，公开读取与写入均失效，不删除已有反馈。
+
+管理接口基于 `/prototype-hub/versions/{versionId}/review-threads`，查询要求版本query，写入要求版本save，且始终同时要求当前项目EDIT。仅有项目READ的查看者不能读取客户反馈或内部备注：
+
+| 请求 | 输入 | 结果 |
+| --- | --- | --- |
+| `POST /_query` | `{revisionId,pageId,pageIndex,pageSize,state?}` | Thread的PagerResult |
+| `POST /{threadId}/messages/_query` | `{revisionId,pageId,pageIndex,pageSize}` | 含内部备注的Message分页 |
+| `POST /{threadId}/messages` | `{revisionId,pageId,text,visibility:'public'|'internal',clientRequestId}` | Message，成员作者从当前登录身份获取 |
+| `PUT /{threadId}/status` | `{revisionId,pageId,state:'open'|'resolved',expectedVersion,clientRequestId}` | Thread |
+
+管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
+
+分页pageIndex为0–10000、pageSize为1–100；线程按公开updatedAt降序、ID升序，消息按createdAt升序、ID升序。公开消息先按visibility过滤再计数、分页，不能暴露内部备注内容、数量、时间或其他元数据。内部备注不改变线程公开updatedAt、状态、configVersion或排序；无额外messageCount。公开新回复会更新updatedAt，访客回复自动将resolved重开并只递增一次状态版本；PM公开回复保留原状态。只有状态转换改变configVersion；同版本同状态请求无额外状态事件，陈旧expectedVersion返回409。
+
+text经strip后为1–4000个Java字符，拒绝Unicode空白文本，仅按纯文本存储和显示，不解释HTML或Markdown。state/visibility仅接受上述精确字符串，数字枚举或未知值返回400。所有写入必填1–128个可打印ASCII非空白字符的clientRequestId。当前作者、操作和完整范围共同隔离幂等键，指纹包含文本、可见性、expectedVersion等语义字段；重新授权后先重放回执，再检查限频和CAS。同键同内容返回原资源当前结果，不重复消息、事件或旧状态转换；同键不同内容返回409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。网络结果不明确时保留原键并由用户明确重试，不能自动重新投稿。
+
+访客新写入使用独立限频：每项目每小时300次、每保障等级与guestId每小时60次；幂等重放不重复占用次数，PM写入不占该额度。线程/消息、领域事件outbox和回执同事务，失败整体回滚。基础版只保留30天领域事件，由现有周期每次最多清理50条，不建立业务发送任务或调用邮件通道；事件到期不删除线程或消息。
+
+安全错误为403 / `PROTOTYPE_HUB_REVIEW_COMMENTS_DISABLED`、403 / `PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED`，后者允许显式重新验证但不能自动提交；线程缺失或不属当前本人范围统一404 / `PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE`，页面无效为404 / `PROTOTYPE_HUB_REVIEW_PAGE_INVALID`，状态CAS冲突为409 / `PROTOTYPE_HUB_REVIEW_THREAD_CONFLICT`。原分享、Origin、Cookie、CSRF和429限频错误保持，不回显输入或内部备注信息。
 
 ## HTML 文件夹上传
 

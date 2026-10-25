@@ -8,6 +8,7 @@ public record ReviewContextResponse(
         @Schema(description = "固定修订标识") String revisionId,
         @Schema(description = "该分享是否启用访客身份") boolean enabled,
         @Schema(description = "是否明确允许未验证访客") boolean allowUnverified,
+        @Schema(description = "当前分享是否允许页面文本评审") boolean allowComment,
         @Schema(description = "服务器是否配置验证邮件传输") boolean mailAvailable,
         @Schema(description = "绑定当前HttpOnly Cookie的CSRF凭据") String csrfToken,
         @Schema(description = "当前访客身份及保障等级，匿名时为空") ReviewIdentity session) {
