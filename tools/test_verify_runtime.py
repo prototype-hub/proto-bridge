@@ -67,6 +67,165 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
                 with self.assertRaises(runtime.VerificationFailure):
                     self.check.verify_review_identity(self.api, fixture)
 
+    def test_identity_requires_original_profile_level_and_expiration(self):
+        identity = {'guestId': 'stable-guest', 'verificationLevel': 'unverified',
+                    'expiresAt': int(time.time() * 1000) + 60000, 'displayName': 'Original'}
+        fixture = {'grant': self.grant, 'cookie': 'private-cookie', 'guestId': 'stable-guest',
+                   'identity': identity}
+        with patch.object(self.check, 'review_call', return_value=({'session': identity}, None)):
+            self.check.verify_review_identity(self.api, fixture)
+        for field, value in (('expiresAt', identity['expiresAt'] + 1),
+                             ('verificationLevel', 'email'), ('displayName', 'Changed')):
+            with self.subTest(field=field), patch.object(self.check, 'review_call',
+                    return_value=({'session': dict(identity, **{field: value})}, None)):
+                with self.assertRaises(runtime.VerificationFailure):
+                    self.check.verify_review_identity(self.api, fixture)
+        expired = dict(identity, expiresAt=1)
+        with patch.object(self.check, 'review_call', return_value=({'session': expired}, None)):
+            with self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_review_identity(self.api, dict(fixture, identity=expired))
+
+    def test_review_http_preserves_put_and_registers_one_time_capabilities(self):
+        token = secrets.token_urlsafe(32)
+        body = json.dumps({'success': True, 'result': {'invitationToken': token}}).encode()
+        with patch.object(runtime.Api, 'request', return_value=(body, Message())) as request:
+            self.check.review_call(self.api, self.grant, 'threads/id/status', {}, method='PUT')
+        self.assertEqual('PUT', request.call_args.args[0])
+        self.assertIn(token, self.check.secrets_seen)
+
+    def test_all_nine_tables_are_nonempty_and_a_missing_table_cannot_pass(self):
+        expected = {'p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
+                    'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
+                    'p_review_message', 'p_review_event'}
+        self.assertEqual(expected, set(runtime.REVIEW_TABLES))
+        self.assertTrue(expected <= set(runtime.TABLES))
+        manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in expected}
+        self.assertEqual(manifest, runtime.review_manifest(manifest))
+        for table in expected:
+            for missing in (True, False):
+                broken = copy.deepcopy(manifest)
+                if missing:
+                    del broken[table]
+                else:
+                    broken[table]['count'] = 0
+                with self.subTest(table=table, missing=missing):
+                    with self.assertRaises(runtime.VerificationFailure):
+                        runtime.review_manifest(broken)
+        with patch.object(self.check, 'sql', return_value=json.dumps({'count': 1, 'contentMd5': 'a' * 32})) as sql:
+            self.check.database_manifest('restored')
+        self.assertEqual(len(runtime.TABLES), sql.call_count)
+        self.assertTrue(all(call.args[0] == 'restored' for call in sql.call_args_list))
+
+    def test_startup_only_allows_expired_deletions_not_rewrites_new_rows_or_omitted_tables(self):
+        before = {table: {'id': {'hash': 'digest', 'deadline': None}}
+                  for table in runtime.REVIEW_TABLES}
+        self.assertTrue(all(value == 0 for value in runtime.compare_review_rows(before, before, 100).values()))
+        for table in runtime.REVIEW_TABLES:
+            for change in ('delete', 'rewrite', 'insert', 'omit'):
+                after = copy.deepcopy(before)
+                if change == 'delete':
+                    after[table].clear()
+                elif change == 'rewrite':
+                    after[table]['id']['hash'] = 'different'
+                elif change == 'insert':
+                    after[table]['new'] = {'hash': 'new', 'deadline': 200}
+                else:
+                    del after[table]
+                with self.subTest(table=table, change=change):
+                    with self.assertRaises(runtime.VerificationFailure):
+                        runtime.compare_review_rows(before, after, 100)
+        before['p_review_challenge']['id']['deadline'] = 99
+        after = copy.deepcopy(before)
+        after['p_review_challenge'].clear()
+        self.assertEqual(1, runtime.compare_review_rows(before, after, 100)['p_review_challenge'])
+        with self.assertRaises(runtime.VerificationFailure):
+            runtime.compare_review_rows(before, after, 98)
+
+    def invitation_fixture(self):
+        items = {}
+        for state in ('pending', 'revoked', 'consumed'):
+            items[state] = {'email': state + '@example.invalid', 'token': secrets.token_urlsafe(32),
+                            'row': {'id': state, 'status': state, 'configVersion': 0,
+                                    'expiresAt': int(time.time() * 1000) + 60000}}
+        return {'grant': self.grant, 'share': {'id': 'share'}, 'versionId': 'version',
+                'projectId': 'project', 'policy': {'configVersion': 1}, 'invitations': items}
+
+    def test_invitation_check_rejects_expiry_state_binding_or_private_response_changes(self):
+        fixture = self.invitation_fixture()
+        page = {'total': 3, 'data': [item['row'] for item in fixture['invitations'].values()]}
+        with patch.object(self.api, 'request', return_value=page), \
+                patch.object(self.check, 'sql', return_value='1') as sql:
+            self.check.verify_review_invitations(self.api, fixture, 'restored')
+        self.assertTrue(all(call.args[0] == 'restored' for call in sql.call_args_list))
+        for field, value in (('status', 'pending'), ('expiresAt', 1), ('configVersion', 2),
+                             ('maskedEmail', fixture['invitations']['revoked']['email'])):
+            broken = copy.deepcopy(page)
+            broken['data'][1][field] = value
+            with self.subTest(field=field), patch.object(self.api, 'request', return_value=broken), \
+                    patch.object(self.check, 'sql', return_value='1'):
+                with self.assertRaises(runtime.VerificationFailure):
+                    self.check.verify_review_invitations(self.api, fixture, 'restored')
+        fixture['invitations']['pending']['row']['expiresAt'] = 1
+        with patch.object(self.api, 'request', return_value=page), patch.object(self.check, 'sql', return_value='1'):
+            with self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_review_invitations(self.api, fixture, 'restored')
+        fixture = self.invitation_fixture()
+        page = {'total': 3, 'data': [item['row'] for item in fixture['invitations'].values()]}
+        with patch.object(self.api, 'request', return_value=page), patch.object(self.check, 'sql', return_value='0'):
+            with self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_review_invitations(self.api, fixture, 'restored')
+
+    def test_expired_pending_otp_is_not_renewed_to_make_restore_pass(self):
+        fixture = self.invitation_fixture()
+        fixture['invitations']['pending']['challenge'] = {'expiresAt': 1}
+        self.check.mailbox = argparse.Namespace(messages=[])
+        with patch.object(self.check, 'review_call',
+                return_value=({'csrfToken': 'proof', 'code': 'PROTOTYPE_HUB_REVIEW_INVITATION_INVALID'}, 'cookie')) as call:
+            with self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_restored_invitation(self.api, fixture)
+        self.assertFalse(any(args.args[2] == 'verify' for args in call.call_args_list))
+
+    def test_discussion_check_rejects_internal_visibility_leaks_or_missing_atomic_receipts(self):
+        public = [{'id': str(index), 'visibility': 'public'} for index in range(3)]
+        note = {'id': 'internal-note', 'visibility': 'internal'}
+        fixture = {'grant': self.grant, 'cookie': 'wrong', 'unverified': {'cookie': 'author'},
+                   'projectId': 'project', 'versionId': 'version', 'discussion': {
+                       'base': {'revisionId': 'fixed-r1', 'pageId': 'page'}, 'memberPath': '/member',
+                       'thread': {'id': 'thread'}, 'messages': public + [note], 'noteId': note['id'],
+                       'operations': []}}
+        summary = {'messages': 4, 'receipts': 5, 'receiptHash': 'a' * 32, 'bound': True, 'events': sorted([
+            'thread.created', 'message.created', 'note.created', 'thread.resolved',
+            'message.created', 'thread.reopened'])}
+        def run(leak=False, receipts=5, foreign=False, receipt_hash='a' * 32):
+            def review(api, grant, operation, payload, **kwargs):
+                if operation == 'context':
+                    return {'csrfToken': 'csrf'}, 'anonymous'
+                if kwargs.get('expected') in (403, 404):
+                    return {'success': False}, None
+                if operation == 'threads/_query':
+                    rows = [] if kwargs['cookie'] == 'wrong' and not foreign else [{'id': 'thread'}]
+                else:
+                    rows = public + ([note] if leak else [])
+                return {'total': len(rows), 'data': rows}, None
+            with patch.object(self.check, 'verify_review_identity', return_value={'csrfToken': 'csrf'}), \
+                    patch.object(self.check, 'review_call', side_effect=review), \
+                    patch.object(self.api, 'request', return_value={'total': 4, 'data': public + [note]}), \
+                    patch.object(self.check, 'sql', return_value=json.dumps(dict(summary, receipts=receipts, receiptHash=receipt_hash))):
+                return self.check.verify_review_discussion(self.api, fixture, 'restored')
+        self.assertEqual(summary, run())
+        for options in ({'leak': True}, {'receipts': 4}, {'foreign': True}, {'receipt_hash': 'b' * 32}):
+            with self.subTest(options=options), self.assertRaises(runtime.VerificationFailure):
+                run(**options)
+
+    def test_browser_created_invitation_tokens_are_redacted_without_be_api_capture(self):
+        token = secrets.token_urlsafe(32)
+        for value in ('https://example.invalid/share#reviewInvitation=' + token,
+                      '#review-invitation=' + token,
+                      json.dumps({'invitationToken': token}),
+                      json.dumps(json.dumps({'invitationToken': token}))):
+            with self.subTest(kind=value[:25]):
+                self.assertNotIn(token, self.check.redact(value))
+
 
 class RuntimeSafetyTest(unittest.TestCase):
     def setUp(self):
@@ -111,6 +270,14 @@ class RuntimeSafetyTest(unittest.TestCase):
         cleanup.assert_called_once()
         self.assertEqual('failed', check.report['status'])
         self.assertIn('cleanupError', json.loads(output))
+
+    def test_cleanup_error_cannot_disclose_invitation_tokens_in_report_or_stdout(self):
+        token = secrets.token_urlsafe(32)
+        result, _, _, output, _ = self.main_with_failure(cleanup_error=runtime.VerificationFailure(
+            'Failed cleanup at /share#reviewInvitation=' + token))
+        self.assertEqual(1, result)
+        self.assertNotIn(token, output)
+        self.assertNotIn(token, self.args().report.read_text())
 
     def test_unexpected_exception_replaces_a_previous_passed_report(self):
         self.args().report.write_text('{"status":"passed"}')
