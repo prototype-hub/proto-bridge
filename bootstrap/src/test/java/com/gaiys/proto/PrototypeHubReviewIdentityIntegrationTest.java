@@ -2505,6 +2505,373 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     @Test
+    void reviewOverviewPagesFixedRevisionAcrossPagesAndIgnoresPrivateActivity() throws Exception {
+        List<String> pages = List.of("index.html", "details.html", "中文/结果.html");
+        Fixture f = feedbackFixture(pages);
+        Browser guest = unverified(f, context(f, null), "跨页客户", null, 200);
+        var created = new ArrayList<JsonNode>();
+        for (int i = 0; i < 22; i++) {
+            var fields = new HashMap<>(feedbackFields("反馈" + i));
+            fields.put("pageId", reviewPage(pages.get(i % pages.size())));
+            created.add(feedback(f, guest, HttpMethod.POST, "threads", fields, 200));
+        }
+        var first = created.getFirst();
+        pmFeedback(
+                f,
+                first.path("id").asText() + "/status",
+                HttpMethod.PUT,
+                admin,
+                Map.of(
+                        "pageId",
+                        first.path("pageId").asText(),
+                        "state",
+                        "resolved",
+                        "expectedVersion",
+                        0,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        // 相同更新时间用真实ID排序断言分页稳定性，不依赖处理器或数据库时钟精度。
+        sql("update p_review_thread set public_updated_at=1000");
+        var expected = created.stream().map(row -> row.path("id").asText()).sorted().toList();
+        JsonNode one = overview(f, guest, Map.of(), 200);
+        assertEquals(22, one.path("total").asInt());
+        assertEquals(0, one.path("pageIndex").asInt());
+        assertEquals(20, one.path("pageSize").asInt());
+        assertEquals(20, one.path("data").size());
+        JsonNode two = overview(f, guest, Map.of("pageIndex", 1), 200);
+        assertEquals(22, two.path("total").asInt());
+        assertEquals(2, two.path("data").size());
+        var actual = new ArrayList<String>();
+        one.path("data").forEach(row -> actual.add(row.path("id").asText()));
+        two.path("data").forEach(row -> actual.add(row.path("id").asText()));
+        assertEquals(expected, actual);
+        JsonNode beyond = overview(f, guest, Map.of("pageIndex", 99), 200);
+        assertEquals(99, beyond.path("pageIndex").asInt());
+        assertEquals(22, beyond.path("total").asInt());
+        assertTrue(beyond.path("data").isEmpty());
+        assertEquals(1, overview(f, guest, Map.of("state", "resolved"), 200).path("total").asInt());
+        assertEquals(21, overview(f, guest, Map.of("state", "open"), 200).path("total").asInt());
+        assertEquals(one, pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200));
+        Set<String> returnedPages = new HashSet<>();
+        for (JsonNode row : one.path("data")) {
+            returnedPages.add(row.path("pagePath").asText());
+            assertEquals(reviewPage(row.path("pagePath").asText()), row.path("pageId").asText());
+            assertFalse(row.path("pageName").asText().isBlank());
+            for (String field :
+                    List.of(
+                            "guestId",
+                            "email",
+                            "shareId",
+                            "messages",
+                            "assigneeId",
+                            "assigneeName",
+                            "assignmentVersion",
+                            "assignmentUpdatedAt")) assertFalse(row.has(field));
+        }
+        assertEquals(Set.copyOf(pages), returnedPages);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version");
+        member(f, editor, "editor");
+        pmFeedback(
+                f,
+                first.path("id").asText() + "/messages",
+                HttpMethod.POST,
+                editor.token,
+                Map.of(
+                        "pageId",
+                        first.path("pageId").asText(),
+                        "text",
+                        "仅内部可见的总览备注",
+                        "visibility",
+                        "internal",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        pmFeedback(
+                f,
+                first.path("id").asText() + "/assignment",
+                HttpMethod.PUT,
+                editor.token,
+                Map.of(
+                        "pageId",
+                        first.path("pageId").asText(),
+                        "assigneeId",
+                        editor.id,
+                        "expectedVersion",
+                        0,
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        long events = count("p_review_event");
+        long receipts = count("p_creation_receipt");
+        assertEquals(one, overview(f, guest, Map.of(), 200));
+        assertEquals(two, overview(f, guest, Map.of("pageIndex", 1), 200));
+        assertEquals(one, pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200));
+        assertFalse(one.toString().contains("仅内部可见的总览备注"));
+        assertEquals(events, count("p_review_event"));
+        assertEquals(receipts, count("p_creation_receipt"));
+        for (JsonNode thread : created.subList(0, 3)) {
+            Map<String, Object> page = Map.of("pageId", thread.path("pageId").asText());
+            JsonNode detail =
+                    feedback(
+                            f,
+                            guest,
+                            HttpMethod.POST,
+                            "threads/" + thread.path("id").asText() + "/_detail",
+                            page,
+                            200);
+            assertEquals(1000, detail.path("updatedAt").asLong());
+            assertEquals(
+                    thread.equals(created.getFirst()) ? 8 : 7,
+                    feedback(f, guest, HttpMethod.POST, "threads/_query", page, 200)
+                            .path("total")
+                            .asInt());
+        }
+        // 公开回复使对应线程上浮，内部操作仍不影响其他行的稳定次序。
+        JsonNode target = created.getLast();
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/" + target.path("id").asText() + "/messages",
+                Map.of(
+                        "pageId",
+                        target.path("pageId").asText(),
+                        "text",
+                        "公开更新",
+                        "clientRequestId",
+                        UUID.randomUUID().toString()),
+                200);
+        assertEquals(
+                target.path("id"),
+                overview(f, guest, Map.of("pageSize", 1), 200).path("data").get(0).path("id"));
+    }
+
+    @Test
+    void reviewOverviewKeepsGuestLevelShareRevisionAndMemberPermissionScopes() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser email = verify(f, context(f, null), "overview@example.invalid", "同名", null);
+        Browser low = unverified(f, context(f, null), "同名", null, 200);
+        Browser other = unverified(f, context(f, null), "同名", null, 200);
+        JsonNode emailThread =
+                feedback(f, email, HttpMethod.POST, "threads", feedbackFields("邮箱专属"), 200);
+        JsonNode lowThread =
+                feedback(f, low, HttpMethod.POST, "threads", feedbackFields("未验证专属"), 200);
+        feedback(f, other, HttpMethod.POST, "threads", feedbackFields("另一访客"), 200);
+        assertEquals(emailThread, overview(f, email, Map.of(), 200).path("data").get(0));
+        assertEquals(lowThread, overview(f, low, Map.of(), 200).path("data").get(0));
+        assertEquals(1, overview(f, other, Map.of(), 200).path("total").asInt());
+        JsonNode share =
+                management(
+                        HttpMethod.POST,
+                        "/prototype-hub/versions/" + f.version.path("id").asText() + "/shares",
+                        admin,
+                        Map.of(),
+                        200);
+        Fixture second = new Fixture(f.project, f.version, share, null);
+        management(
+                HttpMethod.PUT,
+                manage(second),
+                admin,
+                Map.of("enabled", true, "allowComment", true, "expectedVersion", 1),
+                200);
+        second = refresh(second);
+        sql("update p_review_rate set next_allowed_at=0");
+        Browser secondEmail =
+                verify(second, context(second, null), "overview@example.invalid", "同名", null);
+        assertEquals(email.guest(), secondEmail.guest());
+        assertEquals(0, overview(second, secondEmail, Map.of(), 200).path("total").asInt());
+        JsonNode secondThread =
+                feedback(
+                        second,
+                        secondEmail,
+                        HttpMethod.POST,
+                        "threads",
+                        feedbackFields("同邮箱另一分享"),
+                        200);
+        assertEquals(
+                secondThread, overview(second, secondEmail, Map.of(), 200).path("data").get(0));
+        assertEquals(1, overview(f, email, Map.of(), 200).path("total").asInt());
+        assertEquals(
+                4,
+                pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        Fixture foreign = feedbackFixture();
+        Browser foreignGuest = unverified(foreign, context(foreign, null), "同名", null, 200);
+        feedback(foreign, foreignGuest, HttpMethod.POST, "threads", feedbackFields("跨项目"), 200);
+        assertEquals(1, overview(foreign, foreignGuest, Map.of(), 200).path("total").asInt());
+        pmFeedback(
+                f,
+                "_overview",
+                HttpMethod.POST,
+                admin,
+                Map.of("revisionId", foreign.grant.path("revisionId").asText()),
+                404);
+        pmFeedback(
+                foreign,
+                "_overview",
+                HttpMethod.POST,
+                admin,
+                Map.of("revisionId", f.grant.path("revisionId").asText()),
+                404);
+        feedback(
+                f,
+                email,
+                HttpMethod.POST,
+                "threads/_overview",
+                Map.of("revisionId", foreign.grant.path("revisionId").asText()),
+                403);
+        Actor editor = actor(List.of("query"), "prototype-hub-version");
+        Actor viewer = actor(List.of("query"), "prototype-hub-version");
+        Actor noQuery = actor(List.of("save"), "prototype-hub-version");
+        Actor outsider = actor(List.of("query"), "prototype-hub-version");
+        member(f, editor, "editor");
+        member(f, viewer, "viewer");
+        member(f, noQuery, "editor");
+        assertEquals(
+                4,
+                pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+        pmFeedback(f, "_overview", HttpMethod.POST, viewer.token, Map.of(), 403);
+        pmFeedback(f, "_overview", HttpMethod.POST, noQuery.token, Map.of(), 403);
+        pmFeedback(f, "_overview", HttpMethod.POST, outsider.token, Map.of(), 404);
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + f.project + "/members/" + editor.id,
+                admin,
+                null,
+                200);
+        pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 404);
+    }
+
+    @Test
+    void reviewOverviewValidatesRequestsAndCurrentLifecycleWithoutWeakeningCsrf() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("保留反馈"), 200);
+        for (Map<String, Object> invalid :
+                List.of(
+                        Map.<String, Object>of("pageIndex", -1),
+                        Map.<String, Object>of("pageIndex", 10001),
+                        Map.<String, Object>of("pageSize", 0),
+                        Map.<String, Object>of("pageSize", 101),
+                        Map.<String, Object>of("state", ""),
+                        Map.<String, Object>of("state", "other"),
+                        Map.<String, Object>of("revisionId", ""),
+                        Map.<String, Object>of("revisionId", "x".repeat(129)),
+                        Map.<String, Object>of("accessKey", "")))
+            feedback(f, guest, HttpMethod.POST, "threads/_overview", invalid, 400);
+        pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("revisionId", "absent"), 404);
+        assertEquals(
+                1,
+                management(
+                                HttpMethod.POST,
+                                "/prototype-hub/versions/"
+                                        + f.version.path("id").asText()
+                                        + "/review-threads/_overview",
+                                admin,
+                                Map.of("revisionId", f.grant.path("revisionId").asText()),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED",
+                overview(f, context(f, null), Map.of(), 403).path("code").asText());
+        for (var entry :
+                Map.of(
+                                "PROTOTYPE_HUB_REVIEW_ORIGIN_DENIED",
+                                "origin",
+                                "PROTOTYPE_HUB_REVIEW_CSRF_INVALID",
+                                "csrf",
+                                "PROTOTYPE_HUB_REVIEW_COOKIE_REQUIRED",
+                                "cookie")
+                        .entrySet()) {
+            String boundary = entry.getValue();
+            JsonNode denied =
+                    exchange(
+                                    f,
+                                    "threads/_overview",
+                                    Map.of(),
+                                    boundary.equals("cookie") ? null : guest.cookie,
+                                    boundary.equals("csrf") ? "wrong" : guest.csrf(),
+                                    boundary.equals("origin") ? null : ORIGIN,
+                                    403)
+                            .data;
+            assertEquals(entry.getKey(), denied.path("code").asText());
+        }
+        long expiry =
+                number(
+                        "select expires_at as value from p_review_session where guest_id=:id",
+                        guest.guest());
+        sql("update p_review_session set expires_at=1 where guest_id=:id", guest.guest());
+        overview(f, guest, Map.of(), 403);
+        database.sql("update p_review_session set expires_at=:expiry where guest_id=:id")
+                .bind("expiry", expiry)
+                .bind("id", guest.guest())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        sql("update p_review_unverified_guest set enabled=false where id=:id", guest.guest());
+        overview(f, guest, Map.of(), 403);
+        sql("update p_review_unverified_guest set enabled=true where id=:id", guest.guest());
+        String shareId = f.share.path("id").asText();
+        sql("update p_share set enabled=false where id=:id", shareId);
+        overview(f, guest, Map.of(), 404);
+        sql("update p_share set enabled=true where id=:id", shareId);
+        sql("update p_share set expires_at=1 where id=:id", shareId);
+        overview(f, guest, Map.of(), 404);
+        sql("update p_share set expires_at=null where id=:id", shareId);
+        sql("update p_project set deleted_time=1 where id=:id", f.project);
+        overview(f, guest, Map.of(), 404);
+        pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 404);
+        sql("update p_project set deleted_time=null where id=:id", f.project);
+        sql("update p_version set deleted_time=1 where id=:id", f.version.path("id").asText());
+        overview(f, guest, Map.of(), 404);
+        pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 404);
+        sql("update p_version set deleted_time=null where id=:id", f.version.path("id").asText());
+        long version =
+                management(HttpMethod.GET, manage(f), admin, null, 200)
+                        .path("configVersion")
+                        .asLong();
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", true, "allowComment", false, "expectedVersion", version),
+                200);
+        overview(f, guest, Map.of(), 403);
+        Fixture renewed = refresh(f);
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_COMMENTS_DISABLED",
+                overview(renewed, guest, Map.of(), 403).path("code").asText());
+        JsonNode policy = management(HttpMethod.GET, manage(f), admin, null, 200);
+        management(
+                HttpMethod.POST,
+                "/prototype-hub/shares/" + shareId + "/revoke",
+                admin,
+                Map.of("expectedVersion", policy.path("configVersion").asLong()),
+                200);
+        overview(renewed, guest, Map.of(), 404);
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(
+                1,
+                pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+    }
+
+    private JsonNode overview(Fixture f, Browser guest, Map<String, Object> fields, int status) {
+        return exchange(f, "threads/_overview", fields, guest.cookie, guest.csrf(), ORIGIN, status)
+                .data;
+    }
+
+    private String reviewPage(String path) {
+        return com.gaiys.proto.prototypehub.web.info.PrototypePageInfo.page(path, path).pageId();
+    }
+
+    @Test
     void rootAnchorsRoundTripTypedJsonForEveryShapeAndRemainCreateOnly() throws Exception {
         Fixture f = feedbackFixture();
         Browser guest = unverified(f, context(f, null), "锚点客户", null, 200);
@@ -3436,7 +3803,11 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     private Fixture feedbackFixture() throws IOException {
-        Fixture f = fixture(true, false);
+        return feedbackFixture(List.of("index.html"));
+    }
+
+    private Fixture feedbackFixture(List<String> pages) throws IOException {
+        Fixture f = fixture(true, false, pages);
         management(
                 HttpMethod.PUT,
                 manage(f),
@@ -4253,6 +4624,11 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     private Fixture fixture(boolean enable, boolean password) throws IOException {
+        return fixture(enable, password, List.of("index.html"));
+    }
+
+    private Fixture fixture(boolean enable, boolean password, List<String> pages)
+            throws IOException {
         String project =
                 management(
                                 HttpMethod.POST,
@@ -4264,9 +4640,13 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         .asText();
         var bytes = new ByteArrayOutputStream();
         try (var zip = new ZipOutputStream(bytes)) {
-            zip.putNextEntry(new ZipEntry("index.html"));
-            zip.write("<html><body>Review fixture</body></html>".getBytes(StandardCharsets.UTF_8));
-            zip.closeEntry();
+            for (String page : pages) {
+                zip.putNextEntry(new ZipEntry(page));
+                zip.write(
+                        "<html><body>Review fixture</body></html>"
+                                .getBytes(StandardCharsets.UTF_8));
+                zip.closeEntry();
+            }
         }
         var parts = new MultipartBodyBuilder();
         parts.part("versionName", "R1");

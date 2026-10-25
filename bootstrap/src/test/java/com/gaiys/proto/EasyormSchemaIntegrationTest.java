@@ -324,6 +324,43 @@ class EasyormSchemaIntegrationTest {
     }
 
     @Test
+    void reviewOverviewIndexAddsIdempotentlyWithoutChangingThreadOrImage() throws Exception {
+        execute(
+                "INSERT INTO p_review_thread(id,project_id,version_id,revision_id,share_id,page_id,page_name,page_path,guest_id,verification_level,author_name,summary,state,config_version,assignee_id,assignee_name,assignment_version,assignment_updated_at,create_time,public_updated_at,anchor) VALUES ('legacy-overview-thread','p','v','r','s','page','Page','index.html','g','email','Guest','legacy summary','resolved',7,'u','PM',3,4,1,2,'{\"space\":\"root-document-css-px-v1\",\"shape\":\"point\",\"x\":1,\"y\":2,\"width\":0,\"height\":0,\"documentWidth\":10,\"documentHeight\":10,\"viewportWidth\":10,\"viewportHeight\":10}')");
+        execute(
+                "INSERT INTO p_review_message(id,project_id,version_id,revision_id,thread_id,text,author_type,author_name,visibility,create_time,image_path,image_content_type,image_size,image_sha256,image_width,image_height) VALUES ('legacy-overview-image','p','v','r','legacy-overview-thread','text with image','member','PM','internal',3,'projects/p/review-images/fixture/image','image/png',100,'hash',2,3)");
+        try {
+            String thread =
+                    scalar(
+                            "SELECT md5(row_to_json(t)::text) FROM p_review_thread t WHERE id='legacy-overview-thread'");
+            String image =
+                    scalar(
+                            "SELECT md5(row_to_json(t)::text) FROM p_review_message t WHERE id='legacy-overview-image'");
+            execute("DROP INDEX idx_review_thread_overview");
+            for (int i = 0; i < 2; i++) synchronize(PrototypeReviewThreadEntity.class);
+            assertEquals(
+                    thread,
+                    scalar(
+                            "SELECT md5(row_to_json(t)::text) FROM p_review_thread t WHERE id='legacy-overview-thread'"));
+            assertEquals(
+                    image,
+                    scalar(
+                            "SELECT md5(row_to_json(t)::text) FROM p_review_message t WHERE id='legacy-overview-image'"));
+            assertEquals(
+                    "1",
+                    scalar(
+                            "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND indexname='idx_review_thread_overview'"));
+            assertTrue(
+                    scalar(
+                                    "SELECT indexdef FROM pg_indexes WHERE schemaname='public' AND indexname='idx_review_thread_overview'")
+                            .contains("(revision_id, public_updated_at, id)"));
+        } finally {
+            execute("DELETE FROM p_review_message WHERE id='legacy-overview-image'");
+            execute("DELETE FROM p_review_thread WHERE id='legacy-overview-thread'");
+        }
+    }
+
+    @Test
     void reviewAnchorUpgradeKeepsHistoricalThreadAssignmentAndImageAcrossRepeatedSync()
             throws Exception {
         execute(

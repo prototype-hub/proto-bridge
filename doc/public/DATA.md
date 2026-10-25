@@ -156,6 +156,8 @@ EasyORM增加 `p_share.review_enabled/review_allow_unverified/review_allow_comme
 | `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性、创建时间及可空单图元数据；没有消息编辑/删除或通用附件入口 |
 | `p_review_event` | 同事务领域事件outbox，仅存相关ID、事件类型、作者种类和时间；不存正文、邮箱、凭据，不代表业务发送任务 |
 
+固定修订的跨页反馈总览复用p_review_thread及原Thread投影，不新增持久字段或表。索引 `idx_review_thread_overview(revision_id,public_updated_at,id)` 支持固定修订按公开更新时间和ID分页；由EasyORM增补，保留旧数据。总览的公开范围仍限定share_id、guest_id及verification_level，内部备注与负责人字段不参与公开排序、计数或投影；整库备份及v3存储引用格式保持不变。
+
 p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_name`（128）、`assignment_version`（Long）、`assignment_updated_at`（Unix毫秒）。旧空值按未分派、版本0及空更新时间解释，不回填猜测的负责人。姓名是分派时快照，available按当前启用账号及owner/editor绑定计算；停用或撤员不自动清空或转交，同一账号重新合格可再次可用。负责人独立于state/config_version/public_updated_at，不改变原公开Thread投影或排序，也不构成授权。
 
 分派写入按稳定账号顺序取用户锁，再取项目、版本锁并重验当前范围及目标资格；独立回执指纹包含目标、expectedVersion与完整范围。重放只返回当前负责人，不能回写历史目标。同版本同目标仅记录回执，实际变化才递增assignment_version并写内部thread.assigned/thread.unassigned事件。用户删除沿原同步事务发现受影响项目，在项目锁内每批最多50条清除负责人ID/姓名、增加分派版本/时间并写thread.unassigned；失败回滚删除，重建相同用户ID不能继承旧分派。版本/项目永久清理沿原线程图删除事件与回执。

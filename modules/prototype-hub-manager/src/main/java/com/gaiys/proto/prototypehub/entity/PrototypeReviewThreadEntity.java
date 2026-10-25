@@ -22,6 +22,9 @@ import org.hswebframework.web.api.crud.entity.GenericEntity;
             @Index(name = "idx_review_thread_project", columnList = "project_id"),
             @Index(name = "idx_review_thread_assignee", columnList = "assignee_id,project_id,id"),
             @Index(
+                    name = "idx_review_thread_overview",
+                    columnList = "revision_id,public_updated_at,id"),
+            @Index(
                     name = "idx_review_thread_scope",
                     columnList =
                             "revision_id,page_id,share_id,guest_id,verification_level,public_updated_at,id")
