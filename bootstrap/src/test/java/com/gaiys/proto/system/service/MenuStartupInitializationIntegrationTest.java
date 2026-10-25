@@ -99,7 +99,7 @@ class MenuStartupInitializationIntegrationTest {
                 menus.createQuery().fetch().collectMap(MenuEntity::getId).block(TIMEOUT);
         assertNotNull(existing);
         assertEquals(expected, existing.keySet());
-        assertEquals(39, existing.values().stream().mapToInt(row -> row.getButtons().size()).sum());
+        assertEquals(42, existing.values().stream().mapToInt(row -> row.getButtons().size()).sum());
         assertFalse(
                 Boolean.TRUE.equals(initialization.initializeIfEmpty(unreadable()).block(TIMEOUT)));
         assertEquals(15, menus.createQuery().count().block(TIMEOUT));
@@ -174,6 +174,30 @@ class MenuStartupInitializationIntegrationTest {
                         Set.of("query")));
         assertButtonPermissions(
                 menus, "system-logs", "update", Map.of("system-logger", Set.of("query", "save")));
+        // A shared recycle page has no ANDed base resource; tabs and restores grant independently.
+        assertEquals(
+                Map.of(),
+                MenuGrantService.permissions(menus.get("prototype-hub-recycle"), List.of()));
+        assertButtonPermissions(
+                menus,
+                "prototype-hub-recycle",
+                "queryProjects",
+                Map.of("prototype-hub-project", Set.of("query")));
+        assertButtonPermissions(
+                menus,
+                "prototype-hub-recycle",
+                "queryVersions",
+                Map.of("prototype-hub-version", Set.of("query")));
+        assertButtonPermissions(
+                menus,
+                "prototype-hub-recycle",
+                "restore",
+                Map.of("prototype-hub-project", Set.of("query", "save")));
+        assertButtonPermissions(
+                menus,
+                "prototype-hub-recycle",
+                "restoreVersion",
+                Map.of("prototype-hub-version", Set.of("query", "save")));
     }
 
     private static void assertButtonPermissions(
@@ -269,7 +293,9 @@ class MenuStartupInitializationIntegrationTest {
         assertEquals(
                 0L,
                 database.sql(
-                                "SELECT count(*) AS total FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='s_menu' AND column_name='i18n_name'")
+                                "SELECT count(*) AS total FROM information_schema.columns WHERE"
+                                        + " table_schema=current_schema() AND table_name='s_menu' AND"
+                                        + " column_name='i18n_name'")
                         .map((row, metadata) -> row.get("total", Long.class))
                         .one()
                         .block(TIMEOUT));
@@ -343,8 +369,9 @@ class MenuStartupInitializationIntegrationTest {
     @Test
     void anyExistingDisabledMenuOfAnotherOwnerPreventsParsingAndPreservesMetadata() {
         database.sql(
-                        "INSERT INTO s_menu(id,name,enabled,owner,access_support,code,options) "
-                                + "VALUES ('existing-custom','Existing',false,'other-owner','unsupported','custom-code','{\"show\":false}')")
+                        "INSERT INTO s_menu(id,name,enabled,owner,access_support,code,options)"
+                                + " VALUES"
+                                + " ('existing-custom','Existing',false,'other-owner','unsupported','custom-code','{\"show\":false}')")
                 .fetch()
                 .rowsUpdated()
                 .block(TIMEOUT);
@@ -362,8 +389,8 @@ class MenuStartupInitializationIntegrationTest {
     @Test
     void existingLegacyOwnerMenuPreventsImportWithoutChangingItsOwner() {
         database.sql(
-                        "INSERT INTO s_menu(id,name,enabled,owner,access_support,code) "
-                                + "VALUES ('legacy-owner','Legacy',true,'iot','unsupported','legacy-code')")
+                        "INSERT INTO s_menu(id,name,enabled,owner,access_support,code) VALUES"
+                                + " ('legacy-owner','Legacy',true,'iot','unsupported','legacy-code')")
                 .fetch()
                 .rowsUpdated()
                 .block(TIMEOUT);
@@ -441,8 +468,9 @@ class MenuStartupInitializationIntegrationTest {
                             "startup/" + index));
         Resource resource = new ByteArrayResource(mapper.writeValueAsBytes(input));
         database.sql(
-                        "CREATE FUNCTION reject_startup_menu() RETURNS trigger LANGUAGE plpgsql AS $$ "
-                                + "BEGIN IF NEW.id='startup-fail' THEN RAISE EXCEPTION 'forced startup menu failure'; END IF; RETURN NEW; END $$")
+                        "CREATE FUNCTION reject_startup_menu() RETURNS trigger LANGUAGE plpgsql AS"
+                                + " $$ BEGIN IF NEW.id='startup-fail' THEN RAISE EXCEPTION 'forced"
+                                + " startup menu failure'; END IF; RETURN NEW; END $$")
                 .fetch()
                 .rowsUpdated()
                 .block(TIMEOUT);
@@ -521,12 +549,13 @@ class MenuStartupInitializationIntegrationTest {
         assertEquals("回收站", recycle.getName());
         assertEquals("prototype-hub/Recycle", recycle.getComponentCode());
         assertEquals("/prototype-hub/recycle-bin", recycle.getUrl());
-        assertEquals(
-                Map.of("prototype-hub-project", Set.of("query")),
-                MenuGrantService.permissions(recycle, List.of()));
+        assertEquals(Map.of(), MenuGrantService.permissions(recycle, List.of()));
         assertEquals(
                 Map.of("prototype-hub-project", Set.of("query", "save")),
                 MenuGrantService.permissions(recycle, List.of("restore")));
+        assertEquals(
+                Map.of("prototype-hub-version", Set.of("query", "save")),
+                MenuGrantService.permissions(recycle, List.of("restoreVersion")));
         var after = menuSnapshot();
         after.remove("prototype-hub-recycle");
         assertEquals(before, after);
@@ -537,6 +566,151 @@ class MenuStartupInitializationIntegrationTest {
                         .one()
                         .block(TIMEOUT));
         assertFalse(initialization.ensureRecycleMenuIfMissing().block(TIMEOUT));
+    }
+
+    @Test
+    void existingProjectOnlyRecycleConfigurationAndRoleSelectionAreNeverUpgradedImplicitly()
+            throws Exception {
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        menus.createUpdate()
+                .set(MenuEntity::getName, "自定义旧回收站")
+                .set(
+                        MenuEntity::getPermissions,
+                        List.of(
+                                Map.of(
+                                        "permission",
+                                        "prototype-hub-project",
+                                        "actions",
+                                        List.of("query"))))
+                .set(
+                        MenuEntity::getButtons,
+                        List.of(
+                                Map.of(
+                                        "id",
+                                        "restore",
+                                        "name",
+                                        "自定义恢复",
+                                        "permissions",
+                                        List.of(
+                                                Map.of(
+                                                        "permission",
+                                                        "prototype-hub-project",
+                                                        "actions",
+                                                        List.of("save"))))))
+                .where(MenuEntity::getId, "prototype-hub-recycle")
+                .execute()
+                .block(TIMEOUT);
+        var before = menuSnapshot();
+        var grants =
+                database.sql(
+                                "SELECT id,menus,managed_permissions FROM s_role_menu_grant ORDER"
+                                        + " BY id")
+                        .fetch()
+                        .all()
+                        .map(Object::toString)
+                        .collectList()
+                        .block(TIMEOUT);
+        startup.run(new DefaultApplicationArguments());
+        assertEquals(before, menuSnapshot());
+        assertEquals(
+                grants,
+                database.sql(
+                                "SELECT id,menus,managed_permissions FROM s_role_menu_grant ORDER"
+                                        + " BY id")
+                        .fetch()
+                        .all()
+                        .map(Object::toString)
+                        .collectList()
+                        .block(TIMEOUT));
+        assertEquals(
+                Map.of("prototype-hub-project", Set.of("query", "save")),
+                MenuGrantService.permissions(
+                        menus.findById("prototype-hub-recycle").block(TIMEOUT),
+                        List.of("restore")));
+    }
+
+    @Test
+    void recycleQueryAndRestoreButtonsGrantOnlyTheirOwnResourceOverHttp() {
+        initialization.initializeIfEmpty().block(TIMEOUT);
+        String admin = login("admin");
+        for (String selected :
+                List.of("", "queryProjects", "queryVersions", "restore", "restoreVersion")) {
+            String role = UUID.randomUUID().toString().replace("-", "");
+            call("POST", "/role", admin, Map.of("id", role, "name", "独立回收站权限"));
+            call(
+                    "PUT",
+                    "/menu/role/" + role + "/_grant",
+                    admin,
+                    Map.of(
+                            "menus",
+                            List.of(
+                                    Map.of(
+                                            "id",
+                                            "prototype-hub-recycle",
+                                            "buttons",
+                                            selected.isEmpty()
+                                                    ? List.of()
+                                                    : List.of(
+                                                            Map.of(
+                                                                    "id", selected, "granted",
+                                                                    true))))));
+            String username = "recycle-" + UUID.randomUUID().toString().replace("-", "");
+            call(
+                    "POST",
+                    "/user/detail/_create",
+                    admin,
+                    Map.of(
+                            "name",
+                            "回收站权限用户",
+                            "username",
+                            username,
+                            "password",
+                            PASSWORD,
+                            "roleIdList",
+                            List.of(role)));
+            String token = login(username);
+            var recycle =
+                    find(
+                            call("POST", "/menu/user-own/tree", token, Map.of()),
+                            "prototype-hub-recycle");
+            assertFalse(recycle.isMissingNode());
+            assertTrue(recycle.path("granted").asBoolean());
+            for (JsonNode button : recycle.path("buttons"))
+                assertEquals(
+                        selected.equals(button.path("id").asText()),
+                        button.path("granted").asBoolean());
+            // Empty-base menus grant no actions. Selecting one tab/restore never grants its
+            // sibling.
+            boolean projects = selected.equals("queryProjects") || selected.equals("restore");
+            boolean versions =
+                    selected.equals("queryVersions") || selected.equals("restoreVersion");
+            client.post()
+                    .uri("/prototype-hub/projects/_deleted/_query")
+                    .header("X-Access-Token", token)
+                    .bodyValue(Map.of())
+                    .exchange()
+                    .expectStatus()
+                    .isEqualTo(projects ? 200 : 403);
+            client.post()
+                    .uri("/prototype-hub/versions/_deleted/_query")
+                    .header("X-Access-Token", token)
+                    .bodyValue(Map.of())
+                    .exchange()
+                    .expectStatus()
+                    .isEqualTo(versions ? 200 : 403);
+            client.post()
+                    .uri("/prototype-hub/projects/nonexistent-recycle-test/_restore")
+                    .header("X-Access-Token", token)
+                    .exchange()
+                    .expectStatus()
+                    .isEqualTo(selected.equals("restore") ? 404 : 403);
+            client.post()
+                    .uri("/prototype-hub/versions/nonexistent-recycle-test/_restore")
+                    .header("X-Access-Token", token)
+                    .exchange()
+                    .expectStatus()
+                    .isEqualTo(selected.equals("restoreVersion") ? 404 : 403);
+        }
     }
 
     @Test
@@ -632,12 +806,15 @@ class MenuStartupInitializationIntegrationTest {
         menus.deleteById("prototype-hub-recycle").block(TIMEOUT);
         var before = menuSnapshot();
         database.sql(
-                        "CREATE FUNCTION reject_recycle_menu() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.id='prototype-hub-recycle' THEN RAISE EXCEPTION 'forced recycle failure'; END IF; RETURN NEW; END $$")
+                        "CREATE FUNCTION reject_recycle_menu() RETURNS trigger LANGUAGE plpgsql AS"
+                                + " $$ BEGIN IF NEW.id='prototype-hub-recycle' THEN RAISE EXCEPTION"
+                                + " 'forced recycle failure'; END IF; RETURN NEW; END $$")
                 .fetch()
                 .rowsUpdated()
                 .block(TIMEOUT);
         database.sql(
-                        "CREATE TRIGGER reject_recycle_menu BEFORE INSERT ON s_menu FOR EACH ROW EXECUTE FUNCTION reject_recycle_menu()")
+                        "CREATE TRIGGER reject_recycle_menu BEFORE INSERT ON s_menu FOR EACH ROW"
+                                + " EXECUTE FUNCTION reject_recycle_menu()")
                 .fetch()
                 .rowsUpdated()
                 .block(TIMEOUT);

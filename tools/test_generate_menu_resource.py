@@ -107,12 +107,20 @@ class MenuResourceLanguageTest(unittest.TestCase):
         rows = flatten(roots)
         self.assertEqual(2, len(roots))
         self.assertEqual(15, len(rows))
-        self.assertEqual(39, sum(len(row["buttons"]) for row in rows.values()))
+        self.assertEqual(42, sum(len(row["buttons"]) for row in rows.values()))
         recycle = rows["prototype-hub-recycle"]
         self.assertEqual("prototype-hub/Recycle", recycle["componentCode"])
         self.assertEqual("/prototype-hub/recycle-bin", recycle["url"])
-        self.assertEqual([{"permission": "prototype-hub-project", "actions": ["query"]}], recycle["permissions"])
-        self.assertEqual([{"permission": "prototype-hub-project", "actions": ["save"]}], recycle["buttons"][0]["permissions"])
+        # Base requirements are ANDed; separate query buttons keep either tab independently grantable.
+        self.assertEqual([], recycle["permissions"])
+        buttons = {button["id"]: button for button in recycle["buttons"]}
+        self.assertEqual({"queryProjects", "queryVersions", "restore", "restoreVersion"}, set(buttons))
+        for token, resource, actions in [
+                ("queryProjects", "prototype-hub-project", ["query"]),
+                ("queryVersions", "prototype-hub-version", ["query"]),
+                ("restore", "prototype-hub-project", ["query", "save"]),
+                ("restoreVersion", "prototype-hub-version", ["query", "save"])]:
+            self.assertEqual([{"permission": resource, "actions": actions}], buttons[token]["permissions"])
         for row in rows.values():
             self.assertEqual("proto", row["owner"])
             self.assertEqual(row["name"], row["i18nMessages"]["name"]["zh_CN"])
@@ -123,6 +131,14 @@ class MenuResourceLanguageTest(unittest.TestCase):
                 self.assertEqual(button["name"], button["i18nMessages"]["zh_CN"])
                 self.assertTrue(button["i18nMessages"]["en_US"].strip())
                 self.assertTrue(button["i18nMessages"]["en"].strip())
+
+    def test_documented_recycle_configuration_matches_the_packaged_fields_and_actions(self):
+        documentation = (ROOT / "doc/public/DATA.md").read_text()
+        section = documentation.split("### 手动配置统一回收站入口\n", 1)[1]
+        example = json.loads(section.split("```json\n", 1)[1].split("```", 1)[0])
+        recycle = flatten(json.loads(PACKAGED.read_text()))["prototype-hub-recycle"]
+        for field, expected in example.items():
+            self.assertEqual(expected, recycle[field], field)
 
 
 if __name__ == "__main__":

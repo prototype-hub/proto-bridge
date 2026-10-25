@@ -3,11 +3,35 @@ package com.gaiys.proto.prototypehub.service.notification;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+import ch.qos.logback.classic.Logger;
+import ch.qos.logback.classic.spi.ILoggingEvent;
+import ch.qos.logback.core.read.ListAppender;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
+import io.micrometer.observation.Observation;
+import io.micrometer.observation.ObservationHandler;
 import io.micrometer.observation.ObservationRegistry;
+import jakarta.mail.AuthenticationFailedException;
+import jakarta.mail.MessagingException;
+import jakarta.mail.SendFailedException;
+import jakarta.mail.internet.InternetAddress;
+import java.net.ConnectException;
+import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
+import java.time.Duration;
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.stream.Stream;
+import javax.net.ssl.SSLHandshakeException;
+import org.eclipse.angus.mail.smtp.SMTPAddressFailedException;
+import org.eclipse.angus.mail.smtp.SMTPSendFailedException;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.mail.MailAuthenticationException;
 import org.springframework.mail.MailSendException;
 import org.springframework.mail.SimpleMailMessage;
 import org.springframework.mail.javamail.JavaMailSender;
@@ -16,6 +40,8 @@ import org.springframework.mock.env.MockEnvironment;
 import reactor.test.StepVerifier;
 
 class SmtpNotificationGatewayTest {
+    private static final String PRIVATE_DETAIL = "credential recipient@example.invalid code=123456";
+
     @SuppressWarnings("unchecked")
     private static ObjectProvider<JavaMailSender> provider(JavaMailSender sender) {
         var p = mock(ObjectProvider.class);
@@ -178,5 +204,203 @@ class SmtpNotificationGatewayTest {
                     .verify();
             verify(sender, times(1)).send(any(SimpleMailMessage.class));
         }
+    }
+
+    @Test
+    void invalidExplicitFromFailsBeforeSenderWithoutSilentlyUsingValidUsername() {
+        var sender = mock(JavaMailSender.class);
+        var logger = (Logger) LoggerFactory.getLogger(SmtpNotificationGateway.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        try (var work = new FileWork()) {
+            for (String from :
+                    new String[] {
+                        "PrototypeHub", "Name <sender@example.invalid>",
+                        "a@example.invalid,b@example.invalid",
+                                "sender@example.invalid\r\nBcc:x@example.invalid"
+                    }) {
+                var gateway =
+                        new SmtpNotificationGateway(
+                                provider(sender),
+                                new MockEnvironment()
+                                        .withProperty("spring.mail.host", "localhost")
+                                        .withProperty(
+                                                "spring.mail.username", "valid@example.invalid")
+                                        .withProperty(
+                                                "spring.mail.properties.mail.smtp.from", from),
+                                work,
+                                ObservationRegistry.NOOP);
+                StepVerifier.create(gateway.sendVerification("recipient@example.invalid", "123456"))
+                        .expectErrorSatisfies(SmtpNotificationGatewayTest::assertPrivate503)
+                        .verify();
+            }
+            assertEquals(4, events.list.size());
+            for (var event : events.list) {
+                assertTrue(event.getFormattedMessage().contains("reason=FROM_ADDRESS_INVALID"));
+                assertPrivateLog(event);
+            }
+            verifyNoInteractions(sender);
+        } finally {
+            logger.detachAppender(events);
+            events.stop();
+        }
+    }
+
+    static Stream<Arguments> providerFailures() throws Exception {
+        var recipient = new InternetAddress("recipient@example.invalid");
+        var rejectedAddress =
+                new SMTPAddressFailedException(recipient, "RCPT TO", 550, PRIVATE_DETAIL);
+        var rejectedMessage =
+                new SMTPSendFailedException(
+                        "DATA", 554, PRIVATE_DETAIL, rejectedAddress, null, null, null);
+        var javaMail = new SendFailedException(PRIVATE_DETAIL);
+        javaMail.setNextException(rejectedMessage);
+        var cycleA = new RuntimeException(PRIVATE_DETAIL);
+        var cycleB = new RuntimeException(PRIVATE_DETAIL, cycleA);
+        cycleA.initCause(cycleB);
+        return Stream.of(
+                Arguments.of(
+                        "AUTHENTICATION",
+                        new MailAuthenticationException(
+                                PRIVATE_DETAIL, new AuthenticationFailedException(PRIVATE_DETAIL))),
+                Arguments.of(
+                        "TLS",
+                        new MailSendException(
+                                PRIVATE_DETAIL,
+                                new MessagingException(
+                                        PRIVATE_DETAIL,
+                                        new SSLHandshakeException(PRIVATE_DETAIL)))),
+                Arguments.of(
+                        "TIMEOUT",
+                        new MailSendException(
+                                PRIVATE_DETAIL, new SocketTimeoutException(PRIVATE_DETAIL))),
+                Arguments.of(
+                        "DNS",
+                        new MailSendException(
+                                PRIVATE_DETAIL, new UnknownHostException(PRIVATE_DETAIL))),
+                Arguments.of(
+                        "CONNECTION",
+                        new MailSendException(
+                                PRIVATE_DETAIL, new ConnectException(PRIVATE_DETAIL))),
+                Arguments.of(
+                        "DELIVERY",
+                        new MailSendException(Map.of(new SimpleMailMessage(), javaMail))),
+                Arguments.of("UNKNOWN", cycleA));
+    }
+
+    @ParameterizedTest
+    @MethodSource("providerFailures")
+    void failureCategoriesRetainNoPrivateCauseInLogResponseOrObservation(
+            String reason, RuntimeException failure) {
+        var sender = mock(JavaMailSender.class);
+        doThrow(failure).when(sender).send(any(SimpleMailMessage.class));
+        var logger = (Logger) LoggerFactory.getLogger(SmtpNotificationGateway.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        var observations = ObservationRegistry.create();
+        var starts = new AtomicInteger();
+        var stops = new AtomicInteger();
+        observations
+                .observationConfig()
+                .observationHandler(
+                        new ObservationHandler<Observation.Context>() {
+                            @Override
+                            public boolean supportsContext(Observation.Context context) {
+                                return true;
+                            }
+
+                            @Override
+                            public void onStart(Observation.Context context) {
+                                starts.incrementAndGet();
+                            }
+
+                            @Override
+                            public void onStop(Observation.Context context) {
+                                stops.incrementAndGet();
+                                assertPrivate503(context.getError());
+                            }
+                        });
+        try (var work = new FileWork()) {
+            var gateway =
+                    new SmtpNotificationGateway(
+                            provider(sender),
+                            new MockEnvironment()
+                                    .withProperty("spring.mail.host", "localhost")
+                                    .withProperty("spring.mail.username", "sender@example.invalid"),
+                            work,
+                            observations);
+            StepVerifier.create(gateway.sendVerification("recipient@example.invalid", "123456"))
+                    .expectErrorSatisfies(SmtpNotificationGatewayTest::assertPrivate503)
+                    .verify(Duration.ofSeconds(3));
+            assertEquals(1, starts.get());
+            assertEquals(1, stops.get());
+            assertEquals(1, events.list.size());
+            var event = events.list.getFirst();
+            assertTrue(event.getFormattedMessage().contains("reason=" + reason));
+            if (reason.equals("DELIVERY")) {
+                assertTrue(event.getFormattedMessage().contains("SMTPAddressFailedException"));
+                assertTrue(event.getFormattedMessage().contains("SMTPSendFailedException"));
+            }
+            assertPrivateLog(event);
+            verify(sender, times(1)).send(any(SimpleMailMessage.class));
+        } finally {
+            logger.detachAppender(events);
+            events.stop();
+        }
+    }
+
+    @Test
+    void disposedWorkerReportsOnlyFixedRejectionReasonAndDoesNotSend() {
+        var sender = mock(JavaMailSender.class);
+        var logger = (Logger) LoggerFactory.getLogger(SmtpNotificationGateway.class);
+        var events = new ListAppender<ILoggingEvent>();
+        events.start();
+        logger.addAppender(events);
+        var work = new FileWork();
+        var gateway =
+                new SmtpNotificationGateway(
+                        provider(sender),
+                        new MockEnvironment()
+                                .withProperty("spring.mail.host", "localhost")
+                                .withProperty("spring.mail.username", "sender@example.invalid"),
+                        work,
+                        ObservationRegistry.NOOP);
+        work.close();
+        try {
+            StepVerifier.create(gateway.sendVerification("recipient@example.invalid", "123456"))
+                    .expectErrorSatisfies(SmtpNotificationGatewayTest::assertPrivate503)
+                    .verify();
+            assertEquals(1, events.list.size());
+            assertTrue(
+                    events.list
+                            .getFirst()
+                            .getFormattedMessage()
+                            .contains("reason=WORKER_REJECTED"));
+            assertPrivateLog(events.list.getFirst());
+            verifyNoInteractions(sender);
+        } finally {
+            logger.detachAppender(events);
+            events.stop();
+        }
+    }
+
+    private static void assertPrivate503(Throwable error) {
+        assertInstanceOf(PrototypeHubException.class, error);
+        assertEquals(503, ((PrototypeHubException) error).getStatus());
+        assertEquals(
+                "PROTOTYPE_HUB_REVIEW_MAIL_UNAVAILABLE", ((PrototypeHubException) error).getCode());
+        assertNull(error.getCause());
+        assertFalse(error.toString().contains("recipient"));
+        assertFalse(error.toString().contains("123456"));
+        assertFalse(error.toString().contains("credential"));
+    }
+
+    private static void assertPrivateLog(ILoggingEvent event) {
+        assertNull(event.getThrowableProxy());
+        assertFalse(event.getFormattedMessage().contains("@"));
+        assertFalse(event.getFormattedMessage().contains("123456"));
+        assertFalse(event.getFormattedMessage().contains("credential"));
     }
 }

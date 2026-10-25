@@ -160,7 +160,7 @@
         "url": "/prototype-hub/recycle-bin",
         "icon": "DeleteOutlined",
         "sortIndex": 2,
-        "describe": "已删除的原型项目保留30天，可在期限内恢复",
+        "describe": "已删除的原型项目和版本保留30天，可在期限内分别恢复",
         "assetType": null,
         "indirectMenus": [],
         "options": {
@@ -177,30 +177,76 @@
         "enabled": true,
         "accessSupport": "unsupported",
         "componentCode": "prototype-hub/Recycle",
-        "permissions": [
-          {
-            "permission": "prototype-hub-project",
-            "actions": [
-              "query"
-            ]
-          }
-        ],
+        "permissions": [],
         "buttons": [
           {
-            "id": "restore",
-            "name": "恢复",
+            "id": "queryProjects",
+            "name": "查询项目回收站",
             "permissions": [
               {
                 "permission": "prototype-hub-project",
                 "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "查询项目回收站",
+              "en_US": "Query Project Recycle Bin",
+              "en": "Query Project Recycle Bin"
+            }
+          },
+          {
+            "id": "queryVersions",
+            "name": "查询版本回收站",
+            "permissions": [
+              {
+                "permission": "prototype-hub-version",
+                "actions": [
+                  "query"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "查询版本回收站",
+              "en_US": "Query Version Recycle Bin",
+              "en": "Query Version Recycle Bin"
+            }
+          },
+          {
+            "id": "restore",
+            "name": "恢复项目",
+            "permissions": [
+              {
+                "permission": "prototype-hub-project",
+                "actions": [
+                  "query",
                   "save"
                 ]
               }
             ],
             "i18nMessages": {
-              "zh_CN": "恢复",
-              "en_US": "Restore",
-              "en": "Restore"
+              "zh_CN": "恢复项目",
+              "en_US": "Restore Project",
+              "en": "Restore Project"
+            }
+          },
+          {
+            "id": "restoreVersion",
+            "name": "恢复版本",
+            "permissions": [
+              {
+                "permission": "prototype-hub-version",
+                "actions": [
+                  "query",
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "恢复版本",
+              "en_US": "Restore Version",
+              "en": "Restore Version"
             }
           }
         ]
