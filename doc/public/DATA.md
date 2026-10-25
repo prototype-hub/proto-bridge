@@ -164,6 +164,8 @@ p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_
 
 p_review_message的单图字段为可空image_path、image_content_type、image_size、image_sha256、image_width、image_height；旧消息全部为null，部分缺失或损坏不构成读取授权。image_path只保存服务端生成的相对路径 `projects/{projectId}/review-images/{randomAttemptId}/image`，attempt为43字符随机值，不使用原文件名；实际格式、字节数、SHA-256和宽高来自验证后的原始PNG/JPEG。图片独立于不可变revision/site，不加入已发布manifest，不改变原型包hash或质量报告。
 
+访客初始投稿的单张图片保存在首条public消息的同一组字段中，线程、首消息、thread.created事件和创建回执同事务保存；创建回执仍关联线程，图片归属由首消息的实际引用确定。复用已有图片路径、读取与清理关系，没有新增表、列或存储清单格式，v3导出同样覆盖首消息图片。
+
 软删随现有30天保留，身份/邀请/事件到期不删除消息图片。版本/项目永久清理在删除消息前，同事务登记review-image持久清理任务；文件删除在提交后重查全部原始消息引用，沿既有有界重试worker处理。明确失败与取消使用已有上传所有权补偿，未知事务结果不删除可能已提交的图片；进程突然退出可能留下未引用目录，应在停写副本以完整v3导出和显式离线修复核验，不称自动崩溃回收。
 
 BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。未验证身份不创建challenge、不发送邮件，也不把SMTP失败当作验证通过。

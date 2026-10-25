@@ -252,7 +252,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 ## 固定页面文字反馈
 
-反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持纯文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人，以及已有线程回复中的单张手动图片；不含点/矩形/椭圆、初始投稿图片、通用附件、全局分派队列、消息编辑删除或业务通知。
+反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人，以及访客初始投稿和已有线程回复中的单张手动图片；不含点/矩形/椭圆、通用附件、全局分派队列、消息编辑删除或业务通知。
 
 公开接口基于 `/prototype-hub/public/shares/{token}/review`，所有请求均要求受信Origin、当前HttpOnly Cookie、`X-Review-CSRF`，返回no-store，并提交 `{revisionId,accessKey,pageId}`：
 
@@ -261,6 +261,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人线程的PagerResult |
 | `POST /threads/{threadId}/_detail` | 无 | 当前本人范围内的单个Thread，不受列表分页或state筛选影响 |
 | `POST /threads` | `{text,clientRequestId}` | Thread，含初始公开消息的原子创建结果 |
+| `POST /threads/_with-image` | multipart中的request含`{text,clientRequestId}`及上述页面字段，另含image | Thread，首条公开消息附单张图片 |
 | `POST /threads/{threadId}/messages/_query` | `{pageIndex,pageSize}` | 仅公开消息的PagerResult |
 | `POST /threads/{threadId}/messages` | `{text,clientRequestId}` | Message，作者始终来自当前访客会话 |
 | `PUT /threads/{threadId}/status` | `{state:'open',expectedVersion,clientRequestId}` | Thread，访客只能重开 |
@@ -279,13 +280,13 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt,image}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
 
-已有线程可在公开和管理端的各自base下调用 `POST /{threadId}/messages-with-image`，使用multipart/form-data且只含两个part：`request`必须为application/json，内容为该端原回复请求；`image`为唯一文件。拒绝重复、多余part及多个文件。正文仍必填，初始新建线程及原纯文字JSON端点不变。图片只支持实际可解码的PNG/JPEG，原始字节最多5 MiB，宽高均为1–16384且像素总数不超过16000000；服务端检查签名、真实格式和尺寸，客户端MIME、扩展名与文件名均不作为格式或路径依据。原文件名不保存或展示，保存验证后的原始字节，不承诺重编码、去除EXIF或自动截图。
+访客创建附图线程使用 `POST /threads/_with-image`；已有线程仍可在公开和管理端的各自base下调用 `POST /{threadId}/messages-with-image`。以上接口均使用multipart/form-data且只含两个part：`request`必须为application/json，内容为该端原文字创建或回复请求；`image`为唯一文件。拒绝重复、多余part及多个文件，正文仍必填，原纯文字JSON端点保持兼容。附图创建仅对访客开放，线程、首条public消息、thread.created事件及回执同事务落库；返回原Thread投影，不增加image字段，成功后通过原消息分页与图片读取接口查看首图。图片只支持实际可解码的PNG/JPEG，原始字节最多5 MiB，宽高均为1–16384且像素总数不超过16000000；服务端检查签名、真实格式和尺寸，客户端MIME、扩展名与文件名均不作为格式或路径依据。原文件名不保存或展示，保存验证后的原始字节，不承诺重编码、去除EXIF或自动截图。
 
 消息新增 `image:null|{contentType,size,width,height}`；contentType为image/png或image/jpeg，size为原始字节数，宽高为真实像素。旧文字消息为null，不返回文件路径、文件名、URL、内容摘要或额外身份信息。图片继承所属消息的public/internal可见性，内部图片不进入公开消息列表、计数或时间投影。每条消息最多一张，不支持追加、替换、单图删除或无正文投稿。
 
 读取用 `POST /{threadId}/messages/{messageId}/image`，JSON为该端原ReviewPageRequest：管理端含revisionId/pageId，公开端再含accessKey。每次读取重验当前项目/分享/身份、固定修订页面以及message→thread关联；公开端只能读取本人当前线程的公开图片。返回真实image/png或image/jpeg字节，带nosniff、private/no-store及固定安全inline文件名image.png或image.jpg；缺失或损坏时明确失败，不回退其他消息或最新修订。没有公开GET、静态资源路径或永久签名链接，分享密码、身份失效和项目撤权同样阻断未来读取；已交付到客户端的字节不能撤回。
 
-图片回复沿用原clientRequestId与操作范围，指纹额外包含真实图片SHA-256；同键同文字、可见性及图片字节重放原消息，不新增消息、事件或已持久文件，同键不同内容或文字/图片互换返回原409幂等冲突。原文字指纹和已有回执保持兼容。未知结果保留同一File和请求键，由用户明确重试；改变内容才代表新意图。文件落盘与数据库不伪称跨资源原子事务：消息、事件和回执同事务，明确回滚/未进入事务时补偿候选文件，UNKNOWN保留潜在已提交内容；进程崩溃遗留的未引用候选由停写后的完整v3离线审计处理。
+附图创建与纯文字创建共享原clientRequestId的创建操作范围，附图指纹额外包含真实图片SHA-256；同键同文字及图片字节返回原线程，不重复线程、首消息、事件或限频。同键改文字、改图或文字/图片互换返回原409幂等冲突。图片回复仍沿用各自原回复操作范围，同键同文字、可见性及图片字节重放原消息。原文字指纹和已有回执保持兼容；成功写入只保留实际首消息或回复所引用的图片，重放清理本次未引用的上传候选。未知结果保留同一File和请求键，由用户明确重试；改变内容才代表新意图。文件落盘与数据库不伪称跨资源原子事务：线程、消息、事件和回执同事务，明确回滚/未进入事务时补偿候选文件，UNKNOWN保留潜在已提交内容；进程崩溃遗留的未引用候选由停写后的完整v3离线审计处理。
 
 图片错误为400 / `PROTOTYPE_HUB_REVIEW_IMAGE_INVALID`（实际格式、解码或维度）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_TOO_LARGE`（原图字节预算）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_PARTS_INVALID`（part、JSON、校验及multipart解析预算）和404 / `PROTOTYPE_HUB_REVIEW_IMAGE_UNAVAILABLE`（无图、缺文件或完整性失败）。解析期超限可能先返回PARTS_INVALID，原Origin、CSRF、会话、权限及409幂等冲突码保持。
 

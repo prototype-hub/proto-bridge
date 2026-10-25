@@ -140,13 +140,54 @@ public class PrototypeReviewThreadService {
                                                                     Mono.defer(
                                                                             () ->
                                                                                     newThread(
-                                                                                            scope,
-                                                                                            input
-                                                                                                    .getText(),
-                                                                                            request)));
+                                                                                                    scope,
+                                                                                                    input
+                                                                                                            .getText(),
+                                                                                                    request,
+                                                                                                    null)
+                                                                                            .map(
+                                                                                                    PrototypeReviewImageService
+                                                                                                                    .Stored
+                                                                                                            ::response)));
                                                 })
                                         .as(transactions::transactional))
                 .checkpoint("prototype-hub/review/thread-create");
+    }
+
+    /** 初建图片复用文字线程的回执作用域；首消息持有图片，线程标识不能作为文件归属依据。 */
+    public Mono<ReviewThreadResponse> createImage(
+            String token, ReviewTextRequest input, String cookie, FilePart image) {
+        return visitorPage(token, input, cookie)
+                .flatMap(
+                        prepared ->
+                                images.upload(
+                                        prepared.projectId(),
+                                        prepared.versionId(),
+                                        image,
+                                        candidate ->
+                                                lockedVisitor(token, input, cookie, prepared)
+                                                        .flatMap(
+                                                                scope ->
+                                                                        createImage(
+                                                                                scope, input,
+                                                                                candidate))))
+                .checkpoint("prototype-hub/review/thread-create-image");
+    }
+
+    private Mono<PrototypeReviewImageService.Stored<ReviewThreadResponse>> createImage(
+            Scope scope, ReviewTextRequest input, PrototypeReviewImageService.Candidate image) {
+        var request =
+                request(scope, "thread", input.getClientRequestId(), input.getText())
+                        .withPayload(image.sha256());
+        return receipts.replay(
+                        request,
+                        id ->
+                                requireThread(scope, id)
+                                        .map(
+                                                row ->
+                                                        new PrototypeReviewImageService.Stored<>(
+                                                                response(row), null)))
+                .switchIfEmpty(Mono.defer(() -> newThread(scope, input.getText(), request, image)));
     }
 
     public Mono<ReviewMessageResponse> replyVisitor(
@@ -193,9 +234,18 @@ public class PrototypeReviewThreadService {
                                                         .flatMap(
                                                                 scope ->
                                                                         append(
-                                                                                scope, threadId,
-                                                                                input, "public",
-                                                                                candidate))));
+                                                                                        scope,
+                                                                                        threadId,
+                                                                                        input,
+                                                                                        "public",
+                                                                                        candidate)
+                                                                                .map(
+                                                                                        result ->
+                                                                                                new PrototypeReviewImageService
+                                                                                                        .Stored<>(
+                                                                                                        result,
+                                                                                                        result
+                                                                                                                .id())))));
     }
 
     public Mono<ReviewMessageResponse> imageMember(
@@ -213,12 +263,19 @@ public class PrototypeReviewThreadService {
                                                         .flatMap(
                                                                 scope ->
                                                                         append(
-                                                                                scope,
-                                                                                threadId,
-                                                                                input,
-                                                                                input
-                                                                                        .getVisibility(),
-                                                                                candidate))));
+                                                                                        scope,
+                                                                                        threadId,
+                                                                                        input,
+                                                                                        input
+                                                                                                .getVisibility(),
+                                                                                        candidate)
+                                                                                .map(
+                                                                                        result ->
+                                                                                                new PrototypeReviewImageService
+                                                                                                        .Stored<>(
+                                                                                                        result,
+                                                                                                        result
+                                                                                                                .id())))));
     }
 
     public Mono<ResponseEntity<Resource>> imageVisitor(
@@ -547,8 +604,11 @@ public class PrototypeReviewThreadService {
                 fields.toArray(String[]::new));
     }
 
-    private Mono<ReviewThreadResponse> newThread(
-            Scope scope, String text, PrototypeCreationReceiptService.Request request) {
+    private Mono<PrototypeReviewImageService.Stored<ReviewThreadResponse>> newThread(
+            Scope scope,
+            String text,
+            PrototypeCreationReceiptService.Request request,
+            PrototypeReviewImageService.Candidate image) {
         long now = System.currentTimeMillis();
         var row = new PrototypeReviewThreadEntity();
         row.setId(PrototypeReviewKeys.random());
@@ -571,12 +631,18 @@ public class PrototypeReviewThreadService {
         row.setCreateTime(now);
         row.setPublicUpdatedAt(now);
         var message = message(scope, row.getId(), text, "public", now);
+        if (image != null) {
+            message.setId(image.id());
+            image.apply(message);
+        }
         return useRate(scope, now)
                 .then(threads.insert(row))
                 .then(messages.insert(message))
                 .then(event(scope, row.getId(), message.getId(), "thread.created", now))
                 .then(receipts.record(request, row.getId(), scope.revisionId()))
-                .thenReturn(response(row));
+                .thenReturn(
+                        new PrototypeReviewImageService.Stored<>(
+                                response(row), image == null ? null : message.getId()));
     }
 
     private Mono<ReviewMessageResponse> append(
