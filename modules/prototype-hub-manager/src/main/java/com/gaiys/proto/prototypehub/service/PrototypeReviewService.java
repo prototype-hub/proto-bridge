@@ -48,6 +48,7 @@ public class PrototypeReviewService {
     private final ReactiveRepository<PrototypeReviewChallengeEntity, String> challenges;
     private final ReactiveRepository<PrototypeReviewSessionEntity, String> sessions;
     private final ReactiveRepository<PrototypeReviewRateEntity, String> rates;
+    private final PrototypeReviewInvitationService invitations;
     private final NotificationGateway notifications;
     private final FileWork work;
     private final TransactionalOperator transactions;
@@ -195,6 +196,19 @@ public class PrototypeReviewService {
     public Mono<ReviewChallengeResponse> challenge(
             String token, ReviewChallengeRequest input, String cookie) {
         return requireScope(token, input.revisionId(), input.accessKey())
+                // 无效显式邀请先返回统一拒绝，不因SMTP配置状态变成普通OTP或泄漏其他失败原因。
+                // 此处只读预检；prepareChallenge仍在项目→版本锁内重新核验完整绑定。
+                .flatMap(
+                        share ->
+                                input.invitationToken() == null
+                                        ? Mono.empty()
+                                        : invitations
+                                                .requireToken(
+                                                        share,
+                                                        input.revisionId(),
+                                                        PrototypeReviewKeys.email(input.email()),
+                                                        input.invitationToken())
+                                                .then())
                 .then(
                         Mono.defer(
                                 () ->
@@ -251,6 +265,25 @@ public class PrototypeReviewService {
             ReviewChallengeRequest input,
             String cookie,
             PreparedCode code) {
+        if (input.invitationToken() == null)
+            return prepareChallenge(share, input, cookie, code, null);
+        return invitations
+                .requireToken(
+                        share,
+                        input.revisionId(),
+                        PrototypeReviewKeys.email(input.email()),
+                        input.invitationToken())
+                .flatMap(
+                        invitation ->
+                                prepareChallenge(share, input, cookie, code, invitation.getId()));
+    }
+
+    private Mono<PreparedChallenge> prepareChallenge(
+            PrototypeShareEntity share,
+            ReviewChallengeRequest input,
+            String cookie,
+            PreparedCode code,
+            String invitationId) {
         long now = System.currentTimeMillis();
         String email = PrototypeReviewKeys.email(input.email());
         return guestEnabled(share.getProjectId(), email)
@@ -270,6 +303,7 @@ public class PrototypeReviewService {
                                     PrototypeReviewChallengeEntity challenge =
                                             new PrototypeReviewChallengeEntity();
                                     challenge.setId(PrototypeReviewKeys.random());
+                                    challenge.setInvitationId(invitationId);
                                     challenge.setProjectId(share.getProjectId());
                                     challenge.setVersionId(share.getVersionId());
                                     challenge.setShareId(share.getId());
@@ -319,7 +353,8 @@ public class PrototypeReviewService {
                                                 enabled ->
                                                         enabled
                                                                 ? Mono.empty()
-                                                                : Mono.error(denied())))
+                                                                : Mono.error(denied()))
+                                        .then(invitations.validateChallenge(share, pending)))
                 .then(
                         Mono.defer(
                                 () ->
@@ -428,6 +463,7 @@ public class PrototypeReviewService {
                                                 System.currentTimeMillis()))
                 // 与管理启停共享项目锁；恢复访客也不能让被删除的验证码重新出现。
                 .filterWhen(current -> guestEnabled(share.getProjectId(), current.getEmail()))
+                .delayUntil(current -> invitations.validateChallenge(share, current))
                 .flatMap(
                         current -> {
                             if (!correct)
@@ -441,11 +477,19 @@ public class PrototypeReviewService {
                                                 current.getId())
                                         .execute()
                                         .thenReturn(new ConsumeResult(false, null));
-                            return challenges
-                                    .createUpdate()
-                                    .set(PrototypeReviewChallengeEntity::getConsumed, true)
-                                    .where(PrototypeReviewChallengeEntity::getId, current.getId())
-                                    .execute()
+                            return invitations
+                                    .consume(share, current)
+                                    .then(
+                                            challenges
+                                                    .createUpdate()
+                                                    .set(
+                                                            PrototypeReviewChallengeEntity
+                                                                    ::getConsumed,
+                                                            true)
+                                                    .where(
+                                                            PrototypeReviewChallengeEntity::getId,
+                                                            current.getId())
+                                                    .execute())
                                     .then(issueSession(share, current, cookie))
                                     .map(verified -> new ConsumeResult(true, verified));
                         })
@@ -688,7 +732,8 @@ public class PrototypeReviewService {
                                                                         now)
                                                                 .execute()
                                                                 .then()))
-                .then(cleanupUnverified(now));
+                .then(cleanupUnverified(now))
+                .then(invitations.cleanupExpired(now));
     }
 
     private Mono<Void> cleanupUnverified(long now) {
@@ -722,10 +767,13 @@ public class PrototypeReviewService {
     }
 
     public Mono<Void> purgeVersion(String id) {
-        return challenges
-                .createDelete()
-                .where(PrototypeReviewChallengeEntity::getVersionId, id)
-                .execute()
+        return invitations
+                .purgeVersion(id)
+                .then(
+                        challenges
+                                .createDelete()
+                                .where(PrototypeReviewChallengeEntity::getVersionId, id)
+                                .execute())
                 .then(
                         sessions.createDelete()
                                 .where(PrototypeReviewSessionEntity::getVersionId, id)
@@ -734,10 +782,13 @@ public class PrototypeReviewService {
     }
 
     public Mono<Void> purgeProject(String id) {
-        return challenges
-                .createDelete()
-                .where(PrototypeReviewChallengeEntity::getProjectId, id)
-                .execute()
+        return invitations
+                .purgeProject(id)
+                .then(
+                        challenges
+                                .createDelete()
+                                .where(PrototypeReviewChallengeEntity::getProjectId, id)
+                                .execute())
                 .then(
                         sessions.createDelete()
                                 .where(PrototypeReviewSessionEntity::getProjectId, id)

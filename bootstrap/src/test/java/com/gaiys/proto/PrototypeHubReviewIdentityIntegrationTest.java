@@ -1293,6 +1293,425 @@ class PrototypeHubReviewIdentityIntegrationTest {
         assertEquals(0, count("p_review_guest"));
     }
 
+    @Test
+    void invitationCreationIsFixedPrivateBoundedAndManagementRequiresBothPermissions()
+            throws Exception {
+        Fixture f = fixture(true, false);
+        JsonNode created = invite(f, " Recipient@Example.Invalid ", 200);
+        JsonNode row = created.path("invitation");
+        String token = created.path("invitationToken").asText();
+        assertEquals(43, token.length());
+        assertNotEquals(row.path("id").asText(), token);
+        assertEquals("pending", row.path("status").asText());
+        assertEquals(
+                24 * 60 * 60 * 1000L,
+                row.path("expiresAt").asLong() - row.path("createdAt").asLong());
+        assertFalse(created.toString().contains("recipient@example.invalid"));
+        assertEquals(0, MAILBOX.pendingMessages());
+        JsonNode page = invitePage(f, admin, 0, 20, 200);
+        assertEquals(1, page.path("total").asInt());
+        assertFalse(page.toString().contains(token));
+        assertFalse(page.toString().contains("recipient@example.invalid"));
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_review_invitation where token_hash=:id",
+                        token));
+        assertTrue(invitePage(f, admin, 10000, 1, 200).path("data").isEmpty());
+        management(HttpMethod.POST, invitePath(f) + "/_query", admin, Map.of("pageSize", 101), 400);
+        invitePage(f, null, 0, 20, 401);
+        Actor noSave = actor(List.of("query")),
+                noQuery = actor(List.of("save")),
+                viewer = actor(List.of("query", "save"));
+        for (Actor actor : List.of(noSave, noQuery, viewer))
+            management(
+                    HttpMethod.PUT,
+                    "/prototype-hub/projects/" + f.project + "/members/" + actor.id,
+                    admin,
+                    Map.of("role", actor.equals(viewer) ? "viewer" : "editor"),
+                    200);
+        invitePage(f, noSave.token, 0, 20, 200);
+        invitePage(f, noQuery.token, 0, 20, 403);
+        invitePage(f, viewer.token, 0, 20, 403);
+        management(
+                HttpMethod.POST,
+                invitePath(f),
+                noSave.token,
+                Map.of("email", "no-save@example.invalid", "expectedShareVersion", 2),
+                403);
+        management(
+                HttpMethod.POST,
+                invitePath(f),
+                viewer.token,
+                Map.of("email", "viewer@example.invalid", "expectedShareVersion", 2),
+                403);
+        Actor outsider = actor(List.of("query", "save"));
+        invitePage(f, outsider.token, 0, 20, 404);
+        management(
+                HttpMethod.POST,
+                invitePath(f),
+                admin,
+                Map.of("email", "stale-admin@example.invalid", "expectedShareVersion", 1),
+                409);
+        sql(
+                "update p_share set expires_at=create_time+60000 where id=:id",
+                f.share.path("id").asText());
+        JsonNode shortened = invite(f, "short@example.invalid", 200);
+        assertEquals(
+                number(
+                        "select expires_at as value from p_share where id=:id",
+                        f.share.path("id").asText()),
+                shortened.path("invitation").path("expiresAt").asLong());
+        sql(
+                "update p_share set revision_mode='latest',revision_id=null where id=:id",
+                f.share.path("id").asText());
+        invite(f, "latest@example.invalid", 409);
+        sql(
+                "update p_share set revision_mode='fixed',revision_id=:id",
+                f.grant.path("revisionId").asText());
+        sql("update p_share set review_enabled=false where id=:id", f.share.path("id").asText());
+        invite(f, "disabled-review@example.invalid", 409);
+    }
+
+    @Test
+    void invitationRequiresRecipientFreshOtpAndConsumesAtomicallyOnce() throws Exception {
+        Fixture f = fixture(true, false);
+        Browser b = context(f, null);
+        JsonNode created = invite(f, "invited@example.invalid", 200);
+        String raw = created.path("invitationToken").asText(),
+                id = created.path("invitation").path("id").asText();
+        var wrong = inviteChallenge(f, b, "other@example.invalid", raw, 403);
+        assertEquals("PROTOTYPE_HUB_REVIEW_INVITATION_INVALID", wrong.path("code").asText());
+        inviteChallenge(f, b, "invited@example.invalid", "x".repeat(43), 403);
+        assertEquals(0, count("p_review_challenge"));
+        assertEquals(0, MAILBOX.pendingMessages());
+        JsonNode challenge = inviteChallenge(f, b, "INVITED@example.invalid", raw, 200);
+        var mail = MAILBOX.receive();
+        String bad = mail.code().equals("000000") ? "111111" : "000000";
+        code(f, b, challenge, bad, 400);
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_review_invitation where id=:id and consumed_at is not null",
+                        id));
+        Browser verified = code(f, b, challenge, mail.code(), 200);
+        assertEquals("email", verified.data.path("session").path("verificationLevel").asText());
+        assertEquals(1, count("p_review_guest"));
+        assertEquals(1, count("p_review_session"));
+        assertEquals(
+                "consumed",
+                invitePage(f, admin, 0, 20, 200).path("data").get(0).path("status").asText());
+        assertEquals(
+                1,
+                number("select config_version as value from p_review_invitation where id=:id", id));
+        code(f, b, challenge, mail.code(), 400);
+        inviteChallenge(f, verified, "invited@example.invalid", raw, 403);
+        revokeInvitation(f, id, 1, 409);
+        assertNotNull(context(f, verified.cookie).guest());
+        // An existing verified session still needs a new delivered OTP for another invitation.
+        JsonNode other = invite(f, "fresh@example.invalid", 200);
+        JsonNode pending =
+                inviteChallenge(
+                        f,
+                        verified,
+                        "fresh@example.invalid",
+                        other.path("invitationToken").asText(),
+                        200);
+        var secondMail = MAILBOX.receive();
+        assertEquals(1, count("p_review_guest"));
+        code(f, verified, pending, secondMail.code(), 200);
+        assertEquals(2, count("p_review_guest"));
+    }
+
+    @Test
+    void invitationRevocationGuestGenerationAndShareChangesNeverReviveOldInvitation()
+            throws Exception {
+        Fixture f = fixture(true, false);
+        JsonNode created = invite(f, "revoke-invite@example.invalid", 200);
+        String id = created.path("invitation").path("id").asText();
+        revokeInvitation(f, id, 1, 409);
+        assertEquals("revoked", revokeInvitation(f, id, 0, 200).path("status").asText());
+        revokeInvitation(f, id, 0, 409);
+        revokeInvitation(f, id, 1, 200);
+        inviteChallenge(
+                f,
+                context(f, null),
+                "revoke-invite@example.invalid",
+                created.path("invitationToken").asText(),
+                403);
+        Browser guest = verify(f, context(f, null), "generation@example.invalid", "Guest", null);
+        JsonNode bound = invite(f, "generation@example.invalid", 200);
+        guestEnabled(f, guest.guest(), admin, false, 0, 200);
+        guestEnabled(f, guest.guest(), admin, true, 1, 200);
+        inviteChallenge(
+                f,
+                context(f, null),
+                "generation@example.invalid",
+                bound.path("invitationToken").asText(),
+                403);
+        assertEquals(
+                "invalidated",
+                invitePage(f, admin, 0, 20, 200).path("data").get(0).path("status").asText());
+        revokeInvitation(f, bound.path("invitation").path("id").asText(), 0, 409);
+        JsonNode stale = invite(f, "stale@example.invalid", 200);
+        management(
+                HttpMethod.PUT,
+                manage(f),
+                admin,
+                Map.of("enabled", true, "expectedVersion", 2),
+                200);
+        f = refresh(f);
+        inviteChallenge(
+                f,
+                context(f, null),
+                "stale@example.invalid",
+                stale.path("invitationToken").asText(),
+                403);
+        assertEquals(
+                "invalidated",
+                invitePage(f, admin, 0, 20, 200).path("data").get(0).path("status").asText());
+    }
+
+    @Test
+    void revokedInvitationDuringSmtpCannotBecomeDeliveredAndDoesNotRefundOtpRate()
+            throws Exception {
+        Fixture f = fixture(true, false);
+        Browser b = context(f, null);
+        JsonNode created = invite(f, "mail-race@example.invalid", 200);
+        MAILBOX.pauseDelivery();
+        try (var pool = Executors.newSingleThreadExecutor()) {
+            Future<JsonNode> result =
+                    pool.submit(
+                            () ->
+                                    inviteChallenge(
+                                            f,
+                                            b,
+                                            "mail-race@example.invalid",
+                                            created.path("invitationToken").asText(),
+                                            403));
+            var mail = MAILBOX.receive();
+            String challengeId =
+                    database.sql(
+                                    "select id from p_review_challenge where email='mail-race@example.invalid'")
+                            .map((r, m) -> r.get("id", String.class))
+                            .one()
+                            .block(TIMEOUT);
+            revokeInvitation(f, created.path("invitation").path("id").asText(), 0, 200);
+            MAILBOX.deliver();
+            result.get(30, TimeUnit.SECONDS);
+            var challenge =
+                    com.fasterxml.jackson.databind.node.JsonNodeFactory.instance
+                            .objectNode()
+                            .put("challengeId", challengeId);
+            code(f, b, challenge, mail.code(), 400);
+            assertEquals(
+                    0,
+                    number(
+                            "select count(*) as value from p_review_challenge where id=:id and delivered=true",
+                            challengeId));
+            challenge(f, b, "mail-race@example.invalid", "Guest", null, 429);
+            assertEquals(0, count("p_review_guest"));
+            assertEquals(0, count("p_review_session"));
+        } finally {
+            MAILBOX.deliver();
+        }
+    }
+
+    @Test
+    void concurrentInvitationConsumptionAndRollbackCannotPartiallyConsumeIdentity()
+            throws Exception {
+        Fixture f = fixture(true, false);
+        Browser b = context(f, null);
+        JsonNode created = invite(f, "atomic@example.invalid", 200);
+        JsonNode pending =
+                inviteChallenge(
+                        f,
+                        b,
+                        "atomic@example.invalid",
+                        created.path("invitationToken").asText(),
+                        200);
+        String correct = MAILBOX.receive().code();
+        sql(
+                "create function reject_invitation_session_fixture() returns trigger language plpgsql as $$ begin raise exception 'fixture failure'; end $$");
+        sql(
+                "create trigger reject_invitation_session_fixture before insert on p_review_session for each row execute function reject_invitation_session_fixture()");
+        try {
+            code(f, b, pending, correct, 500);
+            assertEquals(0, count("p_review_guest"));
+            assertEquals(0, count("p_review_session"));
+            assertEquals(
+                    0,
+                    number(
+                            "select count(*) as value from p_review_invitation where id=:id and consumed_at is not null",
+                            created.path("invitation").path("id").asText()));
+            assertEquals(
+                    0,
+                    number(
+                            "select count(*) as value from p_review_challenge where id=:id and consumed=true",
+                            pending.path("challengeId").asText()));
+        } finally {
+            sql("drop trigger reject_invitation_session_fixture on p_review_session");
+            sql("drop function reject_invitation_session_fixture()");
+        }
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var tasks = new ArrayList<Future<Browser>>();
+            for (int i = 0; i < 2; i++)
+                tasks.add(
+                        pool.submit(
+                                () -> {
+                                    barrier.await(10, TimeUnit.SECONDS);
+                                    return exchange(
+                                            f,
+                                            "verify",
+                                            Map.of(
+                                                    "challengeId",
+                                                    pending.path("challengeId").asText(),
+                                                    "code",
+                                                    correct),
+                                            b.cookie,
+                                            b.csrf(),
+                                            ORIGIN,
+                                            200,
+                                            400,
+                                            403);
+                                }));
+            var statuses = new ArrayList<Integer>();
+            for (var task : tasks) statuses.add(task.get(30, TimeUnit.SECONDS).status);
+            statuses.sort(Integer::compareTo);
+            assertEquals(List.of(200, 400), statuses);
+        }
+        assertEquals(1, count("p_review_guest"));
+        assertEquals(1, count("p_review_session"));
+        assertEquals(
+                1,
+                number(
+                        "select config_version as value from p_review_invitation where id=:id",
+                        created.path("invitation").path("id").asText()));
+    }
+
+    @Test
+    void invitationCreationLimitsAreIndependentAndConcurrentProjectCapIsAtomic() throws Exception {
+        Fixture f = fixture(true, false);
+        invite(f, "quota@example.invalid", 200);
+        invite(f, "quota@example.invalid", 429);
+        for (int i = 1; i < 5; i++) {
+            sql("update p_review_rate set next_allowed_at=0");
+            invite(f, "quota@example.invalid", 200);
+        }
+        sql("update p_review_rate set next_allowed_at=0");
+        invite(f, "quota@example.invalid", 429);
+        assertEquals(5, count("p_review_invitation"));
+        String projectRate =
+                com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys.digest(
+                        "review-rate-v1:" + f.project + ":invitation-project");
+        sql("update p_review_rate set send_count=59 where id=:id", projectRate);
+        CyclicBarrier barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var tasks = new ArrayList<Future<Integer>>();
+            for (int i = 0; i < 2; i++) {
+                String email = "parallel-invite-" + i + "@example.invalid";
+                tasks.add(
+                        pool.submit(
+                                () -> {
+                                    barrier.await(10, TimeUnit.SECONDS);
+                                    return client.post()
+                                            .uri(invitePath(f))
+                                            .header("X-Access-Token", admin)
+                                            .contentType(MediaType.APPLICATION_JSON)
+                                            .bodyValue(
+                                                    Map.of(
+                                                            "email",
+                                                            email,
+                                                            "expectedShareVersion",
+                                                            2))
+                                            .exchange()
+                                            .returnResult(JsonNode.class)
+                                            .getStatus()
+                                            .value();
+                                }));
+            }
+            var statuses = new ArrayList<Integer>();
+            for (var task : tasks) statuses.add(task.get(30, TimeUnit.SECONDS));
+            statuses.sort(Integer::compareTo);
+            assertEquals(List.of(200, 429), statuses);
+        }
+        assertEquals(
+                60,
+                number("select send_count as value from p_review_rate where id=:id", projectRate));
+        assertEquals(6, count("p_review_invitation"));
+        challenge(f, context(f, null), "quota@example.invalid", "Ordinary OTP", null, 200);
+        assertEquals(1, MAILBOX.pendingMessages());
+    }
+
+    @Test
+    void invitationCleanupIsBoundedAndBothVersionAndProjectPurgesIncludeInvitations()
+            throws Exception {
+        Fixture f = fixture(true, false);
+        JsonNode created = invite(f, "cleanup@example.invalid", 200);
+        for (int i = 0; i < 55; i++) {
+            database.sql(
+                            "insert into p_review_invitation(id,project_id,version_id,share_id,revision_id,share_config_version,share_generation,token_hash,email,guest_config_version,config_version,revoked,create_time,expires_at) select :id,project_id,version_id,share_id,revision_id,share_config_version,share_generation,:id,email,guest_config_version,config_version,revoked,create_time,1 from p_review_invitation where id=:source")
+                    .bind("id", "expired-invite-" + i)
+                    .bind("source", created.path("invitation").path("id").asText())
+                    .fetch()
+                    .rowsUpdated()
+                    .block(TIMEOUT);
+        }
+        review.cleanupExpired().block(TIMEOUT);
+        assertEquals(6, count("p_review_invitation"));
+        review.cleanupExpired().block(TIMEOUT);
+        assertEquals(1, count("p_review_invitation"));
+        review.purgeVersion(f.version.path("id").asText()).block(TIMEOUT);
+        assertEquals(0, count("p_review_invitation"));
+        invite(f, "purge-project@example.invalid", 200);
+        review.purgeProject(f.project).block(TIMEOUT);
+        assertEquals(0, count("p_review_invitation"));
+    }
+
+    private String invitePath(Fixture f) {
+        return "/prototype-hub/shares/" + f.share.path("id").asText() + "/review-invitations";
+    }
+
+    private JsonNode invite(Fixture f, String email, int status) {
+        return management(
+                HttpMethod.POST,
+                invitePath(f),
+                admin,
+                Map.of("email", email, "expectedShareVersion", 2),
+                status);
+    }
+
+    private JsonNode invitePage(Fixture f, String actor, int page, int size, int status) {
+        return management(
+                HttpMethod.POST,
+                invitePath(f) + "/_query",
+                actor,
+                Map.of("pageIndex", page, "pageSize", size),
+                status);
+    }
+
+    private JsonNode revokeInvitation(Fixture f, String id, long version, int status) {
+        return management(
+                HttpMethod.PUT,
+                invitePath(f) + "/" + id + "/revoke",
+                admin,
+                Map.of("expectedVersion", version),
+                status);
+    }
+
+    private JsonNode inviteChallenge(Fixture f, Browser b, String email, String token, int status) {
+        return exchange(
+                        f,
+                        "challenges",
+                        Map.of("email", email, "displayName", "Invited", "invitationToken", token),
+                        b.cookie,
+                        b.csrf(),
+                        ORIGIN,
+                        status)
+                .data;
+    }
+
     private Fixture unverifiedFixture() throws IOException {
         Fixture fixture = fixture(true, false);
         management(
@@ -1536,9 +1955,11 @@ class PrototypeHubReviewIdentityIntegrationTest {
         var request = client.method(method).uri(path);
         if (token != null) request.header("X-Access-Token", token);
         if (body != null) request.contentType(MediaType.APPLICATION_JSON).bodyValue(body);
+        var exchange = request.exchange();
+        if (method == HttpMethod.POST && path.endsWith("/review-invitations") && status == 200)
+            exchange.expectHeader().valueEquals("Cache-Control", "no-store");
         var response =
-                request.exchange()
-                        .expectStatus()
+                exchange.expectStatus()
                         .isEqualTo(status)
                         .expectBody(JsonNode.class)
                         .returnResult()
@@ -1599,6 +2020,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
     private long count(String table) {
         return database.sql(
                         switch (table) {
+                            case "p_review_invitation" ->
+                                    "select count(*) as value from p_review_invitation";
                             case "s_user" -> "select count(*) as value from s_user";
                             case "p_review_guest" -> "select count(*) as value from p_review_guest";
                             case "p_review_unverified_guest" ->

@@ -5,6 +5,7 @@ import static org.junit.jupiter.api.Assertions.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewGuestEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewInvitationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
@@ -46,6 +47,46 @@ class PrototypeReviewBoundaryTest {
         c.setAttempts(0);
         c.setExpiresAt(2000L);
         return c;
+    }
+
+    @Test
+    void invitationStatusHonorsLegacyGuestVersionExpiryAndTerminalHistory() {
+        var share = new PrototypeShareEntity();
+        share.setId("s");
+        share.setProjectId("p");
+        share.setVersionId("v");
+        share.setRevisionId("r");
+        share.setEnabled(true);
+        share.setReviewEnabled(true);
+        share.setAccessKey("generation");
+        var row = new PrototypeReviewInvitationEntity();
+        row.setShareId("s");
+        row.setProjectId("p");
+        row.setVersionId("v");
+        row.setRevisionId("r");
+        row.setShareConfigVersion(0L);
+        row.setGuestConfigVersion(0L);
+        row.setExpiresAt(100L);
+        row.setShareGeneration(PrototypeReviewKeys.digest("generation"));
+        var guest = new PrototypeReviewGuestEntity();
+        assertEquals("pending", PrototypeReviewInvitationService.status(row, share, guest, 99));
+        assertEquals("expired", PrototypeReviewInvitationService.status(row, share, guest, 100));
+        guest.setEnabled(false);
+        assertEquals("invalidated", PrototypeReviewInvitationService.status(row, share, guest, 99));
+        guest.setEnabled(true);
+        guest.setConfigVersion(2L);
+        assertEquals("invalidated", PrototypeReviewInvitationService.status(row, share, guest, 99));
+        guest.setConfigVersion(0L);
+        share.setConfigVersion(1L);
+        assertEquals("invalidated", PrototypeReviewInvitationService.status(row, share, guest, 99));
+        share.setConfigVersion(0L);
+        share.setAccessKey("new-generation");
+        assertEquals("invalidated", PrototypeReviewInvitationService.status(row, share, guest, 99));
+        row.setConsumedAt(50L);
+        assertEquals("consumed", PrototypeReviewInvitationService.status(row, share, guest, 101));
+        row.setConsumedAt(null);
+        row.setRevoked(true);
+        assertEquals("revoked", PrototypeReviewInvitationService.status(row, share, guest, 101));
     }
 
     @Test
