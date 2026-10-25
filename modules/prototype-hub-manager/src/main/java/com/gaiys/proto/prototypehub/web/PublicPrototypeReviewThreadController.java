@@ -47,6 +47,19 @@ public class PublicPrototypeReviewThreadController {
         return threads.queryVisitor(token, input, cookie);
     }
 
+    @PostMapping("/{threadId}/_detail")
+    @Operation(summary = "定位当前访客本人页面线程")
+    public Mono<ReviewThreadResponse> detail(
+            @PathVariable String token,
+            @PathVariable String threadId,
+            @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
+                    ReviewPageRequest input,
+            ServerWebExchange exchange) {
+        security.origin(exchange);
+        String cookie = security.unsafeCookie(exchange);
+        return threads.detailVisitor(token, threadId, input, cookie);
+    }
+
     @PostMapping("")
     @Operation(summary = "创建本人页面纯文本线程")
     public Mono<ReviewThreadResponse> create(

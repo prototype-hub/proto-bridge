@@ -259,6 +259,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | 请求 | 额外输入 | 结果 |
 | --- | --- | --- |
 | `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人线程的PagerResult |
+| `POST /threads/{threadId}/_detail` | 无 | 当前本人范围内的单个Thread，不受列表分页或state筛选影响 |
 | `POST /threads` | `{text,clientRequestId}` | Thread，含初始公开消息的原子创建结果 |
 | `POST /threads/{threadId}/messages/_query` | `{pageIndex,pageSize}` | 仅公开消息的PagerResult |
 | `POST /threads/{threadId}/messages` | `{text,clientRequestId}` | Message，作者始终来自当前访客会话 |
@@ -271,11 +272,18 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | 请求 | 输入 | 结果 |
 | --- | --- | --- |
 | `POST /_query` | `{revisionId,pageId,pageIndex,pageSize,state?}` | Thread的PagerResult |
+| `POST /{threadId}/_detail` | `{revisionId,pageId}` | 当前管理范围内的单个Thread，不受列表分页或state筛选影响 |
 | `POST /{threadId}/messages/_query` | `{revisionId,pageId,pageIndex,pageSize}` | 含内部备注的Message分页 |
 | `POST /{threadId}/messages` | `{revisionId,pageId,text,visibility:'public'|'internal',clientRequestId}` | Message，成员作者从当前登录身份获取 |
 | `PUT /{threadId}/status` | `{revisionId,pageId,state:'open'|'resolved',expectedVersion,clientRequestId}` | Thread |
 
 管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
+
+线程详情沿用上述页面与当前身份校验，不从threadId反推或授权另一页面。缺失、其他分享/访客/身份等级或不匹配项目、版本、修订、页面的线程统一返回404 / `PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE`；分享策略、会话和页面自身失效仍返回各自既有错误。详情只返回同一Thread投影，不附带内部消息数量或时间，不修改状态、限频、回执或领域事件。消息仍通过原分页接口读取。
+
+成员预览和公开分享可在原页面深链中加入 `threadId`：`?revisionId={rid}&pageId={pageId}&threadId={threadId}`。threadId为43位URL安全随机标识；线程目标必须是三个单值、非空、格式有效的完整标识，重复、非法或不完整目标显示错误，不自动打开首页、另一线程或新建投稿。URL仅定位，仍须完成当前项目授权或分享密码、访客身份及待用邀请流程；完成后继续定位，不自动发码、退出身份、放弃邀请或提交文字。未验证身份丢失后，链接不能恢复原身份。
+
+指定线程通过详情接口独立读取，允许不在当前列表页或筛选结果中；不扫描全部列表、不插入伪列表行或修改total。复制当前线程链接只保留当前成员预览或公开分享外壳路径和上述三个标识，不携带访问证明、邀请片段、Cookie、CSRF、正文或运行URL，也不自动把成员链接转换成公开链接。普通页面复制仍仅含修订与页面。明确选择页面会清除线程目标，浏览器前进后退可恢复有效目标；范围或身份变化清空旧详情，取消与代次检查拒绝迟到响应。链接定位线程，不定位特定消息页，线程数据及凭据不传入原型iframe。
 
 分页pageIndex为0–10000、pageSize为1–100；线程按公开updatedAt降序、ID升序，消息按createdAt升序、ID升序。公开消息先按visibility过滤再计数、分页，不能暴露内部备注内容、数量、时间或其他元数据。内部备注不改变线程公开updatedAt、状态、configVersion或排序；无额外messageCount。公开新回复会更新updatedAt，访客回复自动将resolved重开并只递增一次状态版本；PM公开回复保留原状态。只有状态转换改变configVersion；同版本同状态请求无额外状态事件，陈旧expectedVersion返回409。
 
