@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectMemberService;
+import com.gaiys.proto.prototypehub.service.PrototypeReviewAssignmentService;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -29,6 +30,7 @@ public class PrototypeAccountAccessCleanup {
     private static final int BATCH_SIZE = 100;
     private final PrototypeProjectAccessService access;
     private final PrototypeProjectMemberService members;
+    private final PrototypeReviewAssignmentService assignments;
     private final ReactiveRepository<PrototypeProjectEntity, String> projects;
     private final ReactiveRepository<PrototypeProjectMemberEntity, String> bindings;
     private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
@@ -58,54 +60,77 @@ public class PrototypeAccountAccessCleanup {
                             if (page.isEmpty()) return Mono.empty();
                             List<String> ids =
                                     page.stream().map(PrototypeProjectEntity::getId).toList();
-                            return bindings.createQuery()
-                                    .select(PrototypeProjectMemberEntity::getProjectId)
-                                    .where(PrototypeProjectMemberEntity::getUserId, userId)
-                                    .in(PrototypeProjectMemberEntity::getProjectId, ids)
-                                    .fetch()
-                                    .map(PrototypeProjectMemberEntity::getProjectId)
-                                    .collect(Collectors.toSet())
+                            // 已撤员的历史负责人仍须纳入删号清理，避免同ID新账号继承责任快照。
+                            return assignments
+                                    .assignedProjects(ids, userId)
                                     .flatMap(
-                                            bound ->
-                                                    sessions.createQuery()
+                                            assigned ->
+                                                    bindings.createQuery()
                                                             .select(
-                                                                    PrototypePreviewSessionEntity
+                                                                    PrototypeProjectMemberEntity
                                                                             ::getProjectId)
                                                             .where(
-                                                                    PrototypePreviewSessionEntity
+                                                                    PrototypeProjectMemberEntity
                                                                             ::getUserId,
                                                                     userId)
                                                             .in(
-                                                                    PrototypePreviewSessionEntity
+                                                                    PrototypeProjectMemberEntity
                                                                             ::getProjectId,
                                                                     ids)
                                                             .fetch()
                                                             .map(
-                                                                    PrototypePreviewSessionEntity
+                                                                    PrototypeProjectMemberEntity
                                                                             ::getProjectId)
                                                             .collect(Collectors.toSet())
-                                                            .map(
-                                                                    previewed ->
-                                                                            page.stream()
-                                                                                    .filter(
-                                                                                            project ->
-                                                                                                    affected(
-                                                                                                            project,
-                                                                                                            userId,
-                                                                                                            bound,
-                                                                                                            previewed))
+                                                            .flatMap(
+                                                                    bound ->
+                                                                            sessions.createQuery()
+                                                                                    .select(
+                                                                                            PrototypePreviewSessionEntity
+                                                                                                    ::getProjectId)
+                                                                                    .where(
+                                                                                            PrototypePreviewSessionEntity
+                                                                                                    ::getUserId,
+                                                                                            userId)
+                                                                                    .in(
+                                                                                            PrototypePreviewSessionEntity
+                                                                                                    ::getProjectId,
+                                                                                            ids)
+                                                                                    .fetch()
                                                                                     .map(
-                                                                                            PrototypeProjectEntity
-                                                                                                    ::getId)
-                                                                                    .toList()))
-                                    .flatMap(
-                                            affected ->
-                                                    Flux.fromIterable(affected)
-                                                            .concatMap(
-                                                                    id -> revokeProject(id, userId),
-                                                                    1)
-                                                            .then())
-                                    .thenReturn(page.getLast().getId());
+                                                                                            PrototypePreviewSessionEntity
+                                                                                                    ::getProjectId)
+                                                                                    .collect(
+                                                                                            Collectors
+                                                                                                    .toSet())
+                                                                                    .map(
+                                                                                            previewed ->
+                                                                                                    page
+                                                                                                            .stream()
+                                                                                                            .filter(
+                                                                                                                    project ->
+                                                                                                                            affected(
+                                                                                                                                    project,
+                                                                                                                                    userId,
+                                                                                                                                    bound,
+                                                                                                                                    previewed,
+                                                                                                                                    assigned))
+                                                                                                            .map(
+                                                                                                                    PrototypeProjectEntity
+                                                                                                                            ::getId)
+                                                                                                            .toList()))
+                                                            .flatMap(
+                                                                    affected ->
+                                                                            Flux.fromIterable(
+                                                                                            affected)
+                                                                                    .concatMap(
+                                                                                            id ->
+                                                                                                    revokeProject(
+                                                                                                            id,
+                                                                                                            userId),
+                                                                                            1)
+                                                                                    .then())
+                                                            .thenReturn(page.getLast().getId()));
                         });
     }
 
@@ -134,6 +159,9 @@ public class PrototypeAccountAccessCleanup {
                                                                         userId)
                                                                 .execute())
                                                 // 非空 epoch 表示已分类的授权谱系；显式迁移也不能给同名新账号复活旧所有权。
+                                                .then(
+                                                        assignments.clearDeletedUser(
+                                                                projectId, userId))
                                                 .then(members.rotate(projectId)));
     }
 
@@ -141,8 +169,10 @@ public class PrototypeAccountAccessCleanup {
             PrototypeProjectEntity project,
             String userId,
             Set<String> bound,
-            Set<String> previewed) {
+            Set<String> previewed,
+            Set<String> assigned) {
         return userId.equals(project.getOwnerId())
+                || assigned.contains(project.getId())
                 || bound.contains(project.getId())
                 || previewed.contains(project.getId())
                 || (userId.equals(project.getCreatorId())

@@ -16,6 +16,7 @@ import org.hswebframework.web.api.crud.entity.GenericEntity;
         indexes = {
             @Index(name = "idx_review_thread_version", columnList = "version_id"),
             @Index(name = "idx_review_thread_project", columnList = "project_id"),
+            @Index(name = "idx_review_thread_assignee", columnList = "assignee_id,project_id,id"),
             @Index(
                     name = "idx_review_thread_scope",
                     columnList =
@@ -78,6 +79,22 @@ public class PrototypeReviewThreadEntity extends GenericEntity<String> {
     @Column(name = "config_version", nullable = false)
     @Schema(description = "仅状态变更递增的并发版本")
     private Long configVersion;
+
+    @Column(name = "assignee_id", length = 64)
+    @Schema(description = "内部当前负责人用户标识，不授予访问权限")
+    private String assigneeId;
+
+    @Column(name = "assignee_name", length = 128)
+    @Schema(description = "分派时负责人姓名快照，不随账号改名更新")
+    private String assigneeName;
+
+    @Column(name = "assignment_version")
+    @Schema(description = "独立分派并发版本，历史空值按零读取")
+    private Long assignmentVersion;
+
+    @Column(name = "assignment_updated_at")
+    @Schema(description = "最近分派或清除Unix毫秒，不影响公开更新时间")
+    private Long assignmentUpdatedAt;
 
     @Column(name = "create_time", nullable = false)
     @Schema(description = "创建Unix毫秒")
