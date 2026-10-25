@@ -126,15 +126,19 @@ class PrototypeReviewThreadBoundaryTest {
                 .verify(Duration.ofSeconds(5));
     }
 
-    @Test
-    void imagePreparationWaitsForThreadReadToReleaseDatabaseBeforeFileWorker() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void imagePreparationWaitsForDatabaseReleaseBeforeFileWorker(boolean creating)
+            throws Exception {
         var release = Sinks.<Void>one();
         var releasing = new AtomicBoolean();
         var preparing = new AtomicBoolean();
         var revisions = mock(ReactiveRepository.class);
         var revisionQuery = mock(ReactiveQuery.class, RETURNS_SELF);
         when(revisions.createQuery()).thenReturn(revisionQuery);
-        when(revisionQuery.fetch()).thenReturn(Flux.just(revision()));
+        when(revisionQuery.fetch())
+                .thenReturn(
+                        creating ? gate(revision(), releasing, release) : Flux.just(revision()));
         var threads = mock(ReactiveRepository.class);
         var threadQuery = mock(ReactiveQuery.class, RETURNS_SELF);
         when(threads.createQuery()).thenReturn(threadQuery);
@@ -178,13 +182,11 @@ class PrototypeReviewThreadBoundaryTest {
         input.setAccessKey("key");
         input.setText("图片说明");
         input.setClientRequestId("image-key");
+        var file = mock(org.springframework.http.codec.multipart.FilePart.class);
         StepVerifier.create(
-                        service.imageVisitor(
-                                "token",
-                                "thread",
-                                input,
-                                "cookie",
-                                mock(org.springframework.http.codec.multipart.FilePart.class)))
+                        creating
+                                ? service.createImage("token", input, "cookie", file)
+                                : service.imageVisitor("token", "thread", input, "cookie", file))
                 .then(
                         () -> {
                             assertTrue(releasing.get());

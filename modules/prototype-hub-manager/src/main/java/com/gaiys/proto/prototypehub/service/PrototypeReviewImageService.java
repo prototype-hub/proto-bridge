@@ -49,11 +49,11 @@ public class PrototypeReviewImageService {
     private final TransactionalOperator transactions;
 
     /** 调用方先完全完成授权读取；文件解码先于短事务，事务内再次校验范围并持久化消息。 */
-    public Mono<ReviewMessageResponse> upload(
+    public <T> Mono<T> upload(
             String project,
             String version,
             FilePart file,
-            Function<Candidate, Mono<ReviewMessageResponse>> operation) {
+            Function<Candidate, Mono<Stored<T>>> operation) {
         return Mono.defer(
                         () -> {
                             String id = PrototypeReviewKeys.random();
@@ -138,7 +138,10 @@ public class PrototypeReviewImageService {
                                                                                                                                                     .id()
                                                                                                                                                     .equals(
                                                                                                                                                             result
-                                                                                                                                                                    .id())))
+                                                                                                                                                                    .imageMessageId())))
+                                                                                                            .map(
+                                                                                                                    Stored
+                                                                                                                            ::response)
                                                                                                     : Mono
                                                                                                             .empty())
                                                                             .doOnCancel(
@@ -374,6 +377,9 @@ public class PrototypeReviewImageService {
             row.setImageHeight(height);
         }
     }
+
+    /** 响应资源可为线程或消息；只有实际持久化的图片消息标识决定本次候选文件归属。 */
+    public record Stored<T>(T response, String imageMessageId) {}
 
     private record Outcome(int status, boolean owned) {}
 

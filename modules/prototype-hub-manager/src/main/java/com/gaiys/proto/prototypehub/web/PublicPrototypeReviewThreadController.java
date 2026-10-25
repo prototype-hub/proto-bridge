@@ -76,6 +76,19 @@ public class PublicPrototypeReviewThreadController {
         return threads.create(token, input, cookie);
     }
 
+    @PostMapping(value = "/_with-image", consumes = "multipart/form-data")
+    @Operation(summary = "创建本人页面线程并在首条公开消息附一张PNG/JPEG")
+    public Mono<ReviewThreadResponse> createImage(
+            @PathVariable String token, ServerWebExchange exchange) {
+        security.origin(exchange);
+        String cookie = security.unsafeCookie(exchange);
+        return multipart.read(
+                exchange,
+                ReviewTextRequest.class,
+                new Class<?>[] {Default.class, ReviewPageRequest.Public.class},
+                (input, image) -> threads.createImage(token, input, cookie, image));
+    }
+
     @PostMapping("/{threadId}/messages/_query")
     @Operation(summary = "分页读取本人线程的公开消息")
     public Mono<PagerResult<ReviewMessageResponse>> messages(

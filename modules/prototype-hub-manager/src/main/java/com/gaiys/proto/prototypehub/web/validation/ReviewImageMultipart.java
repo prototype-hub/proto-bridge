@@ -23,7 +23,7 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
-/** 仅图片回复使用的官方multipart reader；在读取时限额，不继承ZIP上传的500MB落盘上限。 */
+/** 仅评审图片使用的官方multipart reader；在读取时限额，不继承ZIP上传的500MB落盘上限。 */
 @Component
 public class ReviewImageMultipart {
     private final DefaultPartHttpMessageReader reader = new DefaultPartHttpMessageReader();
