@@ -42,7 +42,11 @@ HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.tru
 
 原生环境变量为 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN`、`PROTOTYPEHUB_REVIEW_COOKIESECURE`，也可沿Compose现有格式填写 `- "prototype-hub.review.trusted-origin=https://your-platform.example"`。主配置同时声明SMTP/SMTPS的认证、STARTTLS/SSL、服务端身份校验、连接/读/写超时及EHLO身份，发件地址可用 `SMTP_FROM`；TLS等map参数建议使用私有YAML或精确命令行属性，不提交真实密码，完整可用项以application.yml为准。模板见 `application-local.yml.example`。只有隔离的loopback测试接收端显式关闭认证/TLS，不沿用到生产。
 
-备份全部九张评审表 `p_review_guest/p_review_unverified_guest/p_review_challenge/p_review_session/p_review_rate/p_review_invitation/p_review_thread/p_review_message/p_review_event`、相关 `p_creation_receipt`、分享配置及密钥，恢复副本核验未过期身份、邀请完整绑定、页面/线程归属、公开与内部可见性、原到期时间和旧撤销状态；不要单独恢复会话、邀请、消息或重置限频与回执。既有独立进程工具只比较四张历史评审表的恢复快照，尚不覆盖其余五表的完整灾备，不可将该结果解释为九表恢复已验。自动化只用隔离本地SMTP和 `example.invalid` 夹具，不向真实客户发送测试邮件。
+备份全部九张评审表 `p_review_guest/p_review_unverified_guest/p_review_challenge/p_review_session/p_review_rate/p_review_invitation/p_review_thread/p_review_message/p_review_event`、相关 `p_creation_receipt`、分享配置及密钥，恢复副本核验未过期身份、邀请完整绑定、页面/线程归属、公开与内部可见性、原到期时间和旧撤销状态；不要单独恢复会话、邀请、消息或重置限频与回执。独立进程工具使用整库 `pg_dump/pg_restore`，完整性比较清单不等于备份的选表范围；仅有四张历史评审表的比较结果，不能证明其余五表已通过恢复验收。
+
+九表恢复验收须在备份前通过真实接口建立非空的邮箱与未验证身份、待用/已消费/已撤销邀请、公开线程与回复、内部备注、状态事件及幂等回执。停写后比较行数与内容摘要；恢复到新数据库和两套新文件根后，先在启动应用前精确比较快照，再核验原身份、期限、配置代次、撤销状态、本人范围、内部备注隔离和原请求键重放。不得为通过演练重置到期时间、限频或授权；启动后的清理只能采用已明确验证对象的预期差集，不能忽略整张短期表。
+
+恢复后新建的浏览器邀请与文字评审夹具用于验证实际服务可用，不代替备份前数据的持久性检查。自动化只用隔离本地SMTP和 `example.invalid` 夹具，不向真实客户发送测试邮件；报告仅保留有界行数、摘要和布尔结论，不输出邮箱、验证码、邀请原文、Cookie、正文或访问凭据。验收以本次完整进程报告为准，不由表清单或文档声明推定成功，也不代表外部SMTP、其他数据库/浏览器或目标生产部署已验。
 
 邀请只适用于活动、已开启身份且修订有效的fixed分享；latest先由管理员明确选择固定修订。链接有效期为24小时与分享到期时间的较早者，服务端只保存凭据摘要，丢失后不能查询原始链接。创建受独立的项目60次/小时、收件邮箱5次/小时及60秒冷却限制，不退还或占用OTP发送额度。传递时按敏感链接处理，勿放进公开Issue、访问日志、截图或分析平台；公开外壳清除URL片段，凭据不进入原型iframe、本地存储或业务邮件。
 

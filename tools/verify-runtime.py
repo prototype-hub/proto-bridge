@@ -36,9 +36,11 @@ from runtime_mailbox import LocalMailbox
 
 
 FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
+REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
+                 'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
+                 'p_review_message', 'p_review_event')
 TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_share',
-          'p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
-          'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
+          *REVIEW_TABLES, 'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
 FRONTEND_GLOBAL_TIMEOUT_MS = 300000
@@ -53,6 +55,36 @@ class VerificationFailure(RuntimeError):
 def require(condition, message):
     if not condition:
         raise VerificationFailure(message)
+
+
+def review_manifest(manifest):
+    """A whole-database dump is useful evidence only if every review table has rows."""
+    result = {}
+    for table in REVIEW_TABLES:
+        row = manifest.get(table)
+        require(isinstance(row, dict) and type(row.get('count')) is int and row['count'] > 0 and
+                re.fullmatch('[0-9a-f]{32}', row.get('contentMd5', '')) is not None,
+                'Review backup table is missing, empty or has no checksum: ' + table)
+        result[table] = row
+    return result
+
+
+def compare_review_rows(before, after, now):
+    """Only an already-expired row may disappear after startup; no row may be rewritten."""
+    removed = {}
+    require(set(before) == set(after) == set(REVIEW_TABLES), 'Review row snapshot omitted a table')
+    for table in REVIEW_TABLES:
+        require(not (after[table].keys() - before[table].keys()),
+                'A read or startup inserted review rows: ' + table)
+        for identity, row in before[table].items():
+            current = after[table].get(identity)
+            if current is None:
+                require(type(row['deadline']) is int and row['deadline'] <= now,
+                        'An unexpired review row disappeared: ' + table)
+            else:
+                require(current == row, 'A read or startup changed a review row: ' + table)
+        removed[table] = len(before[table]) - len(after[table])
+    return removed
 
 
 def free_port():
@@ -145,6 +177,7 @@ class Api:
         if self.token:
             request_headers['X-Access-Token'] = self.token
         if payload is not None and not isinstance(payload, bytes):
+            self.remember_secrets(payload)
             payload = json.dumps(payload).encode()
             request_headers['Content-Type'] = 'application/json'
         request = urllib.request.Request(self.origin + path, payload, request_headers, method=method)
@@ -170,7 +203,9 @@ class Api:
     def remember_secrets(self, value):
         if isinstance(value, dict):
             for key, item in value.items():
-                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken') and item:
+                if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken',
+                           'invitationToken', 'email', 'displayName', 'company', 'text', 'summary',
+                           'authorName', 'authorCompany') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
         elif isinstance(value, list):
@@ -283,6 +318,20 @@ class RuntimeCheck:
             result[table] = json.loads(self.sql(database,
                 "select json_build_object('count', count(*), 'contentMd5', "
                 "md5(coalesce(jsonb_agg(to_jsonb(row_data) order by id)::text, '[]'))) "
+                'from ' + table + ' row_data;'))
+        return result
+
+    def review_rows(self, database):
+        result = {}
+        expiring = ('p_review_challenge', 'p_review_session', 'p_review_rate',
+                    'p_review_unverified_guest', 'p_review_invitation')
+        for table in REVIEW_TABLES:
+            deadline = ('expires_at' if table in expiring else
+                        'create_time + ' + str(RETENTION_MILLISECONDS) if table == 'p_review_event'
+                        else 'null')
+            result[table] = json.loads(self.sql(database,
+                "select coalesce(jsonb_object_agg(id, jsonb_build_object("
+                "'hash', md5(to_jsonb(row_data)::text), 'deadline', " + deadline + ")), '{}') "
                 'from ' + table + ' row_data;'))
         return result
 
@@ -543,18 +592,19 @@ class RuntimeCheck:
             require(self.preview(api, anonymous.request('GET', path)) == expected_preview,
                     'Restored latest-share content changed')
 
-    def review_call(self, api, grant, operation, payload, *, cookie=None, csrf=None, expected=200):
+    def review_call(self, api, grant, operation, payload, *, cookie=None, csrf=None, expected=200,
+                    method='POST'):
         headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
         if cookie:
             headers['Cookie'] = 'prototype-review=' + cookie
         if csrf:
             headers['X-Review-CSRF'] = csrf
         body, response_headers = Api(api.origin, self.secrets_seen).request(
-            'POST', '/api/prototype-hub/public/shares/' + grant['token'] + '/review/' + operation,
+            method, '/api/prototype-hub/public/shares/' + grant['token'] + '/review/' + operation,
             dict(revisionId=grant['revisionId'], accessKey=grant['accessKey'], **payload),
             expected=expected, headers=headers, raw=True)
         data = json.loads(body)
-        self.secrets_seen.update((cookie, csrf) if cookie and csrf else ())
+        self.secrets_seen.update(value for value in (cookie, csrf) if value)
         Api(api.origin, self.secrets_seen).remember_secrets(data)
         updated = SimpleCookie()
         for header in response_headers.get_all('Set-Cookie', []):
@@ -575,8 +625,10 @@ class RuntimeCheck:
     def create_review_identity(self, api, version):
         share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] + '/shares', {})
         policy = api.request('PUT', '/api/prototype-hub/shares/' + share['id'] + '/review',
-                             {'enabled': True, 'expectedVersion': share['configVersion']})
-        require(policy['enabled'] and policy['mailAvailable'], 'Local verification mail is unavailable')
+                             {'enabled': True, 'allowUnverified': True, 'allowComment': True,
+                              'expectedVersion': share['configVersion']})
+        require(policy['enabled'] and policy['allowUnverified'] and policy['allowComment'] and
+                policy['mailAvailable'], 'Local review capabilities are unavailable')
         grant = Api(api.origin, self.secrets_seen).request(
             'GET', '/api/prototype-hub/public/shares/' + share['token'])
         context, cookie = self.review_call(api, grant, 'context', {})
@@ -602,8 +654,12 @@ class RuntimeCheck:
                                          'noInternalAccountCreated': True,
                                          'cookiePathAndFlagsVerified': True}
         fixture = {'grant': grant, 'cookie': cookie, 'guestId': identity['guestId'],
-                   'projectId': version['projectId']}
+                   'projectId': version['projectId'], 'versionId': version['id'],
+                   'share': share, 'policy': policy}
         self.verify_review_guest_control(api, fixture, recipient)
+        self.create_review_fixtures(api, fixture)
+        require(self.sql('runtime_source', 'select count(*) from s_user;') == users_before,
+                'Unverified or invited review created an internal platform user')
         return fixture
 
     def verify_review_guest_control(self, api, fixture, recipient):
@@ -655,6 +711,7 @@ class RuntimeCheck:
         require(verified['session'] and verified['session']['guestId'] == fixture['guestId'],
                 'Fresh verification after restore did not recover the same project guest')
         fixture['cookie'] = fresh_cookie
+        fixture['identity'] = verified['session']
         self.report['reviewIdentity']['guestManagement'] = {
             'maskedPage': True, 'disableAndRestore': True, 'oldCookieAndCodeRejected': True,
             'newOtpRequiredForSameIdentity': True}
@@ -663,6 +720,266 @@ class RuntimeCheck:
         context, _ = self.review_call(api, fixture['grant'], 'context', {}, cookie=fixture['cookie'])
         require(context['session'] and context['session']['guestId'] == fixture['guestId'],
                 'Persisted review identity did not survive process or database restore')
+        require(context['session'] == fixture['identity'] and
+                context['session']['expiresAt'] > int(time.time() * 1000),
+                'Persisted review identity profile, level or original expiry changed')
+        return context
+
+    def create_review_fixtures(self, api, fixture):
+        """Create the new review data through the same authenticated HTTP boundaries as users."""
+        grant = fixture['grant']
+        context, cookie = self.review_call(api, grant, 'context', {})
+        context, cookie = self.review_call(api, grant, 'unverified',
+            {'displayName': 'Runtime unverified reviewer', 'company': 'Original review fixture'},
+            cookie=cookie, csrf=context['csrfToken'])
+        identity = context['session']
+        require(identity and identity['verificationLevel'] == 'unverified' and
+                identity['maskedEmail'] is None, 'Low assurance fixture was not explicitly unverified')
+        fixture['unverified'] = {'grant': grant, 'cookie': cookie, 'guestId': identity['guestId'],
+                                 'identity': identity}
+        fixture['invitations'] = {}
+        endpoint = '/api/prototype-hub/shares/' + fixture['share']['id'] + '/review-invitations'
+        for state in ('pending', 'revoked', 'consumed'):
+            recipient = 'invite-' + uuid.uuid4().hex + '@example.invalid'
+            self.secrets_seen.add(recipient)
+            created = api.request('POST', endpoint,
+                {'email': recipient, 'expectedShareVersion': fixture['policy']['configVersion']})
+            row = created['invitation']
+            require(row['status'] == 'pending' and row['consumedAt'] is None and
+                    row['expiresAt'] > int(time.time() * 1000), 'New invitation is not pending')
+            item = {'row': row, 'token': created['invitationToken'], 'email': recipient}
+            fixture['invitations'][state] = item
+            if state == 'revoked':
+                item['row'] = api.request('PUT', endpoint + '/' + row['id'] + '/revoke',
+                                         {'expectedVersion': row['configVersion']})
+                require(item['row']['status'] == 'revoked' and
+                        item['row']['configVersion'] == row['configVersion'] + 1,
+                        'Invitation revoke did not advance its CAS version')
+            elif state == 'consumed':
+                challenge = self.review_invitation_challenge(api, fixture, item)
+                verified, verified_cookie = self.review_call(api, grant, 'verify',
+                    {'challengeId': challenge['id'], 'code': challenge['code']},
+                    cookie=challenge['cookie'], csrf=challenge['csrf'])
+                require(verified['session'] and verified['session']['verificationLevel'] == 'email',
+                        'Invitation bypassed mailbox verification')
+                item['identity'] = {'grant': grant, 'cookie': verified_cookie,
+                                    'guestId': verified['session']['guestId'],
+                                    'identity': verified['session']}
+                page = api.request('POST', endpoint + '/_query', {'pageIndex': 0, 'pageSize': 20})
+                item['row'] = next(value for value in page['data'] if value['id'] == row['id'])
+                require(item['row']['status'] == 'consumed' and
+                        item['row']['configVersion'] == row['configVersion'] + 1 and
+                        item['row']['consumedAt'] is not None,
+                        'OTP did not atomically consume the invitation')
+        self.verify_review_invitations(api, fixture, 'runtime_source')
+        self.create_review_discussion(api, fixture)
+        self.verify_review_fixtures(api, fixture, 'runtime_source')
+
+    def review_invitation_challenge(self, api, fixture, invitation):
+        context, cookie = self.review_call(api, fixture['grant'], 'context', {})
+        challenge, cookie = self.review_call(api, fixture['grant'], 'challenges',
+            {'email': invitation['email'], 'displayName': 'Runtime invited reviewer',
+             'invitationToken': invitation['token']}, cookie=cookie, csrf=context['csrfToken'])
+        mail = self.mailbox.latest(invitation['email'])
+        require(mail is not None, 'Invited mailbox did not receive its local OTP')
+        return {'id': challenge['challengeId'], 'expiresAt': challenge['expiresAt'],
+                'cookie': cookie, 'csrf': context['csrfToken'], 'code': mail['code']}
+
+    def verify_review_invitations(self, api, fixture, database):
+        endpoint = '/api/prototype-hub/shares/' + fixture['share']['id'] + '/review-invitations'
+        page = api.request('POST', endpoint + '/_query', {'pageIndex': 0, 'pageSize': 20})
+        require(page['total'] == 3, 'Restored invitation management page lost a fixture')
+        actual = {row['id']: row for row in page['data']}
+        for state, item in fixture['invitations'].items():
+            row = item['row']
+            require(actual.get(row['id']) == row and row['status'] == state and
+                    row['expiresAt'] > int(time.time() * 1000),
+                    'Invitation status, version or original deadline changed')
+            require(item['email'] not in json.dumps(page) and item['token'] not in json.dumps(page),
+                    'Invitation management disclosed a mailbox or capability')
+            matched = self.sql(database, """
+                select count(*) from p_review_invitation i
+                join p_share s on s.id=i.share_id
+                left join p_review_guest g on g.project_id=i.project_id and g.email=i.email
+                where i.id=:'id' and i.email=:'email' and i.share_id=:'share'
+                  and i.project_id=:'project' and i.version_id=:'version' and i.revision_id=:'revision'
+                  and i.share_config_version=s.config_version and i.share_config_version=:'shareVersion'::bigint
+                  and i.share_generation=encode(sha256(convert_to(s.access_key,'UTF8')),'hex')
+                  and i.token_hash=:'hash' and i.guest_config_version=0
+                  and i.guest_config_version=coalesce(g.config_version,0);
+                """, variables={'id': row['id'], 'email': item['email'], 'share': fixture['share']['id'],
+                                'project': fixture['projectId'], 'version': fixture['versionId'],
+                                'revision': fixture['grant']['revisionId'],
+                                'shareVersion': str(fixture['policy']['configVersion']),
+                                'hash': hashlib.sha256(('review-invitation-v1:' + item['token']).encode()).hexdigest()})
+            require(matched == '1', 'Invitation recipient or immutable authorization binding changed')
+
+    def create_review_discussion(self, api, fixture):
+        grant, visitor = fixture['grant'], fixture['unverified']
+        pages = Api(api.origin, self.secrets_seen).request('GET', grant['pagesUrl'])
+        def leaves(items):
+            for item in items:
+                if item.get('children'):
+                    yield from leaves(item['children'])
+                if item.get('pageId') and not item.get('folder'):
+                    yield item
+        page = next(leaves(pages), None)
+        require(page is not None, 'Review fixture has no stable manifest page')
+        base = {'revisionId': grant['revisionId'], 'pageId': page['pageId']}
+        member_path = '/api/prototype-hub/versions/' + fixture['versionId'] + '/review-threads'
+        context = self.verify_review_identity(api, visitor)
+        operations = []
+        def write(public, method, path, payload):
+            value = dict(payload, clientRequestId=uuid.uuid4().hex)
+            if public:
+                result, _ = self.review_call(api, grant, path, value, cookie=visitor['cookie'],
+                                             csrf=context['csrfToken'], method=method)
+            else:
+                result = api.request(method, member_path + path, dict(base, **value))
+            operations.append({'public': public, 'method': method, 'path': path,
+                               'payload': value, 'id': result['id']})
+            return result
+        thread = write(True, 'POST', 'threads',
+                       {'pageId': page['pageId'], 'text': 'Original runtime visitor discussion'})
+        require(thread['pageId'] == page['pageId'] and thread['pagePath'] == page['path'] and
+                thread['revisionId'] == grant['revisionId'], 'Thread did not bind its immutable page')
+        identifier = thread['id']
+        public_reply = write(False, 'POST', '/' + identifier + '/messages',
+                             {'text': 'Original runtime PM public reply', 'visibility': 'public'})
+        before_note = api.request('POST', member_path + '/_query', base)['data']
+        note = write(False, 'POST', '/' + identifier + '/messages',
+                     {'text': 'Private runtime PM note must never be public', 'visibility': 'internal'})
+        require(api.request('POST', member_path + '/_query', base)['data'] == before_note,
+                'An internal note changed public thread metadata')
+        resolved = write(False, 'PUT', '/' + identifier + '/status',
+                         {'state': 'resolved', 'expectedVersion': thread['configVersion']})
+        require(resolved['state'] == 'resolved' and resolved['configVersion'] == 1,
+                'PM resolve did not apply its status CAS')
+        visitor_reply = write(True, 'POST', 'threads/' + identifier + '/messages',
+                              {'pageId': page['pageId'], 'text': 'Original runtime visitor follow-up'})
+        final_thread = api.request('POST', member_path + '/_query', base)['data'][0]
+        require(final_thread['state'] == 'open' and final_thread['configVersion'] == 2,
+                'Visitor reply did not reopen the resolved thread')
+        messages = api.request('POST', member_path + '/' + identifier + '/messages/_query', base)
+        require(messages['total'] == 4 and len(messages['data']) == 4,
+                'Review fixture did not persist all public and internal messages')
+        fixture['discussion'] = {'base': base, 'memberPath': member_path, 'thread': final_thread,
+                                 'messages': messages['data'], 'noteId': note['id'],
+                                 'operations': operations}
+        require(public_reply['visibility'] == visitor_reply['visibility'] == 'public',
+                'A public reply was not public')
+
+    def verify_review_discussion(self, api, fixture, database):
+        discussion, visitor = fixture['discussion'], fixture['unverified']
+        context = self.verify_review_identity(api, visitor)
+        base = discussion['base']
+        public_base = {'pageId': base['pageId']}
+        identifier = discussion['thread']['id']
+        messages_path = 'threads/' + identifier + '/messages/_query'
+        threads, _ = self.review_call(api, fixture['grant'], 'threads/_query', public_base,
+            cookie=visitor['cookie'], csrf=context['csrfToken'])
+        require(threads['total'] == 1 and threads['data'] == [discussion['thread']],
+                'Restored visitor page threads differ')
+        public, _ = self.review_call(api, fixture['grant'], messages_path, public_base,
+            cookie=visitor['cookie'], csrf=context['csrfToken'])
+        expected_public = [row for row in discussion['messages'] if row['visibility'] == 'public']
+        require(public['total'] == len(expected_public) and public['data'] == expected_public and
+                all(row['visibility'] == 'public' and row['id'] != discussion['noteId']
+                    for row in public['data']), 'Internal note escaped the visitor boundary')
+        managed = api.request('POST', discussion['memberPath'] + '/' + identifier + '/messages/_query', base)
+        require(managed['total'] == 4 and managed['data'] == discussion['messages'],
+                'Restored PM messages or internal notes differ')
+        anonymous, cookie = self.review_call(api, fixture['grant'], 'context', {})
+        self.review_call(api, fixture['grant'], 'threads/_query', public_base,
+                         cookie=cookie, csrf=anonymous['csrfToken'], expected=403)
+        wrong = self.verify_review_identity(api, fixture)
+        hidden, _ = self.review_call(api, fixture['grant'], 'threads/_query', public_base,
+            cookie=fixture['cookie'], csrf=wrong['csrfToken'])
+        require(hidden['total'] == 0 and not hidden['data'], 'Another identity enumerated a private thread')
+        self.review_call(api, fixture['grant'], messages_path, public_base,
+            cookie=fixture['cookie'], csrf=wrong['csrfToken'], expected=404)
+        for operation in discussion['operations']:
+            if operation['public']:
+                replay, _ = self.review_call(api, fixture['grant'], operation['path'], operation['payload'],
+                    cookie=visitor['cookie'], csrf=context['csrfToken'], method=operation['method'])
+            else:
+                replay = api.request(operation['method'], discussion['memberPath'] + operation['path'],
+                                     dict(base, **operation['payload']))
+            require(replay['id'] == operation['id'], 'Restored review receipt created a second resource')
+        actual = json.loads(self.sql(database, """
+            select json_build_object(
+              'messages', (select count(*) from p_review_message where thread_id=:'thread'),
+              'events', (select json_agg(event_type order by event_type) from p_review_event where thread_id=:'thread'),
+              'receipts', (select count(*) from p_creation_receipt where revision_id=:'revision' and
+                  (resource_id=:'thread' or resource_id in
+                    (select id from p_review_message where thread_id=:'thread'))),
+              'receiptHash', (select md5(coalesce(jsonb_agg(to_jsonb(r) order by id)::text,'[]'))
+                  from p_creation_receipt r where revision_id=:'revision' and
+                  (resource_id=:'thread' or resource_id in
+                    (select id from p_review_message where thread_id=:'thread'))),
+              'bound', not exists(select 1 from p_review_event e where e.thread_id=:'thread' and
+                  (e.project_id<>:'project' or e.version_id<>:'version' or e.revision_id<>:'revision' or
+                   (e.message_id is not null and not exists
+                      (select 1 from p_review_message m where m.id=e.message_id and m.thread_id=e.thread_id)))));
+            """, variables={'thread': identifier, 'revision': base['revisionId'],
+                            'project': fixture['projectId'], 'version': fixture['versionId']}))
+        require(re.fullmatch('[0-9a-f]{32}', actual.get('receiptHash', '')) is not None,
+                'Review receipts have no stable checksum')
+        receipt_hash = discussion.setdefault('receiptHash', actual['receiptHash'])
+        require(actual == {'messages': 4, 'events': sorted(['thread.created', 'message.created',
+                'note.created', 'thread.resolved', 'message.created', 'thread.reopened']),
+                'receipts': 5, 'receiptHash': receipt_hash, 'bound': True},
+                'Review messages, atomic events or receipts differ')
+        return actual
+
+    def verify_review_fixtures(self, api, fixture, database):
+        self.verify_review_identity(api, fixture)
+        self.verify_review_identity(api, fixture['unverified'])
+        self.verify_review_identity(api, fixture['invitations']['consumed']['identity'])
+        self.verify_review_invitations(api, fixture, database)
+        self.verify_review_discussion(api, fixture, database)
+
+    def verify_restored_invitation(self, api, fixture):
+        """Consume the original pending challenge only after exact pre-start restore equality."""
+        pending = fixture['invitations']['pending']
+        for item, email in ((fixture['invitations']['revoked'], fixture['invitations']['revoked']['email']),
+                            (fixture['invitations']['consumed'], fixture['invitations']['consumed']['email']),
+                            (pending, 'wrong-' + uuid.uuid4().hex + '@example.invalid')):
+            self.secrets_seen.add(email)
+            context, cookie = self.review_call(api, fixture['grant'], 'context', {})
+            before = len(self.mailbox.messages)
+            result, _ = self.review_call(api, fixture['grant'], 'challenges',
+                {'email': email, 'displayName': 'Invalid invitation attempt', 'invitationToken': item['token']},
+                cookie=cookie, csrf=context['csrfToken'], expected=403)
+            require(result.get('code') == 'PROTOTYPE_HUB_REVIEW_INVITATION_INVALID' and
+                    len(self.mailbox.messages) == before, 'An invalid invitation sent mail or bypassed its binding')
+        challenge = pending['challenge']
+        require(challenge['expiresAt'] > int(time.time() * 1000),
+                'Original restored pending OTP expired before verification; refusing to renew it')
+        context, cookie = self.review_call(api, fixture['grant'], 'context', {}, cookie=challenge['cookie'])
+        verified, _ = self.review_call(api, fixture['grant'], 'verify',
+            {'challengeId': challenge['id'], 'code': challenge['code']},
+            cookie=cookie, csrf=context['csrfToken'])
+        require(verified['session'] and verified['session']['verificationLevel'] == 'email' and
+                verified['session']['maskedEmail'] == pending['row']['maskedEmail'],
+                'Restored pending invitation did not verify its intended mailbox')
+        endpoint = '/api/prototype-hub/shares/' + fixture['share']['id'] + '/review-invitations/_query'
+        rows = api.request('POST', endpoint, {'pageIndex': 0, 'pageSize': 20})['data']
+        current = next(row for row in rows if row['id'] == pending['row']['id'])
+        require(current['status'] == 'consumed' and current['configVersion'] == pending['row']['configVersion'] + 1 and
+                current['expiresAt'] == pending['row']['expiresAt'] and current['consumedAt'] is not None,
+                'Restored pending invitation did not atomically advance exactly once')
+        before = len(self.mailbox.messages)
+        context, cookie = self.review_call(api, fixture['grant'], 'context', {})
+        result, _ = self.review_call(api, fixture['grant'], 'challenges',
+            {'email': pending['email'], 'displayName': 'Invitation replay', 'invitationToken': pending['token']},
+            cookie=cookie, csrf=context['csrfToken'], expected=403)
+        require(result.get('code') == 'PROTOTYPE_HUB_REVIEW_INVITATION_INVALID' and
+                len(self.mailbox.messages) == before, 'A consumed restored invitation replay sent mail')
+        self.report['restoredReview'] = {'tableCount': len(REVIEW_TABLES),
+            'emailAndUnverifiedOriginalIdentityAndExpiry': True, 'invitationBindingsAndTerminalStates': True,
+            'originalPendingOtpConsumedOnce': True, 'wrongMailboxRevokedAndReplayRejectedWithoutMail': True,
+            'pageThreadPublicAndInternalVisibility': True, 'atomicEventsAndReceipts': True}
 
     def verify_revisions(self, api, project, original, current, zip_path, key,
                          original_hashes, current_hashes, foreign_revision=None):
@@ -1312,6 +1629,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
                                          version['revisionId'])
             expired = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
+            review_state = self.review_rows('runtime_source')
         with self.phase('full-process-restart'):
             self.stop(process)
             self.expire_fixture('runtime_source', expired)
@@ -1342,7 +1660,10 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share(api, share, preview_hashes)
             self.verify_share_policy(api, retired_share, grant=retired_grant)
             self.verify_share_policy(api, following_share, expected_preview=current_hashes)
-            self.verify_review_identity(api, review)
+            self.verify_review_fixtures(api, review, 'runtime_source')
+            current_review = self.review_rows('runtime_source')
+            compare_review_rows(review_state, current_review, int(time.time() * 1000))
+            review_state = current_review
             require(self.verify_revisions(api, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
                     'Revision manifests changed on process restart')
@@ -1354,7 +1675,10 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                          version['revisionId'])
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
-            self.verify_review_identity(other, review)
+            self.verify_review_fixtures(other, review, 'runtime_source')
+            current_review = self.review_rows('runtime_source')
+            compare_review_rows(review_state, current_review, int(time.time() * 1000))
+            review_state = current_review
             contested = api.project('Runtime contested recovery')
             api.request('DELETE', '/api/prototype-hub/projects/' + contested['id'])
             for index in range(4 - api.usage()['projects']['used']):
@@ -1381,12 +1705,18 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                                                'used': 5, 'limit': 5}
             usage = api.usage()['projects']
             require(usage['used'] == 5 and not usage['canCreate'], 'Final project capacity differs')
+            # A genuinely new OTP immediately before quiescence keeps a representative
+            # short-lived row in the dump; its original deadline is never renewed.
+            pending_invitation = review['invitations']['pending']
+            pending_invitation['challenge'] = self.review_invitation_challenge(other, review, pending_invitation)
             self.stop(second_process)
             self.stop(process)
         with self.phase('quiescent-database-and-files-backup'):
             require(not self.processes, 'Backup attempted while an owned writer is still registered')
             pending_restore = self.seed_pending_cleanup('runtime_source', storage, expired)
             before_database = self.database_manifest('runtime_source')
+            self.report['reviewTablesInBackup'] = review_manifest(before_database)
+            before_review_rows = self.review_rows('runtime_source')
             before_files = storage_manifest(storage)
             before_system_files = storage_manifest(system_storage)
             require(before_files, 'Backup has no prototype files')
@@ -1413,8 +1743,12 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             shutil.copytree(backup_files, restored_storage)
             restored_system_storage = self.workspace / 'restored-system-files'
             shutil.copytree(backup_system_files, restored_system_storage)
-            require(self.database_manifest('runtime_restored') == before_database,
+            restored_database = self.database_manifest('runtime_restored')
+            review_manifest(restored_database)
+            require(restored_database == before_database,
                     'Restored database rows or relationships differ')
+            require(self.review_rows('runtime_restored') == before_review_rows,
+                    'Restored review row identities or checksums differ before startup')
             require(storage_manifest(restored_storage) == before_files, 'Restored file hashes differ')
             require(storage_manifest(restored_system_storage) == before_system_files,
                     'Restored system file hashes differ')
@@ -1444,7 +1778,9 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share(restored, share, preview_hashes)
             self.verify_share_policy(restored, retired_share, grant=retired_grant)
             self.verify_share_policy(restored, following_share, expected_preview=current_hashes)
-            self.verify_review_identity(restored, review)
+            self.verify_review_fixtures(restored, review, 'runtime_restored')
+            self.report['reviewStartupExpiredRowsRemoved'] = compare_review_rows(
+                before_review_rows, self.review_rows('runtime_restored'), int(time.time() * 1000))
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True
             self.verify_project_member(restored, member, project, version, preview_hashes)
             require(self.verify_revisions(restored, project, version, current, zip_path, version_key,
@@ -1464,6 +1800,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'shortSessionsIncludedInDump': True,
                 'nonEmptyMemberScopeReadVerified': True,
                 'newPreviewSessionsBounded': True}
+            # Explicit business writes begin only after the exact restore and read/replay checks.
+            self.verify_restored_invitation(restored, review)
             require(storage_manifest(restored_storage) == expected_restored_files,
                     'Replay or startup changed restored file ownership')
             require(storage_manifest(restored_system_storage) == before_system_files,
@@ -1565,6 +1903,11 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         require(not failures, 'Cleanup failed for owned ' + ','.join(failures))
 
     def redact(self, text):
+        # Browser-created invitation tokens never pass through this process's Api.
+        text = re.sub(r'(?i)(#reviewInvitation=|#review-invitation=)[A-Za-z0-9_-]{43}',
+                      r'\1[REDACTED]', text)
+        text = re.sub(r'''(?i)(\binvitationToken\b[\\'":\s]{1,16})[A-Za-z0-9_-]{43}''',
+                      r'\1[REDACTED]', text)
         for value in sorted(self.secrets_seen, key=len, reverse=True):
             text = text.replace(value, '[REDACTED]')
         return text
@@ -1650,7 +1993,7 @@ def main(argv=None):
                 try:
                     check.cleanup()
                 except VerificationFailure as error:
-                    report.update(status='failed', cleanupError=str(error))
+                    report.update(status='failed', cleanupError=check.redact(str(error)))
                     exit_code = 1
                 diagnostics = check.diagnostics()
     except OSError:
