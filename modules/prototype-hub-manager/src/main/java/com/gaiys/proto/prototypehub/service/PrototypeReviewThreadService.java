@@ -75,6 +75,28 @@ public class PrototypeReviewThreadService {
                 .map(PrototypeReviewThreadService::response);
     }
 
+    /** 内部扩展复用同一页面授权与清单读取边界，不暴露访客凭据或复制权限规则。 */
+    Mono<MemberThread> currentThread(String versionId, String threadId, ReviewPageRequest input) {
+        return memberPage(versionId, input)
+                .flatMap(
+                        scope ->
+                                requireThread(scope, threadId)
+                                        .map(row -> new MemberThread(row, scope)));
+    }
+
+    /** 调用方已按用户顺序加锁；锁内重验不再解析清单或跨文件工作线程。 */
+    Mono<PrototypeReviewThreadEntity> lockedThread(
+            String versionId, ReviewPageRequest input, MemberThread prepared) {
+        return lockedMember(versionId, input, prepared.scope())
+                .flatMap(scope -> requireThread(scope, prepared.thread().getId()));
+    }
+
+    record MemberThread(PrototypeReviewThreadEntity thread, Scope scope) {
+        String actorId() {
+            return scope.actorId();
+        }
+    }
+
     /** 管理详情沿用页面读取的项目EDIT检查，不因持有线程标识而获得额外权限。 */
     public Mono<ReviewThreadResponse> detailMember(
             String versionId, String threadId, ReviewPageRequest input) {

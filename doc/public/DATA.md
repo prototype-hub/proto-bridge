@@ -152,9 +152,15 @@ EasyORM增加 `p_share.review_enabled/review_allow_unverified/review_allow_comme
 | `p_review_session` | 随机Cookie的SHA-256主键、身份等级和范围，最长八小时，不存原始Cookie；verification_level历史NULL按email，未知值拒绝 |
 | `p_review_rate` | 项目与邮箱的OTP发送窗口、项目/Cookie未验证身份窗口及独立的邀请创建窗口，跨副本共用 |
 | `p_review_invitation` | 随机邀请凭据的摘要、指定规范邮箱、固定项目/版本/分享/修订、分享配置/密钥代次及邮箱访客状态版本、创建/到期/消费时间、撤销标记与并发版本；不存原始凭据 |
-| `p_review_thread` | 固定项目/版本/分享/修订/页面及保障等级命名空间中的本人线程；页面元数据、首位访客作者快照、初始摘要、open/resolved状态、并发版本及公开更新时间 |
+| `p_review_thread` | 固定项目/版本/分享/修订/页面及保障等级命名空间中的本人线程；页面元数据、首位访客作者快照、初始摘要、open/resolved状态、并发版本及公开更新时间，另存成员专用负责人和独立并发版本 |
 | `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性、创建时间及可空单图元数据；没有消息编辑/删除或通用附件入口 |
 | `p_review_event` | 同事务领域事件outbox，仅存相关ID、事件类型、作者种类和时间；不存正文、邮箱、凭据，不代表业务发送任务 |
+
+p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_name`（128）、`assignment_version`（Long）、`assignment_updated_at`（Unix毫秒）。旧空值按未分派、版本0及空更新时间解释，不回填猜测的负责人。姓名是分派时快照，available按当前启用账号及owner/editor绑定计算；停用或撤员不自动清空或转交，同一账号重新合格可再次可用。负责人独立于state/config_version/public_updated_at，不改变原公开Thread投影或排序，也不构成授权。
+
+分派写入按稳定账号顺序取用户锁，再取项目、版本锁并重验当前范围及目标资格；独立回执指纹包含目标、expectedVersion与完整范围。重放只返回当前负责人，不能回写历史目标。同版本同目标仅记录回执，实际变化才递增assignment_version并写内部thread.assigned/thread.unassigned事件。用户删除沿原同步事务发现受影响项目，在项目锁内每批最多50条清除负责人ID/姓名、增加分派版本/时间并写thread.unassigned；失败回滚删除，重建相同用户ID不能继承旧分派。版本/项目永久清理沿原线程图删除事件与回执。
+
+这四列没有新增表或文件引用；整库备份及既有整行内容摘要自然包含它们，离线存储引用清单仍为v3。不要因账号停用、撤员或删除把仍保留的线程/图片标为存储孤儿；也不能把既有空字段恢复测试当作非空分派恢复已验。
 
 p_review_message的单图字段为可空image_path、image_content_type、image_size、image_sha256、image_width、image_height；旧消息全部为null，部分缺失或损坏不构成读取授权。image_path只保存服务端生成的相对路径 `projects/{projectId}/review-images/{randomAttemptId}/image`，attempt为43字符随机值，不使用原文件名；实际格式、字节数、SHA-256和宽高来自验证后的原始PNG/JPEG。图片独立于不可变revision/site，不加入已发布manifest，不改变原型包hash或质量报告。
 

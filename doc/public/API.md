@@ -252,7 +252,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 ## 固定页面文字反馈
 
-反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持纯文字线程、网页双向回复、内部备注、解决/重开，以及已有线程回复中的单张手动图片；不含点/矩形/椭圆、初始投稿图片、通用附件、指派、消息编辑删除或业务通知。
+反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持纯文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人，以及已有线程回复中的单张手动图片；不含点/矩形/椭圆、初始投稿图片、通用附件、全局分派队列、消息编辑删除或业务通知。
 
 公开接口基于 `/prototype-hub/public/shares/{token}/review`，所有请求均要求受信Origin、当前HttpOnly Cookie、`X-Review-CSRF`，返回no-store，并提交 `{revisionId,accessKey,pageId}`：
 
@@ -302,6 +302,24 @@ text经strip后为1–4000个Java字符，拒绝Unicode空白文本，仅按纯�
 访客新写入使用独立限频：每项目每小时300次、每保障等级与guestId每小时60次；幂等重放不重复占用次数，PM写入不占该额度。线程/消息、领域事件outbox和回执同事务，失败整体回滚。基础版只保留30天领域事件，由现有周期每次最多清理50条，不建立业务发送任务或调用邮件通道；事件到期不删除线程或消息。
 
 安全错误为403 / `PROTOTYPE_HUB_REVIEW_COMMENTS_DISABLED`、403 / `PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED`，后者允许显式重新验证但不能自动提交；线程缺失或不属当前本人范围统一404 / `PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE`，页面无效为404 / `PROTOTYPE_HUB_REVIEW_PAGE_INVALID`，状态CAS冲突为409 / `PROTOTYPE_HUB_REVIEW_THREAD_CONFLICT`。原分享、Origin、Cookie、CSRF和429限频错误保持，不回显输入或内部备注信息。
+
+### 成员线程负责人
+
+负责人仅用于成员预览中选中的已有线程，不授予项目、版本或分享访问权，也不发送通知。以下接口基于 `/prototype-hub/versions/{versionId}/review-threads/{threadId}`，始终提交当前 `{revisionId,pageId}` 并校验其与线程的完整归属；详情和候选要求版本query，设置/清除要求版本save，各项同时要求当前项目EDIT或既有有效管理员例外。公开分享没有对应入口，原Thread投影不增加负责人字段，公开更新时间、状态configVersion、消息计数和排序均不受分派影响。
+
+| 请求 | 额外输入 | 结果 |
+| --- | --- | --- |
+| `POST /assignment/_detail` | 无 | Assignment |
+| `POST /assignment/_candidates` | `{pageIndex:0,pageSize:20,keyword?}` | `{userId,name}`的标准PagerResult |
+| `PUT /assignment` | `{assigneeId,expectedVersion,clientRequestId}` | Assignment；assigneeId为null时清除 |
+
+Assignment为 `{threadId,assignmentVersion,updatedAt,assignee:null|{userId,name,available}}`；初始assignmentVersion为0、updatedAt为null。name为最多128字符的分派姓名快照。available表示该账号当前启用且仍是本项目owner或editor，不是资源权限凭据。停用、撤员或角色变化使其不可用，不自动改派；同一账号重新启用或重新成为合格成员后可再次可用。账号删除会同事务清除负责人，避免以后重建相同ID继承旧分派。
+
+候选仅包含当前启用的项目owner/editor，去重后按name升序、userId升序排列；不会把无项目绑定的管理员、查看者或其他平台账号列为候选，不返回username、邮箱。pageIndex为0–10000，pageSize为1–50，默认分别0、20；keyword最多100字符，按姓名字面包含匹配，total为服务端真实数量。详情独立加载，不为线程列表逐条查询负责人。
+
+设置/清除的expectedVersion必须为非负整数，使用独立assignmentVersion，不能传线程状态configVersion；assigneeId必须为有效字符串或null，空白或非字符串无效。当前授权先于幂等重放；分派使用独立操作指纹，包含完整范围、目标（清除单独区分）及expectedVersion。同键同语义返回当前Assignment，不恢复原目标或重复事件；旧目标已不可用不妨碍有效旧键重放。同键不同语义返回409幂等冲突。新操作先检查并发版本，再校验非空目标当前资格，即使仍选原目标也不能绕过停用或撤员；同版本同合格目标不改变版本/时间/事件但记录回执，清除未分派目标也为无变更。实际设置或清除只增加assignmentVersion、更新时间，并同事务写入thread.assigned/thread.unassigned事件与回执。
+
+并发冲突后只刷新负责人并由用户重新确认，不自动覆盖；网络结果未知保留原键和原请求供手动重试。操作不提交或清空回复文字、图片、状态操作和页面选择。分派内容只留在成员外壳内存，不传入公开分享、URL、持久存储、原型iframe或postMessage。当前不提供全局工作队列、主副负责人、自动转交或通知发送。
 
 ## HTML 文件夹上传
 

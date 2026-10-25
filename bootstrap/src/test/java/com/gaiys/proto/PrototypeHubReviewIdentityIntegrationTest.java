@@ -16,9 +16,11 @@ import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CyclicBarrier;
 import java.util.concurrent.Executors;
@@ -2998,6 +3000,570 @@ class PrototypeHubReviewIdentityIntegrationTest {
                 200);
     }
 
+    private Map<String, Object> assignmentFields(String target, long expected, String key) {
+        var fields = new HashMap<String, Object>();
+        fields.put("assigneeId", target);
+        fields.put("expectedVersion", expected);
+        fields.put("clientRequestId", key);
+        return fields;
+    }
+
+    private String assignmentThread(Fixture f, Browser guest) {
+        return feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("待分派反馈"), 200)
+                .path("id")
+                .asText();
+    }
+
+    private JsonNode assignment(Fixture f, String thread, String actor) {
+        return pmFeedback(f, thread + "/assignment/_detail", HttpMethod.POST, actor, Map.of(), 200);
+    }
+
+    @Test
+    void assignmentCandidatesArePagedEligibleAndPrivateWithoutPublicMetadataChanges()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread = assignmentThread(f, guest);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version", "候选%_编辑者");
+        Actor second = actor(List.of("query"), "prototype-hub-version", "候选另一人");
+        Actor viewer = actor(List.of("query", "save"), "prototype-hub-version", "候选查看者");
+        Actor disabled = actor(List.of("query", "save"), "prototype-hub-version", "候选停用");
+        Actor outsider = actor(List.of("query", "save"), "prototype-hub-version", "候选外部");
+        member(f, editor, "editor");
+        member(f, second, "editor");
+        member(f, viewer, "viewer");
+        member(f, disabled, "editor");
+        database.sql("update s_user set status=0 where id=:id")
+                .bind("id", disabled.id)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        JsonNode original =
+                feedback(
+                        f, guest, HttpMethod.POST, "threads/" + thread + "/_detail", Map.of(), 200);
+        JsonNode initial = assignment(f, thread, editor.token);
+        assertEquals(0, initial.path("assignmentVersion").asLong());
+        assertTrue(initial.path("assignee").isNull());
+        assertTrue(initial.path("updatedAt").isNull());
+        JsonNode page =
+                pmFeedback(
+                        f,
+                        thread + "/assignment/_candidates",
+                        HttpMethod.POST,
+                        editor.token,
+                        Map.of("keyword", "候选", "pageSize", 1),
+                        200);
+        assertEquals(2, page.path("total").asInt());
+        assertEquals(editor.id, page.path("data").get(0).path("userId").asText());
+        assertEquals(2, page.path("data").get(0).size());
+        JsonNode next =
+                pmFeedback(
+                        f,
+                        thread + "/assignment/_candidates",
+                        HttpMethod.POST,
+                        editor.token,
+                        Map.of("keyword", "候选", "pageSize", 1, "pageIndex", 1),
+                        200);
+        assertEquals(second.id, next.path("data").get(0).path("userId").asText());
+        JsonNode beyond =
+                pmFeedback(
+                        f,
+                        thread + "/assignment/_candidates",
+                        HttpMethod.POST,
+                        editor.token,
+                        Map.of("keyword", "候选", "pageSize", 1, "pageIndex", 99),
+                        200);
+        assertEquals(2, beyond.path("total").asInt());
+        assertEquals(99, beyond.path("pageIndex").asInt());
+        assertEquals(0, beyond.path("data").size());
+        assertEquals(
+                1,
+                pmFeedback(
+                                f,
+                                thread + "/assignment/_candidates",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("keyword", "%_"),
+                                200)
+                        .path("total")
+                        .asInt());
+        JsonNode all =
+                pmFeedback(
+                        f,
+                        thread + "/assignment/_candidates",
+                        HttpMethod.POST,
+                        editor.token,
+                        Map.of(),
+                        200);
+        assertEquals(3, all.path("total").asInt());
+        String owner = text("select owner_id as value from p_project where id=:id", f.project);
+        assertEquals(
+                Set.of(owner, editor.id, second.id),
+                new HashSet<>(all.path("data").findValuesAsText("userId")));
+        assertEquals(
+                1,
+                all.path("data").findValuesAsText("userId").stream().filter(owner::equals).count());
+        JsonNode assigned =
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        editor.token,
+                        assignmentFields(editor.id, 0, "initial-assignment"),
+                        200);
+        assertEquals(1, assigned.path("assignmentVersion").asLong());
+        assertTrue(assigned.path("updatedAt").asLong() > 0);
+        assertEquals("候选%_编辑者", assigned.path("assignee").path("name").asText());
+        assertTrue(assigned.path("assignee").path("available").asBoolean());
+        database.sql("update s_user set name='改名' where id=:id")
+                .bind("id", editor.id)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertEquals(assigned, assignment(f, thread, admin));
+        assertEquals(
+                original,
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/_detail",
+                        Map.of(),
+                        200));
+        assertEquals(
+                original,
+                pmFeedback(f, thread + "/_detail", HttpMethod.POST, admin, Map.of(), 200));
+        assertEquals(1, count("p_review_message"));
+        assertEquals(2, count("p_review_event"));
+        assertFalse(assigned.toString().contains("username"));
+        assertFalse(assigned.toString().contains("email"));
+        member(f, editor, "viewer");
+        assertFalse(assignment(f, thread, admin).path("assignee").path("available").asBoolean());
+        member(f, editor, "editor");
+        assertTrue(assignment(f, thread, admin).path("assignee").path("available").asBoolean());
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + f.project + "/members/" + editor.id,
+                admin,
+                null,
+                200);
+        assertFalse(assignment(f, thread, admin).path("assignee").path("available").asBoolean());
+        member(f, editor, "editor");
+        database.sql("update s_user set status=0 where id=:id")
+                .bind("id", editor.id)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertFalse(assignment(f, thread, admin).path("assignee").path("available").asBoolean());
+        for (String target : List.of(viewer.id, disabled.id, outsider.id))
+            pmFeedback(
+                    f,
+                    thread + "/assignment",
+                    HttpMethod.PUT,
+                    admin,
+                    assignmentFields(target, 1, "bad-" + target),
+                    400);
+        assertEquals(
+                original,
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/_detail",
+                        Map.of(),
+                        200));
+        database.sql("update p_project set owner_id=null where id=:id")
+                .bind("id", f.project)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        JsonNode ownerless =
+                pmFeedback(
+                        f,
+                        thread + "/assignment/_candidates",
+                        HttpMethod.POST,
+                        admin,
+                        Map.of(),
+                        200);
+        assertEquals(1, ownerless.path("total").asInt());
+        assertEquals(List.of(second.id), ownerless.path("data").findValuesAsText("userId"));
+    }
+
+    @Test
+    void assignmentCasReplayNoopConcurrencyAndEventRollbackAreAtomic() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread = assignmentThread(f, guest);
+        Actor a = actor(List.of("query", "save"), "prototype-hub-version", "A");
+        Actor b = actor(List.of("query", "save"), "prototype-hub-version", "B");
+        member(f, a, "editor");
+        member(f, b, "editor");
+        var set = assignmentFields(a.id, 0, "assignment-once");
+        var barrier = new CyclicBarrier(2);
+        JsonNode first;
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var one =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return pmFeedback(
+                                        f, thread + "/assignment", HttpMethod.PUT, admin, set, 200);
+                            });
+            var two =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return pmFeedback(
+                                        f, thread + "/assignment", HttpMethod.PUT, admin, set, 200);
+                            });
+            first = one.get(20, TimeUnit.SECONDS);
+            assertEquals(first, two.get(20, TimeUnit.SECONDS));
+        }
+        assertEquals(2, count("p_review_event"));
+        assertEquals(2, count("p_creation_receipt"));
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                admin,
+                assignmentFields(b.id, 0, "assignment-once"),
+                409);
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                admin,
+                assignmentFields(a.id, 0, "assignment-stale"),
+                409);
+        assertEquals(
+                first,
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        admin,
+                        assignmentFields(a.id, 1, "assignment-noop"),
+                        200));
+        assertEquals(2, count("p_review_event"));
+        assertEquals(3, count("p_creation_receipt"));
+        member(f, a, "viewer");
+        assertFalse(
+                pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, set, 200)
+                        .path("assignee")
+                        .path("available")
+                        .asBoolean());
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                admin,
+                assignmentFields(a.id, 1, "new-key-unavailable"),
+                400);
+        JsonNode changed =
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        admin,
+                        assignmentFields(b.id, 1, "assignment-next"),
+                        200);
+        assertEquals(2, changed.path("assignmentVersion").asLong());
+        assertEquals(
+                changed, pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, set, 200));
+        var clear = assignmentFields(null, 2, "assignment-clear");
+        long receipts = count("p_creation_receipt"), events = count("p_review_event");
+        sql(
+                "create function reject_assignment_event_fixture() returns trigger language plpgsql as $$ begin raise exception 'fixture assignment failure'; end $$");
+        sql(
+                "create trigger reject_assignment_event_fixture before insert on p_review_event for each row execute function reject_assignment_event_fixture()");
+        try {
+            pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, clear, 500);
+        } finally {
+            sql("drop trigger reject_assignment_event_fixture on p_review_event");
+            sql("drop function reject_assignment_event_fixture()");
+        }
+        assertEquals(changed, assignment(f, thread, admin));
+        assertEquals(receipts, count("p_creation_receipt"));
+        assertEquals(events, count("p_review_event"));
+        JsonNode cleared = pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, clear, 200);
+        assertTrue(cleared.path("assignee").isNull());
+        assertEquals(3, cleared.path("assignmentVersion").asLong());
+        assertEquals(
+                cleared,
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        admin,
+                        assignmentFields(null, 3, "clear-noop"),
+                        200));
+        assertEquals(events + 1, count("p_review_event"));
+        member(f, a, "editor");
+        var race = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            List<Future<Integer>> results = new ArrayList<>();
+            for (String target : List.of(a.id, b.id))
+                results.add(
+                        pool.submit(
+                                () -> {
+                                    race.await(5, TimeUnit.SECONDS);
+                                    var body =
+                                            new HashMap<String, Object>(
+                                                    assignmentFields(target, 3, "race-" + target));
+                                    body.put("revisionId", f.grant.path("revisionId").asText());
+                                    body.put("pageId", feedbackPage());
+                                    return client.put()
+                                            .uri(
+                                                    "/api/prototype-hub/versions/"
+                                                            + f.version.path("id").asText()
+                                                            + "/review-threads/"
+                                                            + thread
+                                                            + "/assignment")
+                                            .header("X-Access-Token", admin)
+                                            .bodyValue(body)
+                                            .exchange()
+                                            .returnResult(JsonNode.class)
+                                            .getStatus()
+                                            .value();
+                                }));
+            var statuses =
+                    List.of(
+                            results.get(0).get(20, TimeUnit.SECONDS),
+                            results.get(1).get(20, TimeUnit.SECONDS));
+            assertTrue(statuses.contains(200));
+            assertTrue(statuses.contains(409));
+        }
+        assertEquals(4, assignment(f, thread, admin).path("assignmentVersion").asLong());
+        assertEquals(events + 2, count("p_review_event"));
+        assertEquals(1, count("p_review_message"));
+    }
+
+    @Test
+    void assignmentRequiresCurrentScopeAndActionAndRejectsInvalidTargetTypes() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread = assignmentThread(f, guest);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version"),
+                viewer = actor(List.of("query", "save"), "prototype-hub-version"),
+                outsider = actor(List.of("query", "save"), "prototype-hub-version"),
+                query = actor(List.of("query"), "prototype-hub-version"),
+                save = actor(List.of("save"), "prototype-hub-version");
+        for (Actor a : List.of(editor, query, save)) member(f, a, "editor");
+        member(f, viewer, "viewer");
+        for (String suffix : List.of("/_detail", "/_candidates")) {
+            pmFeedback(
+                    f,
+                    thread + "/assignment" + suffix,
+                    HttpMethod.POST,
+                    viewer.token,
+                    Map.of(),
+                    403);
+            pmFeedback(
+                    f,
+                    thread + "/assignment" + suffix,
+                    HttpMethod.POST,
+                    outsider.token,
+                    Map.of(),
+                    404);
+            pmFeedback(
+                    f, thread + "/assignment" + suffix, HttpMethod.POST, save.token, Map.of(), 403);
+            pmFeedback(f, thread + "/assignment" + suffix, HttpMethod.POST, null, Map.of(), 401);
+            pmFeedback(
+                    f,
+                    thread + "/assignment" + suffix,
+                    HttpMethod.POST,
+                    query.token,
+                    Map.of(),
+                    200);
+        }
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                query.token,
+                assignmentFields(editor.id, 0, "no-save"),
+                403);
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                viewer.token,
+                assignmentFields(editor.id, 0, "viewer"),
+                403);
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                outsider.token,
+                assignmentFields(editor.id, 0, "outsider"),
+                404);
+        for (Object invalid :
+                List.of("", "  ", "\u2003", 100, true, List.of("id"), Map.of("id", editor.id))) {
+            var input = assignmentFields(null, 0, "invalid");
+            input.put("assigneeId", invalid);
+            pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, input, 400);
+        }
+        for (var input :
+                List.of(
+                        Map.<String, Object>of(
+                                "expectedVersion", -1, "clientRequestId", "negative"),
+                        Map.<String, Object>of("expectedVersion", 0),
+                        Map.<String, Object>of("expectedVersion", 0, "clientRequestId", "bad key")))
+            pmFeedback(f, thread + "/assignment", HttpMethod.PUT, admin, input, 400);
+        for (var input :
+                List.of(
+                        Map.<String, Object>of("pageSize", 51),
+                        Map.<String, Object>of("pageIndex", -1),
+                        Map.<String, Object>of("keyword", "x".repeat(101))))
+            pmFeedback(f, thread + "/assignment/_candidates", HttpMethod.POST, admin, input, 400);
+        pmFeedback(
+                f,
+                thread + "/assignment/_detail",
+                HttpMethod.POST,
+                admin,
+                Map.of("pageId", "0".repeat(64)),
+                404);
+        pmFeedback(
+                f,
+                thread + "/assignment/_detail",
+                HttpMethod.POST,
+                admin,
+                Map.of("revisionId", "absent"),
+                404);
+        pmFeedback(f, "absent/assignment/_detail", HttpMethod.POST, admin, Map.of(), 404);
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/" + thread + "/assignment/_detail",
+                Map.of(),
+                404);
+        JsonNode assigned =
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        save.token,
+                        assignmentFields(editor.id, 0, "save-only"),
+                        200);
+        assertEquals(1, assigned.path("assignmentVersion").asLong());
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + f.version.path("id").asText(),
+                admin,
+                null,
+                200);
+        pmFeedback(f, thread + "/assignment/_detail", HttpMethod.POST, admin, Map.of(), 404);
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                admin,
+                assignmentFields(editor.id, 1, "after-delete"),
+                404);
+    }
+
+    @Test
+    void assignmentDeletedUserCleanupIsBoundedAtomicAndSameIdCannotInherit() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread = assignmentThread(f, guest);
+        Actor target = actor(List.of("query", "save"), "prototype-hub-version", "责任姓名");
+        member(f, target, "editor");
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                admin,
+                assignmentFields(target.id, 0, "assign-before-delete"),
+                200);
+        String username = text("select username as value from s_user where id=:id", target.id);
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + f.project + "/members/" + target.id,
+                admin,
+                null,
+                200);
+        JsonNode publicBefore =
+                feedback(
+                        f, guest, HttpMethod.POST, "threads/" + thread + "/_detail", Map.of(), 200);
+        // 足量旧责任行跨越100项发现游标和50项清理批次；来源为同一有效固定页面线程快照。
+        database.sql(
+                        "insert into p_review_thread(id,project_id,version_id,revision_id,share_id,page_id,page_name,page_path,guest_id,verification_level,author_name,author_company,summary,state,config_version,create_time,public_updated_at,assignee_id,assignee_name,assignment_version,assignment_updated_at) select 'assignment-batch-'||n,t.project_id,t.version_id,t.revision_id,t.share_id,t.page_id,t.page_name,t.page_path,t.guest_id,t.verification_level,t.author_name,t.author_company,t.summary,t.state,t.config_version,t.create_time,t.public_updated_at,t.assignee_id,t.assignee_name,t.assignment_version,t.assignment_updated_at from p_review_thread t cross join generate_series(1,101) n where t.id=:id")
+                .bind("id", thread)
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        sql(
+                "create function reject_assignment_cleanup_fixture() returns trigger language plpgsql as $$ begin if OLD.assignee_id is not null and NEW.assignee_id is null then raise exception 'fixture cleanup failure'; end if; return NEW; end $$");
+        sql(
+                "create trigger reject_assignment_cleanup_fixture before update on p_review_thread for each row execute function reject_assignment_cleanup_fixture()");
+        try {
+            management(HttpMethod.DELETE, "/user/" + target.id, admin, null, 500);
+        } finally {
+            sql("drop trigger reject_assignment_cleanup_fixture on p_review_thread");
+            sql("drop function reject_assignment_cleanup_fixture()");
+        }
+        assertEquals(1, number("select count(*) as value from s_user where id=:id", target.id));
+        assertEquals(
+                102,
+                number(
+                        "select count(*) as value from p_review_thread where assignee_id=:id",
+                        target.id));
+        assertEquals(2, count("p_review_event"));
+        management(HttpMethod.DELETE, "/user/" + target.id, admin, null, 200);
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_review_thread where assignee_id=:id",
+                        target.id));
+        assertEquals(
+                102,
+                number(
+                        "select count(*) as value from p_review_thread where project_id=:id and assignee_id is null and assignee_name is null and assignment_version=2 and assignment_updated_at is not null",
+                        f.project));
+        assertEquals(104, count("p_review_event"));
+        assertEquals(
+                publicBefore,
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/_detail",
+                        Map.of(),
+                        200));
+        JsonNode recreated =
+                management(
+                        HttpMethod.POST,
+                        "/user/detail/_create",
+                        admin,
+                        Map.of("name", "同ID新账号", "username", username, "password", PASSWORD),
+                        200);
+        assertEquals(target.id, recreated.path("id").asText());
+        member(f, new Actor(target.id, "unused"), "editor");
+        JsonNode current = assignment(f, thread, admin);
+        assertTrue(current.path("assignee").isNull());
+        assertEquals(2, current.path("assignmentVersion").asLong());
+        assertEquals(
+                current,
+                pmFeedback(
+                        f,
+                        thread + "/assignment",
+                        HttpMethod.PUT,
+                        admin,
+                        assignmentFields(target.id, 0, "assign-before-delete"),
+                        200));
+        database.sql("update p_version set deleted_time=1 where id=:id")
+                .bind("id", f.version.path("id").asText())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(retention.purgeVersion(f.version.path("id").asText()).block(TIMEOUT));
+        assertEquals(0, count("p_review_thread"));
+        assertEquals(0, count("p_review_event"));
+        assertEquals(0, count("p_creation_receipt"));
+    }
+
     @Test
     void pageFeedbackMemberNamesUseExistingUserModelLimitWithoutTruncation() throws Exception {
         Fixture f = feedbackFixture();
@@ -3422,6 +3988,14 @@ class PrototypeHubReviewIdentityIntegrationTest {
                             default -> throw new IllegalArgumentException("Unknown fixture table");
                         })
                 .map((r, m) -> r.get("value", Long.class))
+                .one()
+                .block(TIMEOUT);
+    }
+
+    private String text(String statement, String id) {
+        return database.sql(statement)
+                .bind("id", id)
+                .map((row, metadata) -> row.get("value", String.class))
                 .one()
                 .block(TIMEOUT);
     }

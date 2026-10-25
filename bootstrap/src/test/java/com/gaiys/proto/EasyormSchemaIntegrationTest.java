@@ -324,6 +324,44 @@ class EasyormSchemaIntegrationTest {
     }
 
     @Test
+    void reviewAssignmentUpgradeKeepsLegacyThreadAndImageWithDocumentedNullableColumns()
+            throws Exception {
+        execute(
+                "INSERT INTO p_review_thread(id,project_id,version_id,revision_id,share_id,page_id,page_name,page_path,guest_id,verification_level,author_name,summary,state,config_version,create_time,public_updated_at) VALUES ('legacy-assignment-thread','p','v','r','s','page','Page','index.html','g','email','Guest','legacy summary','resolved',7,1,2)");
+        execute(
+                "INSERT INTO p_review_message(id,project_id,version_id,revision_id,thread_id,text,author_type,author_name,visibility,create_time,image_path,image_content_type,image_size,image_sha256,image_width,image_height) VALUES ('legacy-assignment-image','p','v','r','legacy-assignment-thread','text with image','member','PM','internal',3,'projects/p/review-images/fixture/image','image/png',100,'hash',2,3)");
+        try {
+            for (String column :
+                    List.of(
+                            "assignee_id",
+                            "assignee_name",
+                            "assignment_version",
+                            "assignment_updated_at"))
+                execute("ALTER TABLE p_review_thread DROP COLUMN " + column);
+            for (int i = 0; i < 2; i++) synchronize(PrototypeReviewThreadEntity.class);
+            assertEquals(
+                    "legacy summary|resolved|7|1|2|true",
+                    scalar(
+                            "SELECT summary||'|'||state||'|'||config_version||'|'||create_time||'|'||public_updated_at||'|'||(assignee_id IS NULL AND assignee_name IS NULL AND assignment_version IS NULL AND assignment_updated_at IS NULL)::text FROM p_review_thread WHERE id='legacy-assignment-thread'"));
+            assertEquals(
+                    "text with image|internal|image/png|100|2|3",
+                    scalar(
+                            "SELECT text||'|'||visibility||'|'||image_content_type||'|'||image_size||'|'||image_width||'|'||image_height FROM p_review_message WHERE id='legacy-assignment-image'"));
+            assertEquals(
+                    "4",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_thread' AND column_name IN ('assignee_id','assignee_name','assignment_version','assignment_updated_at') AND is_nullable='YES' AND coalesce(col_description('p_review_thread'::regclass,ordinal_position),'')<>''"));
+            assertEquals(
+                    "1",
+                    scalar(
+                            "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND indexname='idx_review_thread_assignee'"));
+        } finally {
+            execute("DELETE FROM p_review_message WHERE id='legacy-assignment-image'");
+            execute("DELETE FROM p_review_thread WHERE id='legacy-assignment-thread'");
+        }
+    }
+
+    @Test
     void reviewImageUpgradePreservesOldTextRowsAndDocumentsNullableColumns() throws Exception {
         execute(
                 "INSERT INTO p_review_message(id,project_id,version_id,revision_id,thread_id,text,author_type,author_name,visibility,create_time) VALUES ('legacy-image-message','p','v','r','t','historic text','member','PM','public',1)");

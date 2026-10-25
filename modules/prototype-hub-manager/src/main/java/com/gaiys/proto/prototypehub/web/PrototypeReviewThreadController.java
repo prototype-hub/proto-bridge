@@ -1,11 +1,16 @@
 package com.gaiys.proto.prototypehub.web;
 
+import com.gaiys.proto.prototypehub.service.PrototypeReviewAssignmentService;
 import com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService;
+import com.gaiys.proto.prototypehub.web.request.ReviewAssignmentCandidateRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewAssignmentRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
+import com.gaiys.proto.prototypehub.web.response.ReviewAssigneeResponse;
+import com.gaiys.proto.prototypehub.web.response.ReviewAssignmentResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewThreadResponse;
 import com.gaiys.proto.prototypehub.web.validation.ReviewImageMultipart;
@@ -39,6 +44,37 @@ import reactor.core.publisher.Mono;
 public class PrototypeReviewThreadController {
     private final PrototypeReviewThreadService threads;
     private final ReviewImageMultipart multipart;
+    private final PrototypeReviewAssignmentService assignments;
+
+    @PostMapping("/{threadId}/assignment/_detail")
+    @QueryAction
+    @Operation(summary = "读取成员专用线程分派快照")
+    public Mono<ReviewAssignmentResponse> assignment(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            @Valid @RequestBody ReviewPageRequest input) {
+        return assignments.detail(versionId, threadId, input);
+    }
+
+    @PostMapping("/{threadId}/assignment/_candidates")
+    @QueryAction
+    @Operation(summary = "分页选择当前有效项目所有者或编辑者")
+    public Mono<PagerResult<ReviewAssigneeResponse>> assignees(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            @Valid @RequestBody ReviewAssignmentCandidateRequest input) {
+        return assignments.candidates(versionId, threadId, input);
+    }
+
+    @PutMapping("/{threadId}/assignment")
+    @SaveAction
+    @Operation(summary = "独立CAS分派或清除线程负责人，不修改客户可见元数据")
+    public Mono<ReviewAssignmentResponse> assign(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            @Valid @RequestBody ReviewAssignmentRequest input) {
+        return assignments.assign(versionId, threadId, input);
+    }
 
     @PostMapping("/_query")
     @QueryAction
