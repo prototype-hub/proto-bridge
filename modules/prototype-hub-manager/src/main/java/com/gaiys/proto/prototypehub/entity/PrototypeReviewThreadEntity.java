@@ -1,11 +1,15 @@
 package com.gaiys.proto.prototypehub.entity;
 
+import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.sql.JDBCType;
 import javax.persistence.Column;
 import javax.persistence.Index;
 import javax.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
+import org.hswebframework.ezorm.rdb.mapping.annotation.ColumnType;
+import org.hswebframework.ezorm.rdb.mapping.annotation.JsonCodec;
 import org.hswebframework.web.api.crud.entity.GenericEntity;
 
 /** 页面级客户文本线程；作者与页面快照不可变，状态版本不受内部备注影响。 */
@@ -51,6 +55,12 @@ public class PrototypeReviewThreadEntity extends GenericEntity<String> {
     @Column(name = "page_path", length = 1024, nullable = false)
     @Schema(description = "服务器清单页面路径快照")
     private String pagePath;
+
+    @Column
+    @JsonCodec
+    @ColumnType(jdbcType = JDBCType.LONGVARCHAR, javaType = String.class)
+    @Schema(description = "不可变根文档CSS像素位置快照，历史线程为空")
+    private ReviewAnchor anchor;
 
     @Column(name = "guest_id", length = 64, nullable = false)
     @Schema(description = "服务端会话解析的作者标识，不对外公开")

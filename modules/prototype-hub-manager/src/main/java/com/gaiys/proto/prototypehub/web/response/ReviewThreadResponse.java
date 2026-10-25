@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.web.response;
 
+import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 /** 页面评审的显式投影视图，不公开作者ID、邮箱或凭据。 */
@@ -17,4 +18,5 @@ public record ReviewThreadResponse(
         @Schema(description = "open或resolved") String state,
         @Schema(description = "仅状态变更递增的并发版本") long configVersion,
         @Schema(description = "创建Unix毫秒") long createdAt,
-        @Schema(description = "最近公开更新Unix毫秒，不含内部备注") long updatedAt) {}
+        @Schema(description = "最近公开更新Unix毫秒，不含内部备注") long updatedAt,
+        @Schema(description = "不可变根文档CSS像素位置快照，历史或未指定时为空") ReviewAnchor anchor) {}

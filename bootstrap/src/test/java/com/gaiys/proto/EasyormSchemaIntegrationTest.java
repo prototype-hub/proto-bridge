@@ -324,6 +324,34 @@ class EasyormSchemaIntegrationTest {
     }
 
     @Test
+    void reviewAnchorUpgradeKeepsHistoricalThreadAssignmentAndImageAcrossRepeatedSync()
+            throws Exception {
+        execute(
+                "INSERT INTO p_review_thread(id,project_id,version_id,revision_id,share_id,page_id,page_name,page_path,guest_id,verification_level,author_name,summary,state,config_version,assignee_id,assignee_name,assignment_version,assignment_updated_at,create_time,public_updated_at) VALUES ('legacy-anchor-thread','p','v','r','s','page','Page','index.html','g','email','Guest','legacy summary','resolved',7,'u','PM',3,4,1,2)");
+        execute(
+                "INSERT INTO p_review_message(id,project_id,version_id,revision_id,thread_id,text,author_type,author_name,visibility,create_time,image_path,image_content_type,image_size,image_sha256,image_width,image_height) VALUES ('legacy-anchor-image','p','v','r','legacy-anchor-thread','text with image','member','PM','internal',3,'projects/p/review-images/fixture/image','image/png',100,'hash',2,3)");
+        try {
+            execute("ALTER TABLE p_review_thread DROP COLUMN anchor");
+            for (int i = 0; i < 2; i++) synchronize(PrototypeReviewThreadEntity.class);
+            assertEquals(
+                    "legacy summary|resolved|7|1|2|u|PM|3|4|true",
+                    scalar(
+                            "SELECT summary||'|'||state||'|'||config_version||'|'||create_time||'|'||public_updated_at||'|'||assignee_id||'|'||assignee_name||'|'||assignment_version||'|'||assignment_updated_at||'|'||(anchor IS NULL)::text FROM p_review_thread WHERE id='legacy-anchor-thread'"));
+            assertEquals(
+                    "text with image|internal|image/png|100|2|3",
+                    scalar(
+                            "SELECT text||'|'||visibility||'|'||image_content_type||'|'||image_size||'|'||image_width||'|'||image_height FROM p_review_message WHERE id='legacy-anchor-image'"));
+            assertEquals(
+                    "YES|text|true",
+                    scalar(
+                            "SELECT is_nullable||'|'||data_type||'|'||(coalesce(col_description('p_review_thread'::regclass,ordinal_position),'')<>'')::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_thread' AND column_name='anchor'"));
+        } finally {
+            execute("DELETE FROM p_review_message WHERE id='legacy-anchor-image'");
+            execute("DELETE FROM p_review_thread WHERE id='legacy-anchor-thread'");
+        }
+    }
+
+    @Test
     void reviewAssignmentUpgradeKeepsLegacyThreadAndImageWithDocumentedNullableColumns()
             throws Exception {
         execute(

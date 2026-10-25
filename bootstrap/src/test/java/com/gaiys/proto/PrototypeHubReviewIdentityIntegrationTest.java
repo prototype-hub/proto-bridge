@@ -2505,6 +2505,229 @@ class PrototypeHubReviewIdentityIntegrationTest {
     }
 
     @Test
+    void rootAnchorsRoundTripTypedJsonForEveryShapeAndRemainCreateOnly() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "锚点客户", null, 200);
+        for (String shape : List.of("point", "rect", "ellipse")) {
+            var fields = new HashMap<>(feedbackFields("位置快照"));
+            fields.put("anchor", rootAnchor(shape));
+            JsonNode created = feedback(f, guest, HttpMethod.POST, "threads", fields, 200);
+            String id = created.path("id").asText();
+            JsonNode loaded =
+                    feedback(
+                            f, guest, HttpMethod.POST, "threads/" + id + "/_detail", Map.of(), 200);
+            assertEquals(created, loaded);
+            assertEquals(shape, loaded.path("anchor").path("shape").asText());
+            assertEquals(10, loaded.path("anchor").size());
+            assertEquals(
+                    created.path("anchor"),
+                    pmFeedback(f, id + "/_detail", HttpMethod.POST, admin, Map.of(), 200)
+                            .path("anchor"));
+            assertEquals(created, feedback(f, guest, HttpMethod.POST, "threads", fields, 200));
+            var reply = new HashMap<>(feedbackFields("普通回复不能改变位置"));
+            reply.put("anchor", rootAnchor("point"));
+            feedback(f, guest, HttpMethod.POST, "threads/" + id + "/messages", reply, 200);
+            assertEquals(
+                    created.path("anchor"),
+                    feedback(f, guest, HttpMethod.POST, "threads/" + id + "/_detail", Map.of(), 200)
+                            .path("anchor"));
+            Browser stranger = unverified(f, context(f, null), "其他人", null, 200);
+            feedback(f, stranger, HttpMethod.POST, "threads/" + id + "/_detail", Map.of(), 404);
+        }
+        JsonNode query = feedback(f, guest, HttpMethod.POST, "threads/_query", Map.of(), 200);
+        assertEquals(3, query.path("total").asInt());
+        assertTrue(query.path("data").get(0).path("anchor").isObject());
+        var old = new HashMap<>(feedbackFields("无锚旧语义"));
+        JsonNode plain = feedback(f, guest, HttpMethod.POST, "threads", old, 200);
+        assertTrue(plain.path("anchor").isNull());
+        old.put("anchor", null);
+        assertEquals(plain, feedback(f, guest, HttpMethod.POST, "threads", old, 200));
+        old.put("anchor", rootAnchor("point"));
+        feedback(f, guest, HttpMethod.POST, "threads", old, 409);
+    }
+
+    @Test
+    void rootAnchorHttpRejectsCoercionShapeAndBoundsBeforeCreatingAnyGraph() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        for (String field :
+                List.of(
+                        "x",
+                        "y",
+                        "width",
+                        "height",
+                        "documentWidth",
+                        "documentHeight",
+                        "viewportWidth",
+                        "viewportHeight")) {
+            for (Object invalid : List.of("1", 1.0, -1)) {
+                var anchor = rootAnchor("rect");
+                anchor.put(field, invalid);
+                var values = new HashMap<>(feedbackFields("无效几何"));
+                values.put("anchor", anchor);
+                feedback(f, guest, HttpMethod.POST, "threads", values, 400);
+            }
+        }
+        for (Map<String, Object> invalid :
+                List.of(
+                        Map.<String, Object>of("shape", "triangle"),
+                        Map.<String, Object>of("space", "viewport"),
+                        Map.<String, Object>of("shape", "point"),
+                        Map.<String, Object>of("width", 0),
+                        Map.<String, Object>of("height", 0),
+                        Map.<String, Object>of("x", 1000),
+                        Map.<String, Object>of("documentWidth", 1_000_001),
+                        Map.<String, Object>of("viewportWidth", 16_385),
+                        Map.<String, Object>of("selector", "not-persisted"))) {
+            var anchor = rootAnchor("rect");
+            anchor.putAll(invalid);
+            var values = new HashMap<>(feedbackFields("无效几何"));
+            values.put("anchor", anchor);
+            imageCreate(f, guest, values, replyImage("png", 3), 400);
+        }
+        assertEquals(0, count("p_review_thread"));
+        assertEquals(0, count("p_review_message"));
+        assertEquals(0, count("p_creation_receipt"));
+        assertEquals(0, count("p_review_event"));
+        assertEquals(0, imageFileCount());
+    }
+
+    @Test
+    void rootAnchorImageConcurrencyFingerprintAndEventRollbackStayAtomic() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        var values = new HashMap<>(feedbackFields("带区域图片"));
+        values.put("anchor", rootAnchor("ellipse"));
+        byte[] png = replyImage("png", 3);
+        JsonNode first;
+        var barrier = new CyclicBarrier(2);
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var one =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return imageCreate(f, guest, values, png, 200);
+                            });
+            var two =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return imageCreate(f, guest, values, png, 200);
+                            });
+            first = one.get(20, TimeUnit.SECONDS);
+            assertEquals(first, two.get(20, TimeUnit.SECONDS));
+        }
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(1, count("p_review_message"));
+        assertEquals(1, count("p_review_event"));
+        assertEquals(1, count("p_creation_receipt"));
+        assertEquals(1, imageFileCount());
+        long rates =
+                number(
+                        "select sum(send_count) as value from p_review_rate where project_id=:id",
+                        f.project);
+        var reordered = new HashMap<>(values);
+        var reversed = new java.util.LinkedHashMap<String, Object>();
+        var entries = new ArrayList<>(rootAnchor("ellipse").entrySet());
+        java.util.Collections.reverse(entries);
+        entries.forEach(entry -> reversed.put(entry.getKey(), entry.getValue()));
+        reordered.put("anchor", reversed);
+        assertEquals(first, imageCreate(f, guest, reordered, png, 200));
+        assertEquals(
+                rates,
+                number(
+                        "select sum(send_count) as value from p_review_rate where project_id=:id",
+                        f.project));
+        for (Object changed : java.util.Arrays.asList(null, rootAnchor("rect"))) {
+            var different = new HashMap<>(values);
+            different.put("anchor", changed);
+            imageCreate(f, guest, different, png, 409);
+        }
+        imageCreate(f, guest, values, replyImage("png", 4), 409);
+        var changedText = new HashMap<>(values);
+        changedText.put("text", "不同正文");
+        imageCreate(f, guest, changedText, png, 409);
+        assertEquals(1, imageFileCount());
+        var rollback = new HashMap<>(values);
+        rollback.put("clientRequestId", UUID.randomUUID().toString());
+        sql(
+                "create function reject_anchor_event_fixture() returns trigger language plpgsql as $$ begin raise exception 'fixture event failure'; end $$");
+        sql(
+                "create trigger reject_anchor_event_fixture before insert on p_review_event for each row execute function reject_anchor_event_fixture()");
+        try {
+            imageCreate(f, guest, rollback, png, 500);
+        } finally {
+            sql("drop trigger reject_anchor_event_fixture on p_review_event");
+            sql("drop function reject_anchor_event_fixture()");
+        }
+        assertEquals(1, count("p_review_thread"));
+        assertEquals(1, count("p_review_message"));
+        assertEquals(1, count("p_review_event"));
+        assertEquals(1, count("p_creation_receipt"));
+        assertEquals(1, imageFileCount());
+        assertEquals(
+                rates,
+                number(
+                        "select sum(send_count) as value from p_review_rate where project_id=:id",
+                        f.project));
+        JsonNode retry = imageCreate(f, guest, rollback, png, 200);
+        assertEquals(
+                first.path("anchor"),
+                feedback(
+                                f,
+                                guest,
+                                HttpMethod.POST,
+                                "threads/" + retry.path("id").asText() + "/_detail",
+                                Map.of(),
+                                200)
+                        .path("anchor"));
+        JsonNode message =
+                feedback(
+                                f,
+                                guest,
+                                HttpMethod.POST,
+                                "threads/" + first.path("id").asText() + "/messages/_query",
+                                Map.of(),
+                                200)
+                        .path("data")
+                        .get(0);
+        assertArrayEquals(
+                png,
+                imageRead(
+                        f,
+                        guest,
+                        null,
+                        first.path("id").asText(),
+                        message.path("id").asText(),
+                        200));
+    }
+
+    private HashMap<String, Object> rootAnchor(String shape) {
+        return new HashMap<>(
+                Map.of(
+                        "space",
+                        "root-document-css-px-v1",
+                        "shape",
+                        shape,
+                        "x",
+                        10,
+                        "y",
+                        20,
+                        "width",
+                        shape.equals("point") ? 0 : 30,
+                        "height",
+                        shape.equals("point") ? 0 : 40,
+                        "documentWidth",
+                        1000,
+                        "documentHeight",
+                        2000,
+                        "viewportWidth",
+                        800,
+                        "viewportHeight",
+                        600));
+    }
+
+    @Test
     void initialImageThreadCreatesOneGraphAndKeepsOriginalJsonAndControlledReads()
             throws Exception {
         Fixture f = feedbackFixture();

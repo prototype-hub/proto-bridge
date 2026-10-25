@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewThreadCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
@@ -65,11 +66,11 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("")
-    @Operation(summary = "创建本人页面纯文本线程")
+    @Operation(summary = "创建本人页面纯文本线程，可附根文档位置快照")
     public Mono<ReviewThreadResponse> create(
             @PathVariable String token,
             @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
-                    ReviewTextRequest input,
+                    ReviewThreadCreateRequest input,
             ServerWebExchange exchange) {
         security.origin(exchange);
         String cookie = security.unsafeCookie(exchange);
@@ -84,7 +85,7 @@ public class PublicPrototypeReviewThreadController {
         String cookie = security.unsafeCookie(exchange);
         return multipart.read(
                 exchange,
-                ReviewTextRequest.class,
+                ReviewThreadCreateRequest.class,
                 new Class<?>[] {Default.class, ReviewPageRequest.Public.class},
                 (input, image) -> threads.createImage(token, input, cookie, image));
     }
