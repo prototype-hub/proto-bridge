@@ -187,41 +187,46 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 ## 分享邮箱身份
 
-邮箱身份由分享管理员逐条开启，默认关闭，不影响免账号预览；当前提供邮箱OTP和短期身份，不含邀请、未验证访客、批注/回复及业务邮件提醒，不创建平台用户。姓名/公司由访客自填，邮箱已验证不代表实名或公司认证。
+访问者身份由分享管理员逐条开启，默认关闭，不影响免账号预览。默认使用邮箱OTP；管理员还可单独允许只填姓名的低保障身份，界面明确标为“未验证”。两种身份都不创建平台用户，姓名/公司均为自述，邮箱验证也不代表实名或公司认证。当前不含邀请、人工身份关联、批注/回复及业务邮件提醒。
 
-`GET /prototype-hub/shares/{id}/review` 返回 `{enabled,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,expectedVersion}`，需要分享save及同一范围。成功修改递增配置版本并轮换分享凭据，旧预览和身份均失效；旧空值按关闭处理，普通分享编辑保留身份开关。已通过密码的公开分享增加 `reviewEnabled/reviewAvailable`。
+`GET /prototype-hub/shares/{id}/review` 返回 `{enabled,allowUnverified,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,allowUnverified?,expectedVersion}`，需要分享save及同一范围。`allowUnverified`旧空值按false，旧客户端省略该字段或传null时保留已有设置，不因普通分享编辑或SMTP故障而开启。低保障入口要求身份总开关与该许可同时启用。策略更新沿现有CAS并轮换分享凭据，旧预览和身份失效；409后须刷新并重新确认。已通过密码授权的公开分享提供 `reviewEnabled/reviewAvailable/reviewUnverifiedAllowed`；最后一项仅在分享授权、身份总开关和低保障许可同时有效时为true，身份context也返回allowUnverified。
 
 公开入口相对于 `/prototype-hub/public/shares/{token}/review`，均为JSON POST，始终提交当前分享证明 `{revisionId,accessKey}`。固定与跟随模式都绑定本次明确修订，不隐式切换current。所有请求要求精确受信Origin，拒绝缺失、null及其他站点；代理配置见[运维说明](OPERATIONS.md#邮箱身份与smtp)。
 
 | 子路径 | 额外字段 | `result` |
 | --- | --- | --- |
-| `/context` | 无 | `{revisionId,enabled,mailAvailable,csrfToken,session}`，匿名session为null |
+| `/context` | 无 | `{revisionId,enabled,allowUnverified,mailAvailable,csrfToken,session}`，匿名session为null |
 | `/challenges` | `email,displayName,company?` | `{challengeId,expiresAt,resendAfter}`，不返回验证码或邮箱 |
 | `/verify` | `challengeId,code` | 同context，成功session非空，轮换Cookie与CSRF |
+| `/unverified` | `displayName,company?`，不收集邮箱 | 同context，明确返回未验证身份；仅显式允许时可用，不发送邮件 |
 | `/logout` | 无 | `{loggedOut:true}`，仅撤销当前身份并轮换匿名Cookie |
 
-context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Strict、无Domain、最长八小时，Path固定为 `/api/prototype-hub/public/shares/{token}/review`。其余三项同时要求Cookie与context返回的 `X-Review-CSRF`。退出后重取context；Cookie/CSRF不进入原型iframe、URL、postMessage或本地持久存储。只有专用review客户端使用同源Cookie，其他公开预览客户端仍省略凭据。
+context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Strict、无Domain、最长八小时，Path固定为 `/api/prototype-hub/public/shares/{token}/review`。其余四项同时要求Cookie与context返回的 `X-Review-CSRF`。退出后重取context；Cookie/CSRF不进入原型iframe、URL、postMessage或本地持久存储。只有专用review客户端使用同源Cookie，其他公开预览客户端仍省略凭据。
 
-身份为 `{guestId,displayName,company,maskedEmail,verificationLevel:'email',expiresAt}`，不返回完整邮箱。姓名trim后非空且最多100字符，公司可空且最多200字符；邮箱trim并整段按不区分大小写规范化，最多254字符。同项目同邮箱跨设备重新OTP恢复相同guestId，不按姓名合并，其他项目独立；恢复仍需当前分享和密码证明。
+身份仅含 `{guestId,displayName,company,maskedEmail,verificationLevel,expiresAt}`。`verificationLevel`为 `email` 或 `unverified`；邮箱身份返回脱敏邮箱，未验证身份的 `maskedEmail`为null。姓名trim后非空且最多100字符，公司可空且最多200字符；姓名和公司拒绝Unicode控制字符，不以trim吞掉非法字符。邮箱OTP请求中的邮箱trim并整段按不区分大小写规范化，最多254字符。同项目同邮箱跨设备重新OTP恢复相同guestId，其他项目独立；恢复仍需当前分享和密码证明，不按姓名合并。
+
+未验证身份使用服务端随机ID，与已验证联系人隔离。八小时从首次签发起固定计算；对同一有效未验证会话重复提交只返回原身份及原到期时间，不改姓名/公司、不续期。有效邮箱身份调用 `/unverified` 返回409 / `PROTOTYPE_HUB_REVIEW_IDENTITY_EXISTS`，需先显式退出。会话丢失、退出、到期或被撤销后，不能按姓名、公司、邮箱或OTP找回该未验证身份；重新申请得到另一身份。后续邮箱验证也不自动合并历史未验证身份。分享配置换代等使旧会话失效后，持有新分享证明的访客可再次明确申请新的随机身份，即使浏览器仍带旧Cookie；这不会找回旧ID或延长旧身份。未知会话等级仍被拒绝。当前没有人工恢复或关联入口，需联系项目管理员线下处理。
 
 验证码六位ASCII数字、五分钟有效、最多五次错误、一次使用；错误尝试持久提交，并发正确验证仅一次成功。同项目同邮箱重发使旧码失效。每项目每小时最多60封，项目内每邮箱5封并冷却60秒，数据库保证跨副本一致；SMTP失败也占发送限额。pending、失败或取消发送不能验证，不自动重试不确定发送或降低验证等级。
 
-未知、错误、过期、已用或不匹配的challenge统一400 / `PROTOTYPE_HUB_REVIEW_CODE_INVALID`。非法输入400，分享证明/Origin/CSRF不符403，分享不可用404，限频429，SMTP未配置或失败503。分享修改、停用、撤销、到期或软删均逐请求阻断旧身份，重新启用不复活旧授权；会话到期需重新验证。
+新建未验证身份使用独立的数据库限频域：每项目每小时60次、当前Cookie每小时5次且冷却60秒；不占用或退还OTP发送窗口。同一有效会话的原样返回不计新建。Cookie限频不等同实名或设备识别，清除Cookie不能绕过项目总量上限。SMTP未配置或发送失败时，仍须由管理员显式允许、由访客主动选择此入口，不自动降级。
 
-### 项目邮箱访客管理
+未知、错误、过期、已用或不匹配的challenge统一400 / `PROTOTYPE_HUB_REVIEW_CODE_INVALID`。非法输入400，分享证明/Origin/CSRF不符或未允许低保障身份403，分享不可用404，配置或身份状态冲突409，限频429；SMTP未配置或失败只使邮箱发码返回503。分享修改、停用、撤销、到期或软删均逐请求阻断旧身份，重新启用不复活旧授权；邮箱身份到期需重新OTP，未验证身份到期不能恢复原ID。
 
-项目详情提供已验证访客管理，不创建平台用户或新的全局菜单。以下接口分别要求 `prototype-hub-share:query/save`，并同时检查当前项目的 SHARE 能力；项目所有者、编辑者和有效管理员按现有能力操作，只读成员不能查询或修改。跨项目替换 guestId 返回404，不能仅凭访客ID访问。
+### 项目访问者管理
+
+项目详情按邮箱已验证与未验证身份分别分页，不创建平台用户或新的全局菜单。以下接口分别要求 `prototype-hub-share:query/save`，并同时检查当前项目的 SHARE 能力；项目所有者、编辑者和有效管理员按现有能力操作，只读成员不能查询或修改。跨项目或跨身份等级替换guestId返回404；已到期未验证身份的状态更新也返回404，不能仅凭访客ID访问。
 
 | 请求 | 输入/结果 |
 | --- | --- |
-| `POST /prototype-hub/projects/{projectId}/review-guests/_query` | `{pageIndex:0,pageSize:20}`；返回标准分页 `result`，含真实total和data |
-| `PUT /prototype-hub/projects/{projectId}/review-guests/{guestId}/enabled` | `{enabled,expectedVersion}`；返回当前访客状态 |
+| `POST /prototype-hub/projects/{projectId}/review-guests/_query` | `{verificationLevel:'email',pageIndex:0,pageSize:20}`；等级可为 `unverified`，省略时查email；返回标准分页，含真实total和data |
+| `PUT /prototype-hub/projects/{projectId}/review-guests/{guestId}/enabled?verificationLevel=unverified` | `{enabled,expectedVersion}`；查询参数省略时操作email身份，返回当前状态 |
 
-页码0–10000，每页1–100；按最近验证/状态修改时间降序、ID升序排序。越界页保留真实total并返回空data，不回退最后一页；不接收任意查询表达式。列表与修改结果仅含 `{id,displayName,company,maskedEmail,verificationLevel:'email',enabled,configVersion,createTime,modifyTime}`，不提供完整邮箱、会话或验证码摘要。
+等级仅接受精确的 `email`、`unverified`，无效值返回400，不能回退为邮箱查询或合并两类数据；状态更新的查询参数只允许单个值，显式空值或重复参数也返回400。页码0–10000，每页1–100；按更新时间降序、ID升序排序。越界页保留真实total并返回空data，不回退最后一页；不接收任意查询表达式。列表与修改结果仅含 `{id,displayName,company,maskedEmail,verificationLevel,enabled,configVersion,createTime,modifyTime,expiresAt}`，不提供完整邮箱、会话或验证码摘要；邮箱身份expiresAt为null，未验证身份返回固定到期时间及null maskedEmail。
 
-旧行的enabled空值视为true、configVersion空值视为0。修改必须提交刚读取的版本；陈旧版本返回409，刷新后由操作者重新确认，不自动重试。相同版本和相同状态为无副作用操作；实际转换才增加版本和修改时间，同时在项目锁事务中移除该项目访客的全部会话及邮箱验证码。
+旧邮箱行的enabled空值视为true、configVersion空值视为0。修改必须提交刚读取的版本；陈旧版本返回409，刷新后由操作者重新确认，不自动重试。相同版本和相同状态无副作用；实际转换才增加版本和修改时间，并在项目锁事务中移除对应身份会话，邮箱身份还撤销该项目规范邮箱的验证码。未验证身份没有邮箱验证码，操作它不会修改同名邮箱联系人。
 
-停用后已打开设备不能恢复身份或请求验证码，公开context返回session:null；原型匿名预览仍依分享自身策略。重新启用不会恢复旧Cookie或旧验证码，访客必须重新OTP验证；新验证保留原guestId和管理状态版本。发送中的邮件可能已经被SMTP受理，但状态切换会阻止该旧验证码用于验证，平台不能撤回已投递邮件。停用不删除访客身份和其他访客/项目的数据，也不退还发送限额。
+停用后已打开设备的context返回session:null，匿名原型预览仍依分享自身策略。重新启用不会恢复任何旧Cookie、旧验证码或到期时间：邮箱身份必须重新OTP且保留原guestId；未验证身份无法重新证明原身份，新建也不会找回旧ID。发送中的邮件可能已被SMTP受理，但状态切换阻止该旧验证码用于验证，平台不能撤回已投递邮件。管理状态变更不退还发送或身份创建限额，不改变其他身份或项目的数据。
 
 ## HTML 文件夹上传
 

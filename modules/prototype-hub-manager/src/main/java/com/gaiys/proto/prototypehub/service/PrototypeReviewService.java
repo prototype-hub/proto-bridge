@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewRateEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
@@ -12,6 +13,7 @@ import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.service.notification.SmtpNotificationGateway;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ReviewChallengeRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewUnverifiedRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewChallengeResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewContextResponse;
@@ -28,7 +30,7 @@ import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
 /**
- * 公开分享的邮箱访客身份；项目→版本锁是跨实例OTP及限频的唯一串行化边界。
+ * 公开分享的邮箱验证与显式未验证身份；项目→版本锁是跨实例签发及限频的串行化边界。
  *
  * <p>BCrypt/SMTP只在数据库事务外的FileWork执行；错误尝试先提交，再在外层返回通用错误。 无内部用户、常驻身份缓存或通知队列；短期数据复用既有Retention周期。
  */
@@ -42,6 +44,7 @@ public class PrototypeReviewService {
     private final PrototypeShareService shares;
     private final PrototypeProjectAccessService access;
     private final ReactiveRepository<PrototypeReviewGuestEntity, String> guests;
+    private final ReactiveRepository<PrototypeReviewUnverifiedGuestEntity, String> unverifiedGuests;
     private final ReactiveRepository<PrototypeReviewChallengeEntity, String> challenges;
     private final ReactiveRepository<PrototypeReviewSessionEntity, String> sessions;
     private final ReactiveRepository<PrototypeReviewRateEntity, String> rates;
@@ -70,27 +73,123 @@ public class PrototypeReviewService {
                                                                 System.currentTimeMillis()))
                                         .flatMap(
                                                 session ->
-                                                        guests.findById(session.getGuestId())
-                                                                .filter(
-                                                                        guest ->
-                                                                                !Boolean.FALSE
-                                                                                                .equals(
-                                                                                                        guest
-                                                                                                                .getEnabled())
-                                                                                        && share.getProjectId()
-                                                                                                .equals(
-                                                                                                        guest
-                                                                                                                .getProjectId()))
+                                                        sessionIdentity(session, share)
                                                                 .map(
-                                                                        guest ->
+                                                                        identity ->
                                                                                 context(
+                                                                                        share,
                                                                                         revisionId,
                                                                                         cookie,
-                                                                                        identity(
-                                                                                                guest,
-                                                                                                session
-                                                                                                        .getExpiresAt()))))
-                                        .defaultIfEmpty(context(revisionId, cookie, null)));
+                                                                                        identity)))
+                                        .defaultIfEmpty(context(share, revisionId, cookie, null)));
+    }
+
+    /** 明确选择低保障路径；持父锁后再次校验策略，既不降级已验证会话也不找回旧访客。 */
+    public Mono<Verified> unverified(String token, ReviewUnverifiedRequest input, String cookie) {
+        return lockedScope(token, input.revisionId(), input.accessKey())
+                .filter(share -> Boolean.TRUE.equals(share.getReviewAllowUnverified()))
+                .switchIfEmpty(Mono.error(PrototypeReviewService::denied))
+                .flatMap(
+                        share ->
+                                sessions.findById(PrototypeReviewKeys.digest(cookie))
+                                        .flatMap(
+                                                session ->
+                                                        reuseUnverified(
+                                                                share, input, cookie, session))
+                                        .switchIfEmpty(
+                                                Mono.defer(
+                                                        () ->
+                                                                issueUnverified(
+                                                                        share, input, cookie))))
+                .as(transactions::transactional)
+                .checkpoint("prototype-hub/review/unverified");
+    }
+
+    private Mono<Verified> reuseUnverified(
+            PrototypeShareEntity share,
+            ReviewUnverifiedRequest input,
+            String cookie,
+            PrototypeReviewSessionEntity session) {
+        if (!knownLevel(session)) return Mono.error(denied());
+        // 新授权下显式创建替代身份，不恢复失配/过期身份；旧授权仍由lockedScope拒绝。
+        if (!validSession(session, share, input.revisionId(), System.currentTimeMillis()))
+            return issueUnverified(share, input, cookie);
+        if (emailLevel(session))
+            return Mono.error(
+                    new PrototypeHubException(
+                            "error.prototype-hub.review_identity_exists",
+                            "PROTOTYPE_HUB_REVIEW_IDENTITY_EXISTS",
+                            409));
+        return sessionIdentity(session, share)
+                .map(
+                        identity ->
+                                new Verified(
+                                        cookie,
+                                        context(share, input.revisionId(), cookie, identity)))
+                .switchIfEmpty(Mono.defer(() -> issueUnverified(share, input, cookie)));
+    }
+
+    private Mono<Verified> issueUnverified(
+            PrototypeShareEntity share, ReviewUnverifiedRequest input, String oldCookie) {
+        long now = System.currentTimeMillis();
+        String raw = PrototypeReviewKeys.random();
+        var guest = new PrototypeReviewUnverifiedGuestEntity();
+        guest.setId(PrototypeReviewKeys.random());
+        guest.setProjectId(share.getProjectId());
+        guest.setDisplayName(input.displayName().strip());
+        guest.setCompany(
+                input.company() == null || input.company().isBlank()
+                        ? null
+                        : input.company().strip());
+        guest.setEnabled(true);
+        guest.setConfigVersion(0L);
+        guest.setCreateTime(now);
+        guest.setModifyTime(now);
+        guest.setExpiresAt(now + SESSION_TTL);
+        var session = newSession(share, input.revisionId(), guest.getId(), raw, now);
+        session.setVerificationLevel("unverified");
+        // 与OTP使用独立的固定域；清除Cookie不能绕过项目总量，复用有效会话不消费配额。
+        return rate(share.getProjectId(), "unverified-project", 60, false, now)
+                .then(
+                        rate(
+                                share.getProjectId(),
+                                "unverified-cookie:" + PrototypeReviewKeys.digest(oldCookie),
+                                5,
+                                true,
+                                now))
+                .then(unverifiedGuests.insert(guest))
+                .then(sessions.deleteById(PrototypeReviewKeys.digest(oldCookie)))
+                .then(sessions.insert(session))
+                .thenReturn(
+                        new Verified(
+                                raw,
+                                context(
+                                        share,
+                                        input.revisionId(),
+                                        raw,
+                                        identity(guest, session.getExpiresAt()))));
+    }
+
+    private Mono<ReviewIdentity> sessionIdentity(
+            PrototypeReviewSessionEntity session, PrototypeShareEntity share) {
+        if (!knownLevel(session)) return Mono.error(denied());
+        if (emailLevel(session))
+            return guests.findById(session.getGuestId())
+                    .filter(
+                            guest ->
+                                    !Boolean.FALSE.equals(guest.getEnabled())
+                                            && share.getProjectId().equals(guest.getProjectId()))
+                    .map(guest -> identity(guest, session.getExpiresAt()));
+        if (!Boolean.TRUE.equals(share.getReviewAllowUnverified())) return Mono.empty();
+        return unverifiedGuests
+                .findById(session.getGuestId())
+                .filter(
+                        guest ->
+                                Boolean.TRUE.equals(guest.getEnabled())
+                                        && share.getProjectId().equals(guest.getProjectId())
+                                        && guest.getExpiresAt() > System.currentTimeMillis()
+                                        && session.getExpiresAt() <= guest.getExpiresAt())
+                .map(guest -> identity(guest, session.getExpiresAt()));
     }
 
     public Mono<ReviewChallengeResponse> challenge(
@@ -380,18 +479,8 @@ public class PrototypeReviewService {
                             guest.setModifyTime(now);
                             String raw = PrototypeReviewKeys.random();
                             PrototypeReviewSessionEntity session =
-                                    new PrototypeReviewSessionEntity();
-                            session.setId(PrototypeReviewKeys.digest(raw));
-                            session.setGuestId(guestId);
-                            session.setProjectId(share.getProjectId());
-                            session.setVersionId(share.getVersionId());
-                            session.setShareId(share.getId());
-                            session.setRevisionId(challenge.getRevisionId());
-                            session.setConfigVersion(version(share));
-                            session.setShareGeneration(
-                                    PrototypeReviewKeys.digest(share.getAccessKey()));
-                            session.setCreateTime(now);
-                            session.setExpiresAt(now + SESSION_TTL);
+                                    newSession(share, challenge.getRevisionId(), guestId, raw, now);
+                            session.setVerificationLevel("email");
                             return guests.save(guest)
                                     // EasyORM save默认忽略null；自述公司清空必须显式写NULL。
                                     .then(
@@ -415,12 +504,29 @@ public class PrototypeReviewService {
                                             new Verified(
                                                     raw,
                                                     context(
+                                                            share,
                                                             challenge.getRevisionId(),
                                                             raw,
                                                             identity(
                                                                     guest,
                                                                     session.getExpiresAt()))));
                         });
+    }
+
+    private static PrototypeReviewSessionEntity newSession(
+            PrototypeShareEntity share, String revisionId, String guestId, String raw, long now) {
+        var session = new PrototypeReviewSessionEntity();
+        session.setId(PrototypeReviewKeys.digest(raw));
+        session.setGuestId(guestId);
+        session.setProjectId(share.getProjectId());
+        session.setVersionId(share.getVersionId());
+        session.setShareId(share.getId());
+        session.setRevisionId(revisionId);
+        session.setConfigVersion(version(share));
+        session.setShareGeneration(PrototypeReviewKeys.digest(share.getAccessKey()));
+        session.setCreateTime(now);
+        session.setExpiresAt(now + SESSION_TTL);
+        return session;
     }
 
     public Mono<Void> logout(String token, String revisionId, String key, String cookie) {
@@ -581,7 +687,38 @@ public class PrototypeReviewService {
                                                                                 ::getExpiresAt,
                                                                         now)
                                                                 .execute()
-                                                                .then()));
+                                                                .then()))
+                .then(cleanupUnverified(now));
+    }
+
+    private Mono<Void> cleanupUnverified(long now) {
+        // 每次只取固定到期的50行；身份从不续期，残留会话也由自身到期条件和独立批次拒绝/清理。
+        return unverifiedGuests
+                .createQuery()
+                .select(PrototypeReviewUnverifiedGuestEntity::getId)
+                .lte(PrototypeReviewUnverifiedGuestEntity::getExpiresAt, now)
+                .orderBy(
+                        SortOrder.asc(PrototypeReviewUnverifiedGuestEntity::getExpiresAt),
+                        SortOrder.asc(PrototypeReviewUnverifiedGuestEntity::getId))
+                .paging(0, 50)
+                .fetch()
+                .map(PrototypeReviewUnverifiedGuestEntity::getId)
+                .collectList()
+                .flatMap(
+                        ids ->
+                                ids.isEmpty()
+                                        ? Mono.empty()
+                                        : unverifiedGuests
+                                                .createDelete()
+                                                .in(
+                                                        PrototypeReviewUnverifiedGuestEntity::getId,
+                                                        ids)
+                                                .lte(
+                                                        PrototypeReviewUnverifiedGuestEntity
+                                                                ::getExpiresAt,
+                                                        now)
+                                                .execute()
+                                                .then());
     }
 
     public Mono<Void> purgeVersion(String id) {
@@ -613,14 +750,20 @@ public class PrototypeReviewService {
                         guests.createDelete()
                                 .where(PrototypeReviewGuestEntity::getProjectId, id)
                                 .execute())
+                .then(
+                        unverifiedGuests
+                                .createDelete()
+                                .where(PrototypeReviewUnverifiedGuestEntity::getProjectId, id)
+                                .execute())
                 .then();
     }
 
     private ReviewContextResponse context(
-            String revisionId, String cookie, ReviewIdentity identity) {
+            PrototypeShareEntity share, String revisionId, String cookie, ReviewIdentity identity) {
         return new ReviewContextResponse(
                 revisionId,
                 true,
+                Boolean.TRUE.equals(share.getReviewAllowUnverified()),
                 notifications.available(),
                 PrototypeReviewKeys.csrf(cookie),
                 identity);
@@ -634,6 +777,26 @@ public class PrototypeReviewService {
                 PrototypeReviewKeys.masked(guest.getEmail()),
                 "email",
                 expiresAt);
+    }
+
+    private static ReviewIdentity identity(
+            PrototypeReviewUnverifiedGuestEntity guest, long expiresAt) {
+        return new ReviewIdentity(
+                guest.getId(),
+                guest.getDisplayName(),
+                guest.getCompany(),
+                null,
+                "unverified",
+                expiresAt);
+    }
+
+    private static boolean emailLevel(PrototypeReviewSessionEntity session) {
+        return session.getVerificationLevel() == null
+                || "email".equals(session.getVerificationLevel());
+    }
+
+    private static boolean knownLevel(PrototypeReviewSessionEntity session) {
+        return emailLevel(session) || "unverified".equals(session.getVerificationLevel());
     }
 
     private static long version(PrototypeShareEntity share) {
@@ -663,16 +826,23 @@ public class PrototypeReviewService {
             PrototypeShareEntity share,
             String revisionId,
             long now) {
-        return session.getExpiresAt() > now
-                && bound(
-                        session.getShareId(),
-                        session.getProjectId(),
-                        session.getVersionId(),
-                        session.getRevisionId(),
-                        session.getConfigVersion(),
-                        session.getShareGeneration(),
-                        share,
-                        revisionId);
+        return knownLevel(session)
+                && (emailLevel(session) || Boolean.TRUE.equals(share.getReviewAllowUnverified()))
+                && session.getExpiresAt() > now
+                && sessionBound(session, share, revisionId);
+    }
+
+    private static boolean sessionBound(
+            PrototypeReviewSessionEntity session, PrototypeShareEntity share, String revisionId) {
+        return bound(
+                session.getShareId(),
+                session.getProjectId(),
+                session.getVersionId(),
+                session.getRevisionId(),
+                session.getConfigVersion(),
+                session.getShareGeneration(),
+                share,
+                revisionId);
     }
 
     static boolean validChallenge(

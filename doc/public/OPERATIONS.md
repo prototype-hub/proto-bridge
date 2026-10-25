@@ -22,7 +22,7 @@
 
 ## 邮箱身份与SMTP
 
-邮箱身份默认关闭，由分享管理员逐条开启。无SMTP时原型预览仍可用，身份验证显示不可用，不自动跳过验证；邮件仅发必要验证码，不提供邀请或业务提醒。
+访问者身份默认关闭，由分享管理员逐条开启。邮箱OTP需要SMTP；无SMTP时原型预览仍可用，邮箱验证明确显示不可用。管理员可对单个分享额外允许“未验证”低保障身份，访客须主动选择且界面保留未验证标识，不因邮件故障自动切换或标为已验证。邮件仅发必要验证码，不提供邀请或业务提醒。
 
 SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml`：`spring.mail.host` 默认为空，未配置时不启用发送，也不在启动时连接服务商。填写标准 `spring.mail.host/port/username/password`，默认SMTP端口587、认证及STARTTLS启用且要求升级TLS，服务端身份校验开启；按服务商要求覆盖真实属性并使用有效TLS信任链。SMTPS需明确设置protocol为smtps及端口465，使用同一properties中的mail.smtps配置。发件地址使用 `spring.mail.properties.mail.smtp.from`（便利变量 `SMTP_FROM`），非空配置优先，空值取非空username，仍为空才取本机身份prototype-hub@localhost；必须填写服务商许可的单一完整邮箱，例如 `sender@example.invalid`，不能只填产品名称，也不接受显示名称、地址列表或换行。显式错误值不会静默改用认证账号，而是在连接前拒绝发送；若认证账号就是许可发件邮箱，可将 `SMTP_FROM` 留空复用它。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
 
@@ -44,7 +44,9 @@ HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.tru
 
 备份全部 `p_review_*` 与分享配置及密钥，恢复副本核验未过期身份与旧撤销状态。自动化只用隔离本地SMTP和 `example.invalid` 夹具，不向真实客户发送测试邮件。
 
-项目详情的访客管理沿分享查询/保存动作与项目SHARE权限，列表仅显示脱敏邮箱。停用立即阻断旧身份并删除旧会话/验证码，重新启用要求新OTP；不改变分享本身的匿名预览策略。更新服务前停止忽略guest状态的旧后端节点，配套发布前后端，避免混跑使停用失效；备份/恢复须保留enabled/config_version。旧版本JAR会忽略这些状态，不能直接换回作为安全回滚。
+项目详情的访客管理沿分享查询/保存动作与项目SHARE权限，按email/unverified等级分别分页；已验证邮箱只显示脱敏值，低保障身份没有邮箱。停用即时阻断对应身份并撤销旧会话；邮箱身份还撤销验证码，重新启用要求新OTP。未验证身份即使重新启用也不能恢复旧Cookie或延长期限，丢失/退出/到期后不能按姓名、公司或邮箱自助找回，没有人工关联入口，需由管理员线下处理；新申请是另一身份，不自动合并为邮箱联系人。这些操作不改变匿名预览策略或退还限频额度。分享配置换代后须重新取得分享证明；仍带旧Cookie不妨碍明确申请另一随机身份，但不会恢复旧身份或旧访问凭据。
+
+升级时EasyORM只新增低保障身份表及分享/会话的缺失字段，原邮箱表的必填约束不变。停止全部旧后端节点并配套发布前后端；不要混跑忽略身份等级、低保障许可或停用状态的版本。备份/恢复须同时保留全部p_review_*、enabled/config_version、verification_level、未验证身份expires_at与分享策略；不得只换回旧JAR作为安全回滚。八小时未验证身份及会话、限频窗口由既有有界周期清理，不需要新增调度器或人工删表；恢复后仍按原期限失效，不能重置时间找回旧身份。
 
 当前通知传输仍位于原型模块，仅提供身份验证用途。邮件与短信传输后续会抽离为独立通知模块，复用同一NotificationGateway与配置；短信、通知管理界面和业务投递尚未实现。基础OTP保持独立可用，业务通知仍需各自的权限与用途检查，不把任意业务内容伪装验证码。
 

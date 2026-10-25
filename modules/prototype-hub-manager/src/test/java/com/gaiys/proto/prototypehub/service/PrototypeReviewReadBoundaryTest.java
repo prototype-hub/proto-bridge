@@ -7,11 +7,14 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
+import com.gaiys.proto.prototypehub.enums.ReviewVerificationLevel;
+import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeShareKeys;
 import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.storage.scanner.PrototypePackageQualityScanner;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ReviewChallengeRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewGuestEnabledRequest;
 import io.micrometer.observation.ObservationRegistry;
 import java.time.Duration;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -127,6 +130,7 @@ class PrototypeReviewReadBoundaryTest {
                         mock(ReactiveRepository.class),
                         mock(ReactiveRepository.class),
                         mock(ReactiveRepository.class),
+                        mock(ReactiveRepository.class),
                         notifications,
                         work,
                         mock(TransactionalOperator.class),
@@ -168,24 +172,76 @@ class PrototypeReviewReadBoundaryTest {
     }
 
     @Test
+    void expiredGuestCutoffIsBuiltOnlyAfterProjectLockCompletes() {
+        var access = mock(PrototypeProjectAccessService.class);
+        var lock = Sinks.<Void>one();
+        when(access.lockProject("p")).thenReturn(lock.asMono());
+        when(access.requireProject("p", PrototypeProjectAccessService.Action.SHARE))
+                .thenReturn(Mono.empty());
+        var unverified = mock(ReactiveRepository.class);
+        var query = mock(ReactiveQuery.class, RETURNS_SELF);
+        when(unverified.createQuery()).thenReturn(query);
+        // 已过期的行由订阅后的期限条件排除。
+        when(query.fetch()).thenReturn(Flux.empty());
+        var transactions = mock(TransactionalOperator.class);
+        when(transactions.transactional(any(Mono.class)))
+                .thenAnswer(invocation -> invocation.getArgument(0));
+        var service =
+                new PrototypeReviewGuestService(access, null, unverified, null, null, transactions);
+        var result =
+                service.setEnabled(
+                        "p",
+                        "g",
+                        new ReviewGuestEnabledRequest(true, 0L),
+                        ReviewVerificationLevel.unverified);
+        verifyNoInteractions(unverified);
+        StepVerifier.create(result)
+                .then(
+                        () -> {
+                            verifyNoInteractions(unverified);
+                            lock.tryEmitEmpty();
+                        })
+                .expectErrorSatisfies(
+                        error -> {
+                            assertInstanceOf(PrototypeHubException.class, error);
+                            assertEquals(404, ((PrototypeHubException) error).getStatus());
+                        })
+                .verify(Duration.ofSeconds(5));
+        verify(unverified).createQuery();
+    }
+
+    @Test
     void scheduledCleanupDoesNotTouchDatabaseBeforeSubscriptionAndRebuildsEachBatch() {
         var challenges = mock(ReactiveRepository.class);
         var sessions = mock(ReactiveRepository.class);
         var rates = mock(ReactiveRepository.class);
+        var unverified = mock(ReactiveRepository.class);
         var query = mock(ReactiveQuery.class, RETURNS_SELF);
         when(query.fetch()).thenReturn(Flux.empty());
         when(challenges.createQuery()).thenReturn(query);
         when(sessions.createQuery()).thenReturn(query);
         when(rates.createQuery()).thenReturn(query);
+        when(unverified.createQuery()).thenReturn(query);
         var service =
                 new PrototypeReviewService(
-                        null, null, null, challenges, sessions, rates, null, null, null, null);
+                        null,
+                        null,
+                        null,
+                        unverified,
+                        challenges,
+                        sessions,
+                        rates,
+                        null,
+                        null,
+                        null,
+                        null);
         Mono<Void> scheduled = assertDoesNotThrow(service::cleanupExpired);
-        verifyNoInteractions(challenges, sessions, rates);
+        verifyNoInteractions(challenges, sessions, rates, unverified);
         StepVerifier.create(scheduled).verifyComplete();
         StepVerifier.create(scheduled).verifyComplete();
         verify(challenges, times(2)).createQuery();
         verify(sessions, times(2)).createQuery();
         verify(rates, times(2)).createQuery();
+        verify(unverified, times(2)).createQuery();
     }
 }

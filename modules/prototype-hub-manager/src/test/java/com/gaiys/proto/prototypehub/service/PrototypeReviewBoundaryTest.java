@@ -6,11 +6,13 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import com.gaiys.proto.prototypehub.web.request.ReviewChallengeRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewGuestEnabledRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewGuestQueryRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewUnverifiedRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewVerifyRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewGuestResponse;
 import jakarta.validation.Validation;
@@ -105,8 +107,28 @@ class PrototypeReviewBoundaryTest {
                     new ReviewChallengeRequest(
                             "r", "key", " a@example.com ", " Name ", " Company ");
             assertTrue(v.validate(valid).isEmpty());
-            assertEquals("Name", valid.displayName());
-            assertEquals("Company", valid.company());
+            // 保留原输入供边界校验，不能先strip而吞掉首尾控制字符。
+            assertEquals(" Name ", valid.displayName());
+            assertEquals(" Company ", valid.company());
+            assertFalse(
+                    v.validate(
+                                    new ReviewChallengeRequest(
+                                            "r", "k", "a@example.com", "Name\n", null))
+                            .isEmpty());
+            assertFalse(
+                    v.validate(new ReviewUnverifiedRequest("r", "k", "Name", "Company\u0085"))
+                            .isEmpty());
+            assertTrue(v.validate(new ReviewUnverifiedRequest("r", "k", "Name", null)).isEmpty());
+            assertFalse(v.validate(new ReviewUnverifiedRequest("r", "k", " ", null)).isEmpty());
+            for (String blank : java.util.List.of("\u2003", "\u3000")) {
+                assertFalse(
+                        v.validate(new ReviewUnverifiedRequest("r", "k", blank, null)).isEmpty());
+                assertFalse(
+                        v.validate(
+                                        new ReviewChallengeRequest(
+                                                "r", "k", "a@example.invalid", blank, null))
+                                .isEmpty());
+            }
             assertFalse(
                     v.validate(new ReviewChallengeRequest("r", "k", "bad", " ", "x".repeat(201)))
                             .isEmpty());
@@ -178,5 +200,44 @@ class PrototypeReviewBoundaryTest {
             assertFalse(validator.validate(new ReviewGuestEnabledRequest(false, -1L)).isEmpty());
             assertTrue(validator.validate(new ReviewGuestEnabledRequest(false, 0L)).isEmpty());
         }
+    }
+
+    @Test
+    void onlyKnownSessionLevelsUseTheirExplicitPolicyAndLegacyNullRemainsEmail() {
+        var share = share();
+        var session = new PrototypeReviewSessionEntity();
+        session.setShareId("s");
+        session.setProjectId("p");
+        session.setVersionId("v");
+        session.setRevisionId("r");
+        session.setConfigVersion(3L);
+        session.setShareGeneration(PrototypeReviewKeys.digest("generation"));
+        session.setExpiresAt(2000L);
+        assertTrue(PrototypeReviewService.validSession(session, share, "r", 1000));
+        session.setVerificationLevel("unverified");
+        assertFalse(PrototypeReviewService.validSession(session, share, "r", 1000));
+        share.setReviewAllowUnverified(true);
+        assertTrue(PrototypeReviewService.validSession(session, share, "r", 1000));
+        session.setVerificationLevel("admin");
+        assertFalse(PrototypeReviewService.validSession(session, share, "r", 1000));
+        session.setVerificationLevel("email");
+        assertTrue(PrototypeReviewService.validSession(session, share, "r", 1000));
+    }
+
+    @Test
+    void unverifiedManagementResponseHasNoEmailAndCarriesFixedExpiry() throws Exception {
+        var guest = new PrototypeReviewUnverifiedGuestEntity();
+        guest.setId("random-id");
+        guest.setProjectId("private-project");
+        guest.setDisplayName("Self-reported");
+        guest.setEnabled(true);
+        guest.setConfigVersion(0L);
+        guest.setExpiresAt(12345L);
+        var response = ReviewGuestResponse.from(guest);
+        assertEquals("unverified", response.verificationLevel());
+        assertNull(response.maskedEmail());
+        assertEquals(12345L, response.expiresAt());
+        assertFalse(new ObjectMapper().writeValueAsString(guest).contains("Self-reported"));
+        assertFalse(new ObjectMapper().writeValueAsString(response).contains("private-project"));
     }
 }

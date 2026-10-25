@@ -9,6 +9,7 @@ import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeShareKeys;
 import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
+import com.gaiys.proto.prototypehub.web.request.ReviewPolicyRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareEnabledRequest;
 import com.gaiys.proto.prototypehub.web.request.ShareUpdateRequest;
@@ -51,14 +52,23 @@ public class PrototypeShareService
                 .map(this::reviewPolicy);
     }
 
-    public Mono<ReviewPolicyResponse> reviewPolicy(String id, ShareEnabledRequest input) {
-        return mutate(id, input.expectedVersion(), share -> share.setReviewEnabled(input.enabled()))
+    public Mono<ReviewPolicyResponse> reviewPolicy(String id, ReviewPolicyRequest input) {
+        return mutate(
+                        id,
+                        input.expectedVersion(),
+                        share -> {
+                            share.setReviewEnabled(input.enabled());
+                            // 已发布的旧客户端只传enabled；缺失新字段不得关闭管理员已开启的策略。
+                            if (input.allowUnverified() != null)
+                                share.setReviewAllowUnverified(input.allowUnverified());
+                        })
                 .map(this::reviewPolicy);
     }
 
     private ReviewPolicyResponse reviewPolicy(PrototypeShareEntity share) {
         return new ReviewPolicyResponse(
                 Boolean.TRUE.equals(share.getReviewEnabled()),
+                Boolean.TRUE.equals(share.getReviewAllowUnverified()),
                 notifications.available(),
                 share.getConfigVersion() == null ? 0 : share.getConfigVersion());
     }
@@ -123,6 +133,7 @@ public class PrototypeShareService
         share.setAccessKey(random());
         share.setEnabled(true);
         share.setReviewEnabled(false);
+        share.setReviewAllowUnverified(false);
         share.setRevoked(false);
         share.setConfigVersion(1L);
         share.setRevisionMode(mode.name());
@@ -306,6 +317,9 @@ public class PrototypeShareService
                                 PrototypeShareEntity::getReviewEnabled,
                                 Boolean.TRUE.equals(share.getReviewEnabled()))
                         .set(
+                                PrototypeShareEntity::getReviewAllowUnverified,
+                                Boolean.TRUE.equals(share.getReviewAllowUnverified()))
+                        .set(
                                 PrototypeShareEntity::getRevoked,
                                 Boolean.TRUE.equals(share.getRevoked()))
                         .set(PrototypeShareEntity::getConfigVersion, share.getConfigVersion())
@@ -464,7 +478,11 @@ public class PrototypeShareService
                                     grant && Boolean.TRUE.equals(share.getReviewEnabled()),
                                     grant
                                             && Boolean.TRUE.equals(share.getReviewEnabled())
-                                            && notifications.available());
+                                            && notifications.available(),
+                                    grant
+                                            && Boolean.TRUE.equals(share.getReviewEnabled())
+                                            && Boolean.TRUE.equals(
+                                                    share.getReviewAllowUnverified()));
                         });
     }
 

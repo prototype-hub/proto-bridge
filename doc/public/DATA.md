@@ -142,22 +142,25 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 ## 分享邮箱身份数据
 
-EasyORM增加 `p_share.review_enabled`，旧空值按关闭处理，不自动改变现有分享。身份使用以下四表，不关联或创建 `s_user`：
+EasyORM增加 `p_share.review_enabled/review_allow_unverified`，旧空值均按关闭处理，不自动改变现有分享；省略低保障设置或传null的旧客户端保留其已有值。身份总开关和低保障许可分别管理。结构同步沿用仅增缺失表、列和索引的策略，不为身份升级放开全局ALTER/DROP，不降低已有邮箱列的NOT NULL约束。身份不关联或创建 `s_user`：
 
 | 表 | 职责 |
 | --- | --- |
-| `p_review_guest` | 项目与规范邮箱确定的稳定访客ID、邮箱与自填姓名/公司，以及enabled/config_version管理状态 |
+| `p_review_guest` | 项目与规范邮箱确定的稳定已验证访客ID、必需邮箱、自述姓名/公司及enabled/config_version管理状态 |
+| `p_review_unverified_guest` | 独立随机43字符ID、项目、自述姓名/公司、状态版本及固定八小时expires_at；没有邮箱字段，不按姓名合并 |
 | `p_review_challenge` | OTP的BCrypt摘要、投递/尝试/消费状态，以及Cookie、分享、项目、版本、修订、配置代次绑定 |
-| `p_review_session` | 随机Cookie的SHA-256主键、访客与范围，最长八小时，不存原始Cookie |
-| `p_review_rate` | 项目与邮箱发送窗口、计数、冷却期，跨副本共用 |
+| `p_review_session` | 随机Cookie的SHA-256主键、身份等级和范围，最长八小时，不存原始Cookie；verification_level历史NULL按email，未知值拒绝 |
+| `p_review_rate` | 项目与邮箱的OTP发送窗口，及独立域的项目/Cookie未验证身份创建窗口，跨副本共用 |
 
-BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。
+BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。未验证身份不创建challenge、不发送邮件，也不把SMTP失败当作验证通过。
 
-EasyORM为已有guest补充可空的 `enabled/config_version`，旧空值分别按有效/版本0处理；不会回填猜测的状态。新身份有效且版本为0，重新OTP只更新自述资料，不重置管理状态或版本。项目级启停和OTP事务共用项目锁，状态真正切换时增加版本，并同事务删除该项目guest所有会话、该项目规范邮箱的所有challenge；任一步失败全部回滚。重新启用需新OTP，不能恢复旧邮件或Cookie；限频台账保留，停用不是永久删除。
+EasyORM为已有邮箱guest补充可空的 `enabled/config_version`，旧空值分别按有效/版本0处理；不会回填猜测的状态。重新OTP只更新自述资料，不重置管理状态或版本。未验证身份保存在单独表中，与邮箱身份及其确定性ID隔离；同一有效未验证会话返回原身份和原到期时间，不续期或按新名字改资料。退出、到期或凭证丢失后没有自助找回、人工关联或自动升格合并。配置换代后的旧Cookie可在取得新分享证明并明确选择后换发另一随机身份；旧记录不被改名、续期或关联，新旧身份各自保留原到期时间。
 
-四表与分享配置/密钥一并备份，不加入原型manifest或匿名存储导出。表内邮箱、自填资料及可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。稳定guest随项目保留，不按短会话期限删除身份；身份不等于永久访问权。
+项目级启停与身份签发共用项目锁。真实状态转换增加版本，并同事务删除该项目对应身份的会话；邮箱身份同时删除该项目规范邮箱的challenge，未验证身份不操作邮箱challenge。任一步失败全部回滚。重新启用不恢复旧Cookie或OTP，不延长未验证身份期限；限频台账保留，停用不是永久删除。
 
-既有保留期调度每次清理过期challenge/session/rate各最多50行。软删保留业务行但撤销分享；版本永久清理在原图事务移除该版本challenge/session，项目永久清理移除全部guest/challenge/session/rate。文件继续按原30天回收策略处理，不新建后台线程。
+五表与分享配置/密钥一并备份，不加入原型manifest或匿名存储导出。邮箱、自填资料及可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。已验证guest随项目保留，不因会话到期删除；未验证guest有固定到期时间，不能借备份恢复或状态启用续期。身份行不等于永久访问权。
+
+既有保留期调度每次清理过期challenge/session/rate与未验证guest各最多50行，每次订阅使用新时间；不清除仍有效的未验证身份，也不清理稳定邮箱联系人。软删保留业务行但撤销分享；版本永久清理在原图事务移除该版本challenge/session，项目永久清理移除全部邮箱/未验证guest、challenge/session/rate。文件继续按原30天回收策略处理，不新建后台线程。
 
 ## 项目归属迁移与认领
 
