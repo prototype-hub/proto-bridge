@@ -99,6 +99,14 @@ public class PrototypeStorageService {
                                         properties.getRoot(), project, storagePath)));
     }
 
+    public Mono<Void> deleteReviewImage(String project, String imagePath) {
+        return work.run(
+                () ->
+                        SecureZipExtractor.deleteRecursively(
+                                SafePaths.reviewImage(properties.getRoot(), project, imagePath)
+                                        .getParent()));
+    }
+
     public Path site(PrototypeVersionEntity version) {
         return SafePaths.storedVersion(
                         properties.getRoot(), version.getProjectId(), version.getStoragePath())

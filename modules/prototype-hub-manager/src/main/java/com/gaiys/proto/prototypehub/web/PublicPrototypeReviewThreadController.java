@@ -9,12 +9,15 @@ import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewThreadResponse;
 import com.gaiys.proto.prototypehub.web.security.ReviewRequestSecurity;
+import com.gaiys.proto.prototypehub.web.validation.ReviewImageMultipart;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.groups.Default;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.authorization.annotation.Authorize;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -33,6 +36,7 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/prototype-hub/public/shares/{token}/review/threads")
 public class PublicPrototypeReviewThreadController {
     private final PrototypeReviewThreadService threads;
+    private final ReviewImageMultipart multipart;
     private final ReviewRequestSecurity security;
 
     @PostMapping("/_query")
@@ -96,6 +100,33 @@ public class PublicPrototypeReviewThreadController {
         security.origin(exchange);
         String cookie = security.unsafeCookie(exchange);
         return threads.replyVisitor(token, threadId, input, cookie);
+    }
+
+    @PostMapping(value = "/{threadId}/messages-with-image", consumes = "multipart/form-data")
+    @Operation(summary = "向本人已有线程追加一张PNG/JPEG和必填正文")
+    public Mono<ReviewMessageResponse> image(
+            @PathVariable String token, @PathVariable String threadId, ServerWebExchange exchange) {
+        security.origin(exchange);
+        String cookie = security.unsafeCookie(exchange);
+        return multipart.read(
+                exchange,
+                ReviewTextRequest.class,
+                new Class<?>[] {Default.class, ReviewPageRequest.Public.class},
+                (input, image) -> threads.imageVisitor(token, threadId, input, cookie, image));
+    }
+
+    @PostMapping("/{threadId}/messages/{messageId}/image")
+    @Operation(summary = "按当前身份和线程范围读取本人公开消息图片")
+    public Mono<ResponseEntity<Resource>> image(
+            @PathVariable String token,
+            @PathVariable String threadId,
+            @PathVariable String messageId,
+            @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
+                    ReviewPageRequest input,
+            ServerWebExchange exchange) {
+        security.origin(exchange);
+        String cookie = security.unsafeCookie(exchange);
+        return threads.imageVisitor(token, threadId, messageId, input, cookie);
     }
 
     @PutMapping("/{threadId}/status")

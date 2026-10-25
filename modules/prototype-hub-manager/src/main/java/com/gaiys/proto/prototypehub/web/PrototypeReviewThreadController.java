@@ -8,21 +8,25 @@ import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
 import com.gaiys.proto.prototypehub.web.response.ReviewThreadResponse;
+import com.gaiys.proto.prototypehub.web.validation.ReviewImageMultipart;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
+import jakarta.validation.groups.Default;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.annotation.QueryAction;
 import org.hswebframework.web.authorization.annotation.Resource;
 import org.hswebframework.web.authorization.annotation.SaveAction;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 /** 管理查询也要求项目EDIT；菜单动作不能替代项目范围，内部备注不参与公开元数据。 */
@@ -34,6 +38,7 @@ import reactor.core.publisher.Mono;
 @RequestMapping("/prototype-hub/versions/{versionId}/review-threads")
 public class PrototypeReviewThreadController {
     private final PrototypeReviewThreadService threads;
+    private final ReviewImageMultipart multipart;
 
     @PostMapping("/_query")
     @QueryAction
@@ -71,6 +76,31 @@ public class PrototypeReviewThreadController {
             @PathVariable String threadId,
             @Valid @RequestBody ReviewMemberTextRequest input) {
         return threads.replyMember(versionId, threadId, input);
+    }
+
+    @PostMapping(value = "/{threadId}/messages-with-image", consumes = "multipart/form-data")
+    @SaveAction
+    @Operation(summary = "向已有线程追加一张私有PNG/JPEG回复或内部备注")
+    public Mono<ReviewMessageResponse> image(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            ServerWebExchange exchange) {
+        return multipart.read(
+                exchange,
+                ReviewMemberTextRequest.class,
+                new Class<?>[] {Default.class},
+                (input, image) -> threads.imageMember(versionId, threadId, input, image));
+    }
+
+    @PostMapping("/{threadId}/messages/{messageId}/image")
+    @QueryAction
+    @Operation(summary = "按项目EDIT权限读取当前线程的回复图片")
+    public Mono<ResponseEntity<org.springframework.core.io.Resource>> image(
+            @PathVariable String versionId,
+            @PathVariable String threadId,
+            @PathVariable String messageId,
+            @Valid @RequestBody ReviewPageRequest input) {
+        return threads.imageMember(versionId, threadId, messageId, input);
     }
 
     @PutMapping("/{threadId}/status")

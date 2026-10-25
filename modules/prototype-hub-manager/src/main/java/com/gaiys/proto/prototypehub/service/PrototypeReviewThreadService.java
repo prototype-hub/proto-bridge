@@ -29,6 +29,9 @@ import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.api.crud.entity.QueryParamEntity;
 import org.hswebframework.web.crud.query.QueryHelper;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ResponseEntity;
+import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import org.springframework.web.server.ServerWebInputException;
@@ -51,6 +54,8 @@ public class PrototypeReviewThreadService {
     private final PrototypeCreationReceiptService receipts;
     private final FileWork work;
     private final TransactionalOperator transactions;
+    private final PrototypeReviewImageService images;
+    private final FileCleanupService cleanup;
 
     public Mono<PagerResult<ReviewThreadResponse>> queryVisitor(
             String token, ReviewThreadQueryRequest input, String cookie) {
@@ -148,6 +153,101 @@ public class PrototypeReviewThreadService {
                                                                 input.getVisibility()))
                                         .as(transactions::transactional))
                 .checkpoint("prototype-hub/review/member-message");
+    }
+
+    /** 先完成页面和线程授权，再接收图片；锁内再次授权，文件归属等待数据库最终结果。 */
+    public Mono<ReviewMessageResponse> imageVisitor(
+            String token, String threadId, ReviewTextRequest input, String cookie, FilePart image) {
+        return visitorPage(token, input, cookie)
+                .flatMap(prepared -> requireThread(prepared, threadId).thenReturn(prepared))
+                .flatMap(
+                        prepared ->
+                                images.upload(
+                                        prepared.projectId(),
+                                        prepared.versionId(),
+                                        image,
+                                        candidate ->
+                                                lockedVisitor(token, input, cookie, prepared)
+                                                        .flatMap(
+                                                                scope ->
+                                                                        append(
+                                                                                scope, threadId,
+                                                                                input, "public",
+                                                                                candidate))));
+    }
+
+    public Mono<ReviewMessageResponse> imageMember(
+            String versionId, String threadId, ReviewMemberTextRequest input, FilePart image) {
+        return memberPage(versionId, input)
+                .flatMap(prepared -> requireThread(prepared, threadId).thenReturn(prepared))
+                .flatMap(
+                        prepared ->
+                                images.upload(
+                                        prepared.projectId(),
+                                        versionId,
+                                        image,
+                                        candidate ->
+                                                lockedMember(versionId, input, prepared)
+                                                        .flatMap(
+                                                                scope ->
+                                                                        append(
+                                                                                scope,
+                                                                                threadId,
+                                                                                input,
+                                                                                input
+                                                                                        .getVisibility(),
+                                                                                candidate))));
+    }
+
+    public Mono<ResponseEntity<Resource>> imageVisitor(
+            String token,
+            String threadId,
+            String messageId,
+            ReviewPageRequest input,
+            String cookie) {
+        return visitorPage(token, input, cookie)
+                .flatMap(scope -> image(scope, threadId, messageId));
+    }
+
+    public Mono<ResponseEntity<Resource>> imageMember(
+            String versionId, String threadId, String messageId, ReviewPageRequest input) {
+        return memberPage(versionId, input).flatMap(scope -> image(scope, threadId, messageId));
+    }
+
+    private Mono<ResponseEntity<Resource>> image(Scope scope, String threadId, String messageId) {
+        return requireThread(scope, threadId)
+                .then(
+                        Mono.defer(
+                                () -> {
+                                    var query =
+                                            messages.createQuery()
+                                                    .where(
+                                                            PrototypeReviewMessageEntity::getId,
+                                                            messageId)
+                                                    .and(
+                                                            PrototypeReviewMessageEntity
+                                                                    ::getThreadId,
+                                                            threadId)
+                                                    .and(
+                                                            PrototypeReviewMessageEntity
+                                                                    ::getProjectId,
+                                                            scope.projectId())
+                                                    .and(
+                                                            PrototypeReviewMessageEntity
+                                                                    ::getVersionId,
+                                                            scope.versionId())
+                                                    .and(
+                                                            PrototypeReviewMessageEntity
+                                                                    ::getRevisionId,
+                                                            scope.revisionId());
+                                    if (scope.visitor())
+                                        query.and(
+                                                PrototypeReviewMessageEntity::getVisibility,
+                                                "public");
+                                    return query.fetch().singleOrEmpty();
+                                }))
+                .switchIfEmpty(Mono.error(PrototypeReviewImageService::unavailable))
+                .flatMap(images::read);
     }
 
     public Mono<ReviewThreadResponse> stateVisitor(
@@ -459,6 +559,15 @@ public class PrototypeReviewThreadService {
 
     private Mono<ReviewMessageResponse> append(
             Scope scope, String id, ReviewTextRequest input, String visibility) {
+        return append(scope, id, input, visibility, null);
+    }
+
+    private Mono<ReviewMessageResponse> append(
+            Scope scope,
+            String id,
+            ReviewTextRequest input,
+            String visibility,
+            PrototypeReviewImageService.Candidate image) {
         return requireThread(scope, id)
                 .flatMap(
                         thread -> {
@@ -470,6 +579,8 @@ public class PrototypeReviewThreadService {
                                             id,
                                             input.getText(),
                                             visibility);
+                            if (image != null) request = request.withPayload(image.sha256());
+                            var currentRequest = request;
                             return receipts.replay(
                                             request,
                                             resource ->
@@ -498,6 +609,10 @@ public class PrototypeReviewThreadService {
                                                                         input.getText(),
                                                                         visibility,
                                                                         now);
+                                                        if (image != null) {
+                                                            message.setId(image.id());
+                                                            image.apply(message);
+                                                        }
                                                         boolean reopen =
                                                                 scope.visitor()
                                                                         && "resolved"
@@ -542,7 +657,7 @@ public class PrototypeReviewThreadService {
                                                                                 : Mono.empty())
                                                                 .then(
                                                                         receipts.record(
-                                                                                request,
+                                                                                currentRequest,
                                                                                 message.getId(),
                                                                                 scope.revisionId()))
                                                                 .thenReturn(response(message));
@@ -757,9 +872,25 @@ public class PrototypeReviewThreadService {
                                         .map(PrototypeReviewMessageEntity::getId)
                                         .collectList(),
                         ids ->
-                                messages.createDelete()
+                                messages.createQuery()
                                         .in(PrototypeReviewMessageEntity::getId, ids)
-                                        .execute()
+                                        .fetch()
+                                        .collectList()
+                                        .flatMapMany(reactor.core.publisher.Flux::fromIterable)
+                                        .filter(row -> row.getImagePath() != null)
+                                        .concatMap(
+                                                row ->
+                                                        cleanup.enqueueReviewImage(
+                                                                row.getProjectId(),
+                                                                row.getVersionId(),
+                                                                row.getImagePath()),
+                                                1)
+                                        .then(
+                                                messages.createDelete()
+                                                        .in(
+                                                                PrototypeReviewMessageEntity::getId,
+                                                                ids)
+                                                        .execute())
                                         .then())
                 .then(
                         deleteBatches(
@@ -829,7 +960,8 @@ public class PrototypeReviewThreadService {
                 row.getAuthorCompany(),
                 row.getVerificationLevel(),
                 row.getVisibility(),
-                row.getCreateTime());
+                row.getCreateTime(),
+                PrototypeReviewImageService.metadata(row));
     }
 
     public static PrototypeHubException commentsDisabled() {
