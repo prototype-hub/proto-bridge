@@ -15,6 +15,7 @@ import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewThreadCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
@@ -116,19 +117,15 @@ public class PrototypeReviewThreadService {
         return memberPage(versionId, input).flatMap(scope -> queryMessages(scope, threadId, input));
     }
 
-    public Mono<ReviewThreadResponse> create(String token, ReviewTextRequest input, String cookie) {
+    public Mono<ReviewThreadResponse> create(
+            String token, ReviewThreadCreateRequest input, String cookie) {
         return visitorPage(token, input, cookie)
                 .flatMap(
                         prepared ->
                                 lockedVisitor(token, input, cookie, prepared)
                                         .flatMap(
                                                 scope -> {
-                                                    var request =
-                                                            request(
-                                                                    scope,
-                                                                    "thread",
-                                                                    input.getClientRequestId(),
-                                                                    input.getText());
+                                                    var request = threadRequest(scope, input);
                                                     return receipts.replay(
                                                                     request,
                                                                     id ->
@@ -141,8 +138,7 @@ public class PrototypeReviewThreadService {
                                                                             () ->
                                                                                     newThread(
                                                                                                     scope,
-                                                                                                    input
-                                                                                                            .getText(),
+                                                                                                    input,
                                                                                                     request,
                                                                                                     null)
                                                                                             .map(
@@ -156,7 +152,7 @@ public class PrototypeReviewThreadService {
 
     /** 初建图片复用文字线程的回执作用域；首消息持有图片，线程标识不能作为文件归属依据。 */
     public Mono<ReviewThreadResponse> createImage(
-            String token, ReviewTextRequest input, String cookie, FilePart image) {
+            String token, ReviewThreadCreateRequest input, String cookie, FilePart image) {
         return visitorPage(token, input, cookie)
                 .flatMap(
                         prepared ->
@@ -175,10 +171,10 @@ public class PrototypeReviewThreadService {
     }
 
     private Mono<PrototypeReviewImageService.Stored<ReviewThreadResponse>> createImage(
-            Scope scope, ReviewTextRequest input, PrototypeReviewImageService.Candidate image) {
-        var request =
-                request(scope, "thread", input.getClientRequestId(), input.getText())
-                        .withPayload(image.sha256());
+            Scope scope,
+            ReviewThreadCreateRequest input,
+            PrototypeReviewImageService.Candidate image) {
+        var request = threadRequest(scope, input).withPayload(image.sha256());
         return receipts.replay(
                         request,
                         id ->
@@ -187,7 +183,7 @@ public class PrototypeReviewThreadService {
                                                 row ->
                                                         new PrototypeReviewImageService.Stored<>(
                                                                 response(row), null)))
-                .switchIfEmpty(Mono.defer(() -> newThread(scope, input.getText(), request, image)));
+                .switchIfEmpty(Mono.defer(() -> newThread(scope, input, request, image)));
     }
 
     public Mono<ReviewMessageResponse> replyVisitor(
@@ -604,11 +600,21 @@ public class PrototypeReviewThreadService {
                 fields.toArray(String[]::new));
     }
 
+    /** 无锚点沿用已发布指纹；非空位置先于图片摘要并入，不受JSON字段顺序影响。 */
+    private PrototypeCreationReceiptService.Request threadRequest(
+            Scope scope, ReviewThreadCreateRequest input) {
+        var request = request(scope, "thread", input.getClientRequestId(), input.getText());
+        return input.getAnchor() == null
+                ? request
+                : request.withPayload(input.getAnchor().canonical());
+    }
+
     private Mono<PrototypeReviewImageService.Stored<ReviewThreadResponse>> newThread(
             Scope scope,
-            String text,
+            ReviewThreadCreateRequest input,
             PrototypeCreationReceiptService.Request request,
             PrototypeReviewImageService.Candidate image) {
+        String text = input.getText();
         long now = System.currentTimeMillis();
         var row = new PrototypeReviewThreadEntity();
         row.setId(PrototypeReviewKeys.random());
@@ -619,6 +625,7 @@ public class PrototypeReviewThreadService {
         row.setPageId(scope.page().pageId());
         row.setPageName(scope.page().name());
         row.setPagePath(scope.page().path());
+        row.setAnchor(input.getAnchor());
         row.setGuestId(scope.actorId());
         row.setVerificationLevel(scope.level());
         row.setAuthorName(scope.name());
@@ -1035,7 +1042,8 @@ public class PrototypeReviewThreadService {
                 row.getState(),
                 row.getConfigVersion(),
                 row.getCreateTime(),
-                row.getPublicUpdatedAt());
+                row.getPublicUpdatedAt(),
+                row.getAnchor());
     }
 
     private static ReviewMessageResponse response(PrototypeReviewMessageEntity row) {

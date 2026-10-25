@@ -252,7 +252,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 ## 固定页面文字反馈
 
-反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人，以及访客初始投稿和已有线程回复中的单张手动图片；不含点/矩形/椭圆、通用附件、全局分派队列、消息编辑删除或业务通知。
+反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人、访客创建时的根页面点/矩形/椭圆位置快照，以及访客初始投稿和已有线程回复中的单张手动图片；不含跨frame或语义元素定位、通用附件、全局分派队列、消息编辑删除或业务通知。
 
 公开接口基于 `/prototype-hub/public/shares/{token}/review`，所有请求均要求受信Origin、当前HttpOnly Cookie、`X-Review-CSRF`，返回no-store，并提交 `{revisionId,accessKey,pageId}`：
 
@@ -260,8 +260,8 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | --- | --- | --- |
 | `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人线程的PagerResult |
 | `POST /threads/{threadId}/_detail` | 无 | 当前本人范围内的单个Thread，不受列表分页或state筛选影响 |
-| `POST /threads` | `{text,clientRequestId}` | Thread，含初始公开消息的原子创建结果 |
-| `POST /threads/_with-image` | multipart中的request含`{text,clientRequestId}`及上述页面字段，另含image | Thread，首条公开消息附单张图片 |
+| `POST /threads` | `{text,clientRequestId,anchor?}` | Thread，含初始公开消息的原子创建结果 |
+| `POST /threads/_with-image` | multipart中的request含`{text,clientRequestId,anchor?}`及上述页面字段，另含image | Thread，首条公开消息附单张图片 |
 | `POST /threads/{threadId}/messages/_query` | `{pageIndex,pageSize}` | 仅公开消息的PagerResult |
 | `POST /threads/{threadId}/messages` | `{text,clientRequestId}` | Message，作者始终来自当前访客会话 |
 | `PUT /threads/{threadId}/status` | `{state:'open',expectedVersion,clientRequestId}` | Thread，访客只能重开 |
@@ -278,7 +278,13 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | `POST /{threadId}/messages` | `{revisionId,pageId,text,visibility:'public'|'internal',clientRequestId}` | Message，成员作者从当前登录身份获取 |
 | `PUT /{threadId}/status` | `{revisionId,pageId,state:'open'|'resolved',expectedVersion,clientRequestId}` | Thread |
 
-管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt,image}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
+管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt,anchor}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt,image}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
+
+anchor仅可在访客创建线程时提交，省略或null表示无位置；旧线程返回null，回复与状态请求不接受锚点修改。非空结构为 `{space:'root-document-css-px-v1',shape:'point'|'rect'|'ellipse',x,y,width,height,documentWidth,documentHeight,viewportWidth,viewportHeight}`。八个数值均为JSON整数CSS像素，不接受数值字符串或小数；文档宽高为1–1000000，视口宽高为1–16384。x/y及width/height均非负，坐标及右/下边界不得超出文档；point的width/height均为0，rect/ellipse的宽高至少1。只保存和返回上述类型化字段，不接受选择器、frame路径、HTML或任意上下文。
+
+位置是用户提供的静态显示快照，不构成页面身份、DOM真实性或访问权限证明。线程归属仍由当前授权与manifest固定页面决定。外壳只在用户明确操作时向当前sandbox根文档发送几何；原型不接收线程/页面/修订标识、正文、作者、图片或凭据。根文档路径必须精确匹配外壳从已验证运行地址提取的encoded相对路径，且不含query/hash；不匹配时不可采集或定位。该检查防止正常内部导航误绑，不证明恶意原型脚本的可信性，不扩展到子frame。
+
+定位必须同时精确匹配记录的文档及视口宽高，不匹配时隐藏标记并明确不可定位，不缩放、拉伸、重锚或修改所选页面。匹配时可滚动到位置；后续尺寸变化使标记失效。同尺寸动态内容仍可能改变，因此位置不表示持续跟踪某个元素。捕获和定位均不会自动投稿，锚点与线程及首消息同事务保存，创建后不可修改或迁移到其他修订。
 
 访客创建附图线程使用 `POST /threads/_with-image`；已有线程仍可在公开和管理端的各自base下调用 `POST /{threadId}/messages-with-image`。以上接口均使用multipart/form-data且只含两个part：`request`必须为application/json，内容为该端原文字创建或回复请求；`image`为唯一文件。拒绝重复、多余part及多个文件，正文仍必填，原纯文字JSON端点保持兼容。附图创建仅对访客开放，线程、首条public消息、thread.created事件及回执同事务落库；返回原Thread投影，不增加image字段，成功后通过原消息分页与图片读取接口查看首图。图片只支持实际可解码的PNG/JPEG，原始字节最多5 MiB，宽高均为1–16384且像素总数不超过16000000；服务端检查签名、真实格式和尺寸，客户端MIME、扩展名与文件名均不作为格式或路径依据。原文件名不保存或展示，保存验证后的原始字节，不承诺重编码、去除EXIF或自动截图。
 
@@ -286,7 +292,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 读取用 `POST /{threadId}/messages/{messageId}/image`，JSON为该端原ReviewPageRequest：管理端含revisionId/pageId，公开端再含accessKey。每次读取重验当前项目/分享/身份、固定修订页面以及message→thread关联；公开端只能读取本人当前线程的公开图片。返回真实image/png或image/jpeg字节，带nosniff、private/no-store及固定安全inline文件名image.png或image.jpg；缺失或损坏时明确失败，不回退其他消息或最新修订。没有公开GET、静态资源路径或永久签名链接，分享密码、身份失效和项目撤权同样阻断未来读取；已交付到客户端的字节不能撤回。
 
-附图创建与纯文字创建共享原clientRequestId的创建操作范围，附图指纹额外包含真实图片SHA-256；同键同文字及图片字节返回原线程，不重复线程、首消息、事件或限频。同键改文字、改图或文字/图片互换返回原409幂等冲突。图片回复仍沿用各自原回复操作范围，同键同文字、可见性及图片字节重放原消息。原文字指纹和已有回执保持兼容；成功写入只保留实际首消息或回复所引用的图片，重放清理本次未引用的上传候选。未知结果保留同一File和请求键，由用户明确重试；改变内容才代表新意图。文件落盘与数据库不伪称跨资源原子事务：线程、消息、事件和回执同事务，明确回滚/未进入事务时补偿候选文件，UNKNOWN保留潜在已提交内容；进程崩溃遗留的未引用候选由停写后的完整v3离线审计处理。
+附图创建与纯文字创建共享原clientRequestId的创建操作范围。省略或null的anchor保持原文字指纹；非空anchor按固定字段顺序加入指纹，附图再追加真实图片SHA-256。同键同文字、锚点及图片字节返回原线程，不重复线程、首消息、事件或限频。同键改文字、锚点、图片或在无锚点/有锚点、文字/图片间切换返回原409幂等冲突。图片回复仍沿用各自原回复操作范围，同键同文字、可见性及图片字节重放原消息。原文字指纹和已有回执保持兼容；成功写入只保留实际首消息或回复所引用的图片，重放清理本次未引用的上传候选。未知结果保留同一File和请求键，由用户明确重试；改变内容才代表新意图。文件落盘与数据库不伪称跨资源原子事务：线程、消息、事件和回执同事务，明确回滚/未进入事务时补偿候选文件，UNKNOWN保留潜在已提交内容；进程崩溃遗留的未引用候选由停写后的完整v3离线审计处理。
 
 图片错误为400 / `PROTOTYPE_HUB_REVIEW_IMAGE_INVALID`（实际格式、解码或维度）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_TOO_LARGE`（原图字节预算）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_PARTS_INVALID`（part、JSON、校验及multipart解析预算）和404 / `PROTOTYPE_HUB_REVIEW_IMAGE_UNAVAILABLE`（无图、缺文件或完整性失败）。解析期超限可能先返回PARTS_INVALID，原Origin、CSRF、会话、权限及409幂等冲突码保持。
 
@@ -294,7 +300,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 成员预览和公开分享可在原页面深链中加入 `threadId`：`?revisionId={rid}&pageId={pageId}&threadId={threadId}`。threadId为43位URL安全随机标识；线程目标必须是三个单值、非空、格式有效的完整标识，重复、非法或不完整目标显示错误，不自动打开首页、另一线程或新建投稿。URL仅定位，仍须完成当前项目授权或分享密码、访客身份及待用邀请流程；完成后继续定位，不自动发码、退出身份、放弃邀请或提交文字。未验证身份丢失后，链接不能恢复原身份。
 
-指定线程通过详情接口独立读取，允许不在当前列表页或筛选结果中；不扫描全部列表、不插入伪列表行或修改total。复制当前线程链接只保留当前成员预览或公开分享外壳路径和上述三个标识，不携带访问证明、邀请片段、Cookie、CSRF、正文或运行URL，也不自动把成员链接转换成公开链接。普通页面复制仍仅含修订与页面。明确选择页面会清除线程目标，浏览器前进后退可恢复有效目标；范围或身份变化清空旧详情，取消与代次检查拒绝迟到响应。链接定位线程，不定位特定消息页，线程数据及凭据不传入原型iframe。
+指定线程通过详情接口独立读取，允许不在当前列表页或筛选结果中；不扫描全部列表、不插入伪列表行或修改total。复制当前线程链接只保留当前成员预览或公开分享外壳路径和上述三个标识，不携带访问证明、邀请片段、Cookie、CSRF、正文或运行URL，也不自动把成员链接转换成公开链接。普通页面复制仍仅含修订与页面。明确选择页面会清除线程目标，浏览器前进后退可恢复有效目标；范围或身份变化清空旧详情，取消与代次检查拒绝迟到响应。链接定位线程，不定位特定消息页；复制链接不含anchor，线程数据及凭据不传入原型iframe，仅用户明确采集/定位的几何通过独立根文档通道传递。
 
 分页pageIndex为0–10000、pageSize为1–100；线程按公开updatedAt降序、ID升序，消息按createdAt升序、ID升序。公开消息先按visibility过滤再计数、分页，不能暴露内部备注内容、数量、时间或其他元数据。内部备注不改变线程公开updatedAt、状态、configVersion或排序；无额外messageCount。公开新回复会更新updatedAt，访客回复自动将resolved重开并只递增一次状态版本；PM公开回复保留原状态。只有状态转换改变configVersion；同版本同状态请求无额外状态事件，陈旧expectedVersion返回409。
 

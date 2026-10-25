@@ -15,7 +15,7 @@ import com.gaiys.proto.prototypehub.storage.manifest.PrototypeManifest;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
-import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewThreadCreateRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewContextResponse.ReviewIdentity;
 import java.time.Duration;
@@ -101,7 +101,7 @@ class PrototypeReviewThreadBoundaryTest {
                         transactions,
                         null,
                         null);
-        var input = new ReviewTextRequest();
+        var input = new ReviewThreadCreateRequest();
         input.setRevisionId("r");
         input.setPageId(page().pageId());
         input.setAccessKey("key");
@@ -176,7 +176,7 @@ class PrototypeReviewThreadBoundaryTest {
                         null,
                         images,
                         null);
-        var input = new ReviewTextRequest();
+        var input = new ReviewThreadCreateRequest();
         input.setRevisionId("r");
         input.setPageId(page().pageId());
         input.setAccessKey("key");
