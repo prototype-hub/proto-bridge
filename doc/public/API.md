@@ -187,7 +187,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 ## 分享邮箱身份
 
-访问者身份由分享管理员逐条开启，默认关闭，不影响免账号预览。默认使用邮箱OTP；管理员还可单独允许只填姓名的低保障身份，界面明确标为“未验证”。两种身份都不创建平台用户，姓名/公司均为自述，邮箱验证也不代表实名或公司认证。当前不含邀请、人工身份关联、批注/回复及业务邮件提醒。
+访问者身份由分享管理员逐条开启，默认关闭，不影响免账号预览。默认使用邮箱OTP；管理员还可单独允许只填姓名的低保障身份，界面明确标为“未验证”。两种身份都不创建平台用户，姓名/公司均为自述，邮箱验证也不代表实名或公司认证。固定分享支持手动复制定向邀请，仍需指定邮箱重新OTP；当前不含人工身份关联、批注/回复及业务邮件提醒。
 
 `GET /prototype-hub/shares/{id}/review` 返回 `{enabled,allowUnverified,mailAvailable,configVersion}`，需要分享query及项目SHARE范围；`PUT` 同路径接受 `{enabled,allowUnverified?,expectedVersion}`，需要分享save及同一范围。`allowUnverified`旧空值按false，旧客户端省略该字段或传null时保留已有设置，不因普通分享编辑或SMTP故障而开启。低保障入口要求身份总开关与该许可同时启用。策略更新沿现有CAS并轮换分享凭据，旧预览和身份失效；409后须刷新并重新确认。已通过密码授权的公开分享提供 `reviewEnabled/reviewAvailable/reviewUnverifiedAllowed`；最后一项仅在分享授权、身份总开关和低保障许可同时有效时为true，身份context也返回allowUnverified。
 
@@ -196,7 +196,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 | 子路径 | 额外字段 | `result` |
 | --- | --- | --- |
 | `/context` | 无 | `{revisionId,enabled,allowUnverified,mailAvailable,csrfToken,session}`，匿名session为null |
-| `/challenges` | `email,displayName,company?` | `{challengeId,expiresAt,resendAfter}`，不返回验证码或邮箱 |
+| `/challenges` | `email,displayName,company?,invitationToken?` | `{challengeId,expiresAt,resendAfter}`，不返回验证码或邮箱 |
 | `/verify` | `challengeId,code` | 同context，成功session非空，轮换Cookie与CSRF |
 | `/unverified` | `displayName,company?`，不收集邮箱 | 同context，明确返回未验证身份；仅显式允许时可用，不发送邮件 |
 | `/logout` | 无 | `{loggedOut:true}`，仅撤销当前身份并轮换匿名Cookie |
@@ -212,6 +212,28 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 新建未验证身份使用独立的数据库限频域：每项目每小时60次、当前Cookie每小时5次且冷却60秒；不占用或退还OTP发送窗口。同一有效会话的原样返回不计新建。Cookie限频不等同实名或设备识别，清除Cookie不能绕过项目总量上限。SMTP未配置或发送失败时，仍须由管理员显式允许、由访客主动选择此入口，不自动降级。
 
 未知、错误、过期、已用或不匹配的challenge统一400 / `PROTOTYPE_HUB_REVIEW_CODE_INVALID`。非法输入400，分享证明/Origin/CSRF不符或未允许低保障身份403，分享不可用404，配置或身份状态冲突409，限频429；SMTP未配置或失败只使邮箱发码返回503。分享修改、停用、撤销、到期或软删均逐请求阻断旧身份，重新启用不复活旧授权；邮箱身份到期需重新OTP，未验证身份到期不能恢复原ID。
+
+### 固定分享邀请
+
+邀请只确认指定邮箱在同一固定分享下的身份，不将分享变为“仅受邀者访问”，不改变普通邮箱OTP或管理员已允许的未验证入口。邀请链接不代替分享密码或访问证明，不是免验证登录链接，也不会自动发送邀请邮件。
+
+管理接口基于 `/prototype-hub/shares/{shareId}/review-invitations`，查询要求 `prototype-hub-share.query`，创建/撤销要求 `prototype-hub-share.save`；各项均同时检查当前项目SHARE能力。
+
+| 请求 | 输入/结果 |
+| --- | --- |
+| `POST` 基础路径 | `{email,expectedShareVersion}`；返回 `{invitation,invitationToken}`，原始邀请凭据仅本次响应提供 |
+| `POST /_query` | `{pageIndex:0,pageSize:20}`；返回标准服务端分页，记录不含原始凭据或完整邮箱 |
+| `PUT /{invitationId}/revoke` | `{expectedVersion}`；返回当前邀请记录，不能撤回已成功签发的访客会话 |
+
+`invitation` 为 `{id,maskedEmail,status,configVersion,createdAt,expiresAt,consumedAt}`，时间使用Unix毫秒，未消费的consumedAt为null。状态为 `pending/consumed/revoked/expired/invalidated`；列表根据当前分享绑定与访客状态判定，不仅依赖存储的撤销标记。页码0–10000、每页1–100，按创建时间降序、ID升序；越界页保留total并返回空data，不接收任意查询表达式。
+
+只允许活动、已开启访问者身份且已绑定有效修订的 `fixed` 分享创建邀请；`latest` 须先显式改为固定修订。创建提交刚读取的分享配置版本，陈旧版本返回409；邀请有效期为创建后24小时与分享有效期的较早者，后续上传不会移动邀请目标。创建使用独立数据库限频：每项目每小时60次、项目内每收件邮箱5次并冷却60秒，不占用或退还OTP发送窗口。
+
+撤销前先校验邀请的expectedVersion；同版本已撤销记录可原样返回，pending变更为revoked并增加版本。已消费、到期或失效记录返回409，不能重新启用。分享配置换代、暂停、撤销、到期、关闭身份或资源回收使旧待用邀请失效；邮箱访客停用及重新启用后的状态版本也必须匹配，不能让旧邀请复活。撤销邀请不撤销已建立的身份，需要时另用访问者管理停用该访客。
+
+管理员从现有同源分享地址生成 `#reviewInvitation=TOKEN` 链接并明确复制，关闭弹窗或切换分享即清空原始凭据。公开外壳先捕获并清除片段，仅在当前同一分享的内存中保留；它不进入查询字符串、原型URL、postMessage、本地存储或日志。访客自己输入指定收件邮箱，不提供公开邀请详情或邮箱回显。即使已有身份，也须先明确退出并完成本次新的邮箱OTP；退出不自动放弃同页待用邀请。
+
+带邀请的challenge在准备、SMTP受理确认和验证消费时重验邮箱、固定修订、分享配置/密钥代次及访客状态版本。invitationToken非null时必须为43位URL安全字符，格式非法返回400；格式合法但未知、已用、撤销、到期或收件人/范围不匹配的邀请统一返回403 / `PROTOTYPE_HUB_REVIEW_INVITATION_INVALID`，不静默回退普通发码。verify仍只提交原有 `{revisionId,accessKey,challengeId,code}`，邀请关联从challenge读取，不能另传替换邀请。正确OTP在同一事务消费邀请与challenge并建立邮箱身份/会话，并发只能成功一次；错误验证码提交尝试次数但不消费邀请。SMTP仍只发必要验证码，失败不自动重试或降低身份等级。用户可明确放弃邀请后独立使用普通身份入口，不自动关联未验证身份。
 
 ### 项目访问者管理
 

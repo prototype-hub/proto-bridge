@@ -3,6 +3,8 @@ package com.gaiys.proto;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewInvitationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewUnverifiedGuestEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
@@ -316,6 +318,40 @@ class EasyormSchemaIntegrationTest {
                 scalar(
                         "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND"
                                 + " indexname='addition_future_idx'"));
+    }
+
+    @Test
+    void invitationUpgradePreservesOrdinaryChallengesAndAddsDocumentedIndependentTable()
+            throws Exception {
+        execute(
+                "INSERT INTO p_review_challenge(id,project_id,version_id,share_id,revision_id,config_version,share_generation,cookie_hash,email,display_name,code_hash,delivered,attempts,consumed,create_time,expires_at) VALUES ('legacy-invite-challenge','p','v','s','r',0,'generation','cookie','retained@example.invalid','Retained','hash',false,0,false,1,2)");
+        try {
+            execute("DROP TABLE p_review_invitation");
+            execute("ALTER TABLE p_review_challenge DROP COLUMN invitation_id");
+            synchronize(PrototypeReviewInvitationEntity.class);
+            synchronize(PrototypeReviewChallengeEntity.class);
+            synchronize(PrototypeReviewInvitationEntity.class);
+            assertEquals(
+                    "retained@example.invalid|true",
+                    scalar(
+                            "SELECT email||'|'||(invitation_id IS NULL)::text FROM p_review_challenge WHERE id='legacy-invite-challenge'"));
+            assertEquals(
+                    "YES",
+                    scalar(
+                            "SELECT is_nullable FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_challenge' AND column_name='invitation_id'"));
+            assertFalse(
+                    scalar("SELECT obj_description('p_review_invitation'::regclass)").isBlank());
+            assertFalse(
+                    scalar(
+                                    "SELECT col_description('p_review_invitation'::regclass,ordinal_position) FROM information_schema.columns WHERE table_name='p_review_invitation' AND column_name='token_hash'")
+                            .isBlank());
+            assertEquals(
+                    "1",
+                    scalar(
+                            "SELECT count(*)::text FROM pg_indexes WHERE tablename='p_review_invitation' AND indexname='idx_review_invitation_token' AND indexdef LIKE '%UNIQUE%'"));
+        } finally {
+            execute("DELETE FROM p_review_challenge WHERE id='legacy-invite-challenge'");
+        }
     }
 
     @Test

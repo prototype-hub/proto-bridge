@@ -72,6 +72,11 @@ public class PrototypeReviewChallengeEntity extends GenericEntity<String> {
     @Schema(description = "六位验证码的BCrypt摘要")
     private String codeHash;
 
+    @JsonIgnore
+    @Column(name = "invitation_id", length = 43)
+    @Schema(description = "可选邀请记录标识，普通OTP为空，不保存原始凭据")
+    private String invitationId;
+
     @Column(name = "delivered", nullable = false)
     @Schema(description = "SMTP已明确接受后才可验证")
     private Boolean delivered;

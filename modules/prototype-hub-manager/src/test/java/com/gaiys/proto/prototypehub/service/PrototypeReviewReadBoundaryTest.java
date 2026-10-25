@@ -4,11 +4,14 @@ import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewGuestEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewInvitationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.enums.ReviewVerificationLevel;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeShareKeys;
 import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.storage.scanner.PrototypePackageQualityScanner;
@@ -31,7 +34,7 @@ import reactor.test.StepVerifier;
 
 class PrototypeReviewReadBoundaryTest {
     @ParameterizedTest
-    @ValueSource(strings = {"share", "version", "project", "revision"})
+    @ValueSource(strings = {"share", "version", "project", "revision", "invitation", "guest"})
     void challengeWaitsForScopeConnectionReleaseBeforePreparingBcrypt(String stage) {
         var row = new PrototypeRevisionEntity();
         row.setId("r");
@@ -122,6 +125,33 @@ class PrototypeReviewReadBoundaryTest {
                 };
         var notifications = mock(NotificationGateway.class);
         when(notifications.available()).thenReturn(true);
+        var invitation = new PrototypeReviewInvitationEntity();
+        invitation.setProjectId("p");
+        invitation.setVersionId("v");
+        invitation.setShareId("s");
+        invitation.setRevisionId("r");
+        invitation.setEmail("a@example.invalid");
+        invitation.setShareConfigVersion(1L);
+        invitation.setShareGeneration(PrototypeReviewKeys.digest("generation"));
+        invitation.setGuestConfigVersion(0L);
+        invitation.setExpiresAt(System.currentTimeMillis() + 60_000);
+        var guest = new PrototypeReviewGuestEntity();
+        guest.setEnabled(true);
+        var invitationQuery = mock(ReactiveQuery.class, RETURNS_SELF);
+        var invitationRepository = mock(ReactiveRepository.class);
+        when(invitationRepository.createQuery()).thenReturn(invitationQuery);
+        when(invitationQuery.fetch())
+                .thenReturn(gate(invitation, stage.equals("invitation"), releasing, cleanup));
+        var guestQuery = mock(ReactiveQuery.class, RETURNS_SELF);
+        var guestRepository = mock(ReactiveRepository.class);
+        when(guestRepository.createQuery()).thenReturn(guestQuery);
+        var guestRows = gate(guest, stage.equals("guest"), releasing, cleanup);
+        when(guestQuery.fetch()).thenReturn(guestRows);
+        when(guestRepository.findById(anyString()))
+                .thenAnswer(ignored -> guestRows.take(1).singleOrEmpty());
+        var invitations =
+                new PrototypeReviewInvitationService(
+                        access, shares, invitationRepository, guestRepository, null, null);
         var service =
                 new PrototypeReviewService(
                         shares,
@@ -131,6 +161,7 @@ class PrototypeReviewReadBoundaryTest {
                         mock(ReactiveRepository.class),
                         mock(ReactiveRepository.class),
                         mock(ReactiveRepository.class),
+                        invitations,
                         notifications,
                         work,
                         mock(TransactionalOperator.class),
@@ -141,7 +172,10 @@ class PrototypeReviewReadBoundaryTest {
                         PrototypeShareKeys.derive(share, "r"),
                         "a@example.invalid",
                         "Name",
-                        null);
+                        null,
+                        stage.equals("invitation") || stage.equals("guest")
+                                ? "x".repeat(43)
+                                : null);
         StepVerifier.create(service.challenge("token", input, "cookie"))
                 .then(
                         () -> {
@@ -169,6 +203,66 @@ class PrototypeReviewReadBoundaryTest {
                     releasing.set(true);
                     return cleanup;
                 });
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void invalidExplicitInvitationIsRejectedBeforeSmtpAvailabilityOrBcrypt(boolean mailAvailable) {
+        var share = new PrototypeShareEntity();
+        share.setId("s");
+        share.setProjectId("p");
+        share.setVersionId("v");
+        share.setRevisionId("r");
+        share.setEnabled(true);
+        share.setReviewEnabled(true);
+        share.setAccessKey("generation");
+        var shares = mock(PrototypeShareService.class);
+        when(shares.requireActive("token")).thenReturn(Mono.just(share));
+        when(shares.requireRevisionAccess(anyString(), anyString(), anyString()))
+                .thenReturn(Mono.just(new PrototypeRevisionEntity()));
+        var invitations = mock(PrototypeReviewInvitationService.class);
+        when(invitations.requireToken(any(), eq("r"), eq("a@example.invalid"), anyString()))
+                .thenReturn(Mono.error(PrototypeReviewInvitationService.invalid()));
+        var notifications = mock(NotificationGateway.class);
+        when(notifications.available()).thenReturn(mailAvailable);
+        var work = mock(FileWork.class);
+        var executed = new AtomicBoolean();
+        when(work.call(any()))
+                .thenReturn(
+                        Mono.defer(
+                                () -> {
+                                    executed.set(true);
+                                    return Mono.empty();
+                                }));
+        var service =
+                new PrototypeReviewService(
+                        shares,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        invitations,
+                        notifications,
+                        work,
+                        null,
+                        ObservationRegistry.NOOP);
+        var input =
+                new ReviewChallengeRequest(
+                        "r",
+                        PrototypeShareKeys.derive(share, "r"),
+                        "a@example.invalid",
+                        "Name",
+                        null,
+                        "x".repeat(43));
+        StepVerifier.create(service.challenge("token", input, "cookie"))
+                .expectErrorSatisfies(
+                        error -> assertEquals(403, ((PrototypeHubException) error).getStatus()))
+                .verify(Duration.ofSeconds(5));
+        assertFalse(executed.get());
+        verify(notifications, never()).available();
+        verify(notifications, never()).sendVerification(anyString(), anyString());
     }
 
     @Test
@@ -222,6 +316,8 @@ class PrototypeReviewReadBoundaryTest {
         when(sessions.createQuery()).thenReturn(query);
         when(rates.createQuery()).thenReturn(query);
         when(unverified.createQuery()).thenReturn(query);
+        var invitations = mock(PrototypeReviewInvitationService.class);
+        when(invitations.cleanupExpired(anyLong())).thenReturn(Mono.empty());
         var service =
                 new PrototypeReviewService(
                         null,
@@ -231,6 +327,7 @@ class PrototypeReviewReadBoundaryTest {
                         challenges,
                         sessions,
                         rates,
+                        invitations,
                         null,
                         null,
                         null,

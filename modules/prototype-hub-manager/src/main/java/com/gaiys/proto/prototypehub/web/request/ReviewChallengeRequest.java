@@ -18,7 +18,14 @@ public record ReviewChallengeRequest(
                 @Schema(description = "自述名称")
                 String displayName,
         @Size(max = 200) @Pattern(regexp = "[^\\p{Cc}]*") @Schema(description = "自述公司，可为空")
-                String company) {
+                String company,
+        @Pattern(regexp = "[A-Za-z0-9_-]{43}") @Schema(description = "可选一次性邀请凭据，不能替代OTP")
+                String invitationToken) {
+    public ReviewChallengeRequest(
+            String revisionId, String accessKey, String email, String displayName, String company) {
+        this(revisionId, accessKey, email, displayName, company, null);
+    }
+
     public ReviewChallengeRequest {
         email = email == null ? null : email.strip();
     }
