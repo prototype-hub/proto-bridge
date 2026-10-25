@@ -132,13 +132,13 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 后台复用 `prototype-hub.cleanup.interval-ms` 调度（默认 30000 毫秒），有界处理到期记录及文件队列。扫描游标随安装记录持久化，每批先推进游标再释放安装锁并处理目标，损坏或持续失败的记录不会长期挡住后续到期项；到末尾后重新扫描。到期版本在项目→版本锁内重新确认状态、期限，事务内登记每个当前/历史快照的 `expired-snapshot` 任务，再删除相关会话、分享、创建回执、修订和逻辑版本；任何数据库失败全部回滚。父项目只有在所有原始子版本行均已清理后才删除成员、剩余会话、分享、项目回执和项目自身；活动或较新软删子版本保护父项目，不提前级联删除。资源和回执永久清理后原创建键的去重保证终止，后续请求经当前权限和容量检查可能产生新 ID，旧 ID 不复活。
 
-文件删除在数据库提交后由持久化的 `p_file_cleanup` 队列执行，每次最多 50 条并沿用失败退避。`expired-snapshot` 和失败上传的 `upload-candidate` 仅可删除无任何原始版本/修订引用的规范快照目录；引用保护包含软删行和旧路径别名，不增加活动过滤，不递归删除项目根目录，不涉及封面、头像或品牌图片。失败、取消或重启保留待办任务，文件已不存在视为幂等成功；因此到期后磁盘回收可能延迟。旧 `project/version` 及未知来源任务继续保留并退避，不猜测历史意图。永久清理不可通过回收站撤销，只有经过验证的同窗口数据库与文件备份可用于恢复；已清理的文件无法凭数据库重新生成。
+文件删除在数据库提交后由持久化的 `p_file_cleanup` 队列执行，每次最多 50 条并沿用失败退避。`expired-snapshot` 和失败上传的 `upload-candidate` 仅可删除无任何原始版本/修订引用的规范快照目录；`review-image`仅可删除无任何原始消息image_path引用的规范单图目录，内部消息和软删保留引用同样受保护。引用保护包含软删行和旧路径别名，不增加活动过滤，不递归删除项目根目录，不涉及封面、头像或品牌图片。失败、取消或重启保留待办任务，文件已不存在视为幂等成功；因此到期后磁盘回收可能延迟。旧 `project/version` 及未知来源任务继续保留并退避，不猜测历史意图。永久清理不可通过回收站撤销，只有经过验证的同窗口数据库与文件备份可用于恢复；已清理的文件无法凭数据库重新生成。
 
 升级先停止所有旧应用写入节点及可能清理文件的后台进程，取得同窗口联合备份，在独立恢复副本验证期限、活动占用、删除状态、引用保护、清理队列及访问阻断，再配套切换前后端。旧版无限期保留与新版 30 天清理节点不能混跑；升级即可能清理已到期墓碑。也不能混跑忽略 `deleted_time` 的更旧后端；仅回退旧 JAR 可能重新开放已删除对象，须从同一时点数据库与文件备份验证恢复。
 
-存储核验先停写后导出完整引用：`psql -X -qAt -v ON_ERROR_STOP=1 -f tools/export-storage-manifest.sql > references.json`，再运行 `python3 tools/audit-storage.py --root /path/to/snapshot --manifest references.json`。导出包括活动与已删除版本、全部历史修订及未迁移旧投影，校验项目/版本/修订/分享、成员的父项目、内部会话的项目/版本及显式修订、非空创建回执修订的关联；创建回执没有修订的旧请求与项目请求不按猜测类型修复。导出不按 30 天期限过滤，仍持久化的到期引用也必须保护，只有数据库事务真正删掉引用后目录才可能回收。`preflight-db.sql` 另输出活动/软删计数，`snapshot-db.sql` 输出删除状态和完整文件清理队列的摘要，恢复时必须核对，不能只比较 ID 或行数。
+存储核验先停写后导出完整引用：`psql -X -qAt -v ON_ERROR_STOP=1 -f tools/export-storage-manifest.sql > references.json`，再运行 `python3 tools/audit-storage.py --root /path/to/snapshot --manifest references.json`。导出包括活动与已删除版本、全部历史修订及未迁移旧投影，校验项目/版本/修订/分享、成员的父项目、内部会话的项目/版本及显式修订、非空创建回执修订的实际资源关联（version、thread或message→thread），以及所有public/internal消息图片的完整元数据和父线程/项目/版本/修订关联；创建回执没有修订的旧请求与项目请求不按猜测类型修复。导出不按 30 天期限过滤，仍持久化的到期引用也必须保护，只有数据库事务真正删掉引用后目录才可能回收。`preflight-db.sql` 另输出活动/软删计数，`snapshot-db.sql` 输出删除状态和完整文件清理队列的摘要，恢复时必须核对，不能只比较 ID 或行数。
 
-完整清单需同时具有 `referencesComplete=true`、`receiptReferencesChecked=true` 和 `integrityErrors=0`。旧数组、缺结构的 current-only 清单以及尚未核验回执关联的旧清单只允许只读诊断，不授权 `--delete-unreferenced`。缺失引用目录或异常符号链接会使审计失败并阻止任何修复；目录审计不替代全量文件路径/内容 hash 核对。离线修复还必须显式提供 `--offline --confirm /path/to/snapshot`，仅在联合备份的隔离副本审查后使用；不要手改清单完整性标志绕过检查，软删目录仍属于被引用数据。
+完整清单使用format=prototype-hub-storage-references、formatVersion=3、sourceSchema=immutable-revisions-review-images-v1，同时具有 `referencesComplete=true`、`receiptReferencesChecked=true`、`imageReferencesChecked=true` 和 `integrityErrors=0`。原修订entries保持不变，imageEntries为 `{projectId,versionId,messageId,storagePath,size,sha256}`，包含全部保留图片，不导出正文或凭据。旧数组、v2、缺结构的current-only及尚未核验回执或图片关联的清单仅供检查，不授权 `--delete-unreferenced`，不能声称完整图片引用已验。审计先检查全部版本及图片引用，逐图核对真实字节数与SHA-256；缺失、损坏、非法边界、重复引用或符号链接阻止所有删除，不会先删看似孤儿再报告失败。完整v3显式修复仅删除没有任何持久引用的版本或图片候选目录；图片以外文件仍需全量文件路径/内容hash核对。离线修复还必须显式提供 `--offline --confirm /path/to/snapshot`，仅在联合备份的隔离副本审查后使用；不要手改清单完整性标志绕过检查，软删目录仍属于被引用数据。
 
 ## 分享邮箱身份数据
 
@@ -153,8 +153,12 @@ EasyORM增加 `p_share.review_enabled/review_allow_unverified/review_allow_comme
 | `p_review_rate` | 项目与邮箱的OTP发送窗口、项目/Cookie未验证身份窗口及独立的邀请创建窗口，跨副本共用 |
 | `p_review_invitation` | 随机邀请凭据的摘要、指定规范邮箱、固定项目/版本/分享/修订、分享配置/密钥代次及邮箱访客状态版本、创建/到期/消费时间、撤销标记与并发版本；不存原始凭据 |
 | `p_review_thread` | 固定项目/版本/分享/修订/页面及保障等级命名空间中的本人线程；页面元数据、首位访客作者快照、初始摘要、open/resolved状态、并发版本及公开更新时间 |
-| `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性及创建时间；没有编辑、删除或附件入口 |
+| `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性、创建时间及可空单图元数据；没有消息编辑/删除或通用附件入口 |
 | `p_review_event` | 同事务领域事件outbox，仅存相关ID、事件类型、作者种类和时间；不存正文、邮箱、凭据，不代表业务发送任务 |
+
+p_review_message的单图字段为可空image_path、image_content_type、image_size、image_sha256、image_width、image_height；旧消息全部为null，部分缺失或损坏不构成读取授权。image_path只保存服务端生成的相对路径 `projects/{projectId}/review-images/{randomAttemptId}/image`，attempt为43字符随机值，不使用原文件名；实际格式、字节数、SHA-256和宽高来自验证后的原始PNG/JPEG。图片独立于不可变revision/site，不加入已发布manifest，不改变原型包hash或质量报告。
+
+软删随现有30天保留，身份/邀请/事件到期不删除消息图片。版本/项目永久清理在删除消息前，同事务登记review-image持久清理任务；文件删除在提交后重查全部原始消息引用，沿既有有界重试worker处理。明确失败与取消使用已有上传所有权补偿，未知事务结果不删除可能已提交的图片；进程突然退出可能留下未引用目录，应在停写副本以完整v3导出和显式离线修复核验，不称自动崩溃回收。
 
 BCrypt和SMTP在现有有界FileWork运行，外部发送不持数据库锁。challenge先以不可验证的pending状态提交，SMTP受理后短事务重验分享才标记delivered；验证在锁内重查并原子消费，错误次数提交后才返回错误。未验证身份不创建challenge、不发送邮件，也不把SMTP失败当作验证通过。
 
@@ -166,7 +170,7 @@ EasyORM为已有邮箱guest补充可空的 `enabled/config_version`，旧空值�
 
 challenge的可空invitation_id保持普通OTP兼容；发码、SMTP受理确认及消费时均重验完整邀请绑定。正确OTP在原项目/版本锁事务中一并消费邀请、challenge并保存稳定邮箱guest/session；邀请版本同步递增，任一步失败整体回滚。错误尝试只提交challenge次数，不消费邀请。撤销待用邀请不移除已签发会话，身份撤销仍使用访客管理。
 
-九张评审表、创建回执 `p_creation_receipt` 与分享配置/密钥一并备份，不加入原型manifest或匿名存储导出。邮箱、自填资料、反馈正文和可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。已验证guest随项目保留，不因会话到期删除；未验证guest和邀请有固定到期时间，不能借备份恢复或状态启用续期。身份行不等于永久访问权。
+九张评审表（包含消息图片元数据）、创建回执 `p_creation_receipt`、分享配置/密钥与完整原型文件根中的review-images一并备份，不加入原型manifest或匿名存储导出。邮箱、自填资料、反馈正文和可识别摘要只授予必要运维权限，备份不可公开上传。不得单独恢复会话或重置限频。已验证guest随项目保留，不因会话到期删除；未验证guest和邀请有固定到期时间，不能借备份恢复或状态启用续期。身份行不等于永久访问权。
 
 恢复验证应覆盖九表中的非空代表数据及相关回执，在全部写入和清理进程停止后计算确定性行数/内容摘要，并在新数据库启动应用前精确对比。整库备份本身不证明每张表及其业务关系已经验收；只有四张历史表的比较结果不足以代表九表。启动后再检查原身份与保障等级、邀请完整绑定及撤销/消费状态、线程归属、内部可见性和请求键去重；重建CSRF不应延长会话，状态查询不应刷新邀请或身份期限。报告不包含业务正文或凭据，完整进程验收与部署限制见[运维说明](OPERATIONS.md)。
 

@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
@@ -23,6 +24,7 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
     private final PrototypeStorageService storage;
     private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
     private final ReactiveRepository<PrototypeVersionEntity, String> versions;
+    private final ReactiveRepository<PrototypeReviewMessageEntity, String> messages;
 
     /** 只登记已确认未提交归属的上传候选；保留期内的业务删除不得调用文件清理。 */
     public Mono<FileCleanupEntity> enqueueCandidate(String project, String version, String path) {
@@ -56,6 +58,27 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
         task.setAttempts(0);
         return findById(task.getId())
                 .switchIfEmpty(Mono.defer(() -> insert(task).thenReturn(task)));
+    }
+
+    /** 永久删除消息时与元数据删除同事务登记；候选回滚的物理删除失败也复用此队列。 */
+    public Mono<Void> enqueueReviewImage(String project, String version, String path) {
+        String canonical = SafePaths.canonicalReviewImagePath(project, path);
+        FileCleanupEntity task = new FileCleanupEntity();
+        task.setId(
+                HexFormat.of()
+                        .formatHex(
+                                PrototypeCreationReceiptService.sha256()
+                                        .digest(canonical.getBytes(StandardCharsets.UTF_8))));
+        task.setProjectId(SafePaths.id(project));
+        task.setVersionId(SafePaths.id(version));
+        task.setResourceType("review-image");
+        task.setStoragePath(canonical);
+        task.setCreateTime(System.currentTimeMillis());
+        task.setNextAttempt(0L);
+        task.setAttempts(0);
+        return findById(task.getId())
+                .switchIfEmpty(Mono.defer(() -> insert(task).thenReturn(task)))
+                .then();
     }
 
     /** 软删行仍是保留引用；不使用业务侧的活动查询。 */
@@ -93,6 +116,25 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
         Mono<Void> deletion =
                 Mono.defer(
                         () -> {
+                            if ("review-image".equals(task.getResourceType())) {
+                                SafePaths.canonicalReviewImagePath(
+                                        task.getProjectId(), task.getStoragePath());
+                                // 包括软删资源在内的消息仍是保留引用；上传目录永久随机且不复用。
+                                return messages.createQuery()
+                                        .where(
+                                                PrototypeReviewMessageEntity::getImagePath,
+                                                task.getStoragePath())
+                                        .count()
+                                        .flatMap(
+                                                count ->
+                                                        count > 0
+                                                                ? Mono.error(
+                                                                        new IllegalStateException(
+                                                                                "Referenced review image"))
+                                                                : storage.deleteReviewImage(
+                                                                        task.getProjectId(),
+                                                                        task.getStoragePath()));
+                            }
                             // 旧 project/version 任务混合了已删除历史和候选，来源不明时只能保留。
                             if (!"upload-candidate".equals(task.getResourceType())
                                     && !"expired-snapshot".equals(task.getResourceType()))

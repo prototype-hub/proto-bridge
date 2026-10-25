@@ -147,6 +147,17 @@ def file_multipart(filename, content, content_type, fields=()):
     return b''.join(parts), 'multipart/form-data; boundary=' + boundary
 
 
+def review_image_multipart(payload, content):
+    """Use untrusted filename/MIME hints so the server must inspect the actual PNG bytes."""
+    boundary = 'runtime-review-' + uuid.uuid4().hex
+    return (('--' + boundary + '\r\nContent-Disposition: form-data; name="request"\r\n'
+             'Content-Type: application/json\r\n\r\n' + json.dumps(payload) + '\r\n' +
+             '--' + boundary + '\r\nContent-Disposition: form-data; name="image"; '
+             'filename="ignored.bin"\r\nContent-Type: application/octet-stream\r\n\r\n').encode() +
+            content + ('\r\n--' + boundary + '--\r\n').encode(),
+            'multipart/form-data; boundary=' + boundary)
+
+
 def multipart(zip_path, expected_revision=None):
     fields = (('versionName', 'Runtime fixture version'),
               ('description', 'Original nested HTML restore sample'))
@@ -593,16 +604,19 @@ class RuntimeCheck:
                     'Restored latest-share content changed')
 
     def review_call(self, api, grant, operation, payload, *, cookie=None, csrf=None, expected=200,
-                    method='POST'):
+                    method='POST', image=None):
         headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
         if cookie:
             headers['Cookie'] = 'prototype-review=' + cookie
         if csrf:
             headers['X-Review-CSRF'] = csrf
+        request_payload = dict(revisionId=grant['revisionId'], accessKey=grant['accessKey'], **payload)
+        if image is not None:
+            api.remember_secrets(request_payload)
+            request_payload, headers['Content-Type'] = review_image_multipart(request_payload, image)
         body, response_headers = Api(api.origin, self.secrets_seen).request(
             method, '/api/prototype-hub/public/shares/' + grant['token'] + '/review/' + operation,
-            dict(revisionId=grant['revisionId'], accessKey=grant['accessKey'], **payload),
-            expected=expected, headers=headers, raw=True)
+            request_payload, expected=expected, headers=headers, raw=True)
         data = json.loads(body)
         self.secrets_seen.update(value for value in (cookie, csrf) if value)
         Api(api.origin, self.secrets_seen).remember_secrets(data)
@@ -829,15 +843,20 @@ class RuntimeCheck:
         member_path = '/api/prototype-hub/versions/' + fixture['versionId'] + '/review-threads'
         context = self.verify_review_identity(api, visitor)
         operations = []
-        def write(public, method, path, payload):
+        def write(public, method, path, payload, image=None):
             value = dict(payload, clientRequestId=uuid.uuid4().hex)
             if public:
                 result, _ = self.review_call(api, grant, path, value, cookie=visitor['cookie'],
-                                             csrf=context['csrfToken'], method=method)
+                                             csrf=context['csrfToken'], method=method, image=image)
+            elif image is not None:
+                api.remember_secrets(value)
+                content, content_type = review_image_multipart(dict(base, **value), image)
+                result = api.request(method, member_path + path, content,
+                                     headers={'Content-Type': content_type})
             else:
                 result = api.request(method, member_path + path, dict(base, **value))
             operations.append({'public': public, 'method': method, 'path': path,
-                               'payload': value, 'id': result['id']})
+                               'payload': value, 'id': result['id'], 'image': image})
             return result
         thread = write(True, 'POST', 'threads',
                        {'pageId': page['pageId'], 'text': 'Original runtime visitor discussion'})
@@ -857,15 +876,27 @@ class RuntimeCheck:
                 'PM resolve did not apply its status CAS')
         visitor_reply = write(True, 'POST', 'threads/' + identifier + '/messages',
                               {'pageId': page['pageId'], 'text': 'Original runtime visitor follow-up'})
+        images = []
+        for visibility, color in (('public', (20, 70, 110, 255)), ('internal', (130, 30, 80, 255))):
+            content = sample_png(color)
+            public = visibility == 'public'
+            path = ('threads/' if public else '/') + identifier + '/messages-with-image'
+            payload = {'pageId': page['pageId'], 'text': 'Original runtime ' + visibility + ' image'}
+            if not public:
+                payload['visibility'] = visibility
+            image = write(public, 'POST', path, payload, content)
+            require(image.get('image') == {'contentType': 'image/png', 'size': len(content),
+                                          'width': 1, 'height': 1}, 'Image metadata differs')
+            images.append({'id': image['id'], 'visibility': visibility, 'content': content})
         final_thread = api.request('POST', member_path + '/_query', base)['data'][0]
         require(final_thread['state'] == 'open' and final_thread['configVersion'] == 2,
                 'Visitor reply did not reopen the resolved thread')
         messages = api.request('POST', member_path + '/' + identifier + '/messages/_query', base)
-        require(messages['total'] == 4 and len(messages['data']) == 4,
+        require(messages['total'] == 6 and len(messages['data']) == 6,
                 'Review fixture did not persist all public and internal messages')
         fixture['discussion'] = {'base': base, 'memberPath': member_path, 'thread': final_thread,
                                  'messages': messages['data'], 'noteId': note['id'],
-                                 'operations': operations}
+                                 'operations': operations, 'images': images}
         require(public_reply['visibility'] == visitor_reply['visibility'] == 'public',
                 'A public reply was not public')
 
@@ -887,7 +918,7 @@ class RuntimeCheck:
                 all(row['visibility'] == 'public' and row['id'] != discussion['noteId']
                     for row in public['data']), 'Internal note escaped the visitor boundary')
         managed = api.request('POST', discussion['memberPath'] + '/' + identifier + '/messages/_query', base)
-        require(managed['total'] == 4 and managed['data'] == discussion['messages'],
+        require(managed['total'] == len(discussion['messages']) and managed['data'] == discussion['messages'],
                 'Restored PM messages or internal notes differ')
         anonymous, cookie = self.review_call(api, fixture['grant'], 'context', {})
         self.review_call(api, fixture['grant'], 'threads/_query', public_base,
@@ -901,7 +932,12 @@ class RuntimeCheck:
         for operation in discussion['operations']:
             if operation['public']:
                 replay, _ = self.review_call(api, fixture['grant'], operation['path'], operation['payload'],
-                    cookie=visitor['cookie'], csrf=context['csrfToken'], method=operation['method'])
+                    cookie=visitor['cookie'], csrf=context['csrfToken'], method=operation['method'],
+                    image=operation.get('image'))
+            elif operation.get('image') is not None:
+                payload, content_type = review_image_multipart(dict(base, **operation['payload']), operation['image'])
+                replay = api.request(operation['method'], discussion['memberPath'] + operation['path'],
+                                     payload, headers={'Content-Type': content_type})
             else:
                 replay = api.request(operation['method'], discussion['memberPath'] + operation['path'],
                                      dict(base, **operation['payload']))
@@ -926,11 +962,66 @@ class RuntimeCheck:
         require(re.fullmatch('[0-9a-f]{32}', actual.get('receiptHash', '')) is not None,
                 'Review receipts have no stable checksum')
         receipt_hash = discussion.setdefault('receiptHash', actual['receiptHash'])
-        require(actual == {'messages': 4, 'events': sorted(['thread.created', 'message.created',
-                'note.created', 'thread.resolved', 'message.created', 'thread.reopened']),
-                'receipts': 5, 'receiptHash': receipt_hash, 'bound': True},
+        events = ['thread.created', 'message.created', 'note.created', 'thread.resolved',
+                  'message.created', 'thread.reopened']
+        if discussion.get('images'):
+            events += ['message.created', 'note.created']
+            self.verify_review_images(api, fixture, database, context)
+        require(actual == {'messages': len(discussion['messages']), 'events': sorted(events),
+                'receipts': len(discussion['messages']) + 1, 'receiptHash': receipt_hash, 'bound': True},
                 'Review messages, atomic events or receipts differ')
         return actual
+
+    def verify_review_images(self, api, fixture, database, context):
+        """Check original metadata and authorized bytes; restored reads must not mint new images."""
+        discussion, visitor = fixture['discussion'], fixture['unverified']
+        images, base = discussion['images'], discussion['base']
+        require(len(images) == 2 and {image['visibility'] for image in images} == {'public', 'internal'},
+                'Image restore fixture must include public and internal images')
+        rows = json.loads(self.sql(database, """
+          select coalesce(json_agg(json_build_object('id',id,'projectId',project_id,'versionId',version_id,
+            'revisionId',revision_id,'threadId',thread_id,'storagePath',image_path,'contentType',image_content_type,
+            'size',image_size,'sha256',image_sha256,'width',image_width,'height',image_height) order by id),'[]')
+          from p_review_message where id in (:'public',:'internal');
+          """, variables={image['visibility']: image['id'] for image in images}))
+        require(len(rows) == 2, 'Image database metadata is missing')
+        require(rows == discussion.setdefault('imageRows', rows), 'Original image database metadata changed')
+        for image in images:
+            matching = [row for row in rows if row['id'] == image['id']]
+            require(len(matching) == 1, 'Image metadata identity is not unique')
+            row = matching[0]
+            require(row['projectId'] == fixture['projectId'] and row['versionId'] == fixture['versionId'] and
+                    row['revisionId'] == base['revisionId'] and row['threadId'] == discussion['thread']['id'] and
+                    row['contentType'] == 'image/png' and row['size'] == len(image['content']) and
+                    row['sha256'] == hashlib.sha256(image['content']).hexdigest() and
+                    row['width'] == row['height'] == 1 and isinstance(row['storagePath'], str) and
+                    re.fullmatch('projects/' + re.escape(fixture['projectId']) +
+                                 '/review-images/[A-Za-z0-9_-]{43}/image', row['storagePath']) is not None,
+                    'Image database bytes metadata or scope differs')
+            route = '/' + discussion['thread']['id'] + '/messages/' + image['id'] + '/image'
+            content, headers = api.request('POST', discussion['memberPath'] + route, base, raw=True)
+            self.verify_image_content(content, headers, image['content'])
+            origin = ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin
+            grant = fixture['grant']
+            request_headers = {'Origin': origin, 'Cookie': 'prototype-review=' + visitor['cookie'],
+                               'X-Review-CSRF': context['csrfToken']}
+            content, headers = Api(api.origin, self.secrets_seen).request('POST',
+                '/api/prototype-hub/public/shares/' + grant['token'] + '/review/threads' + route,
+                dict(base, accessKey=grant['accessKey']), headers=request_headers,
+                expected=200 if image['visibility'] == 'public' else 404, raw=True)
+            if image['visibility'] == 'public':
+                self.verify_image_content(content, headers, image['content'])
+        self.report['reviewImages'] = {'count': 2, 'publicAndInternal': True,
+                                       'databaseMetadataAndOriginalBytesVerified': True,
+                                       'publicInternalImageDenied': True}
+
+    @staticmethod
+    def verify_image_content(content, headers, expected):
+        require(content == expected and headers.get('Content-Type', '').split(';')[0] == 'image/png' and
+                headers.get('X-Content-Type-Options') == 'nosniff' and
+                {'private', 'no-store'} <= {value.strip().lower() for value in headers.get('Cache-Control', '').split(',')} and
+                re.fullmatch(r'inline; filename="?image\.png"?', headers.get('Content-Disposition', '')) is not None,
+                'Private image bytes or security headers differ')
 
     def verify_review_fixtures(self, api, fixture, database):
         self.verify_review_identity(api, fixture)

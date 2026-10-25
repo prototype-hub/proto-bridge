@@ -6,6 +6,7 @@ import static org.mockito.Mockito.*;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewThreadEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
@@ -97,7 +98,9 @@ class PrototypeReviewThreadBoundaryTest {
                         null,
                         null,
                         work,
-                        transactions);
+                        transactions,
+                        null,
+                        null);
         var input = new ReviewTextRequest();
         input.setRevisionId("r");
         input.setPageId(page().pageId());
@@ -121,6 +124,79 @@ class PrototypeReviewThreadBoundaryTest {
                         })
                 .thenCancel()
                 .verify(Duration.ofSeconds(5));
+    }
+
+    @Test
+    void imagePreparationWaitsForThreadReadToReleaseDatabaseBeforeFileWorker() throws Exception {
+        var release = Sinks.<Void>one();
+        var releasing = new AtomicBoolean();
+        var preparing = new AtomicBoolean();
+        var revisions = mock(ReactiveRepository.class);
+        var revisionQuery = mock(ReactiveQuery.class, RETURNS_SELF);
+        when(revisions.createQuery()).thenReturn(revisionQuery);
+        when(revisionQuery.fetch()).thenReturn(Flux.just(revision()));
+        var threads = mock(ReactiveRepository.class);
+        var threadQuery = mock(ReactiveQuery.class, RETURNS_SELF);
+        when(threads.createQuery()).thenReturn(threadQuery);
+        when(threadQuery.fetch())
+                .thenReturn(gate(new PrototypeReviewThreadEntity(), releasing, release));
+        var review = mock(PrototypeReviewService.class);
+        var share = new PrototypeShareEntity();
+        share.setId("s");
+        share.setProjectId("p");
+        share.setVersionId("v");
+        var identity =
+                new ReviewIdentity(
+                        "g", "客户", null, null, "unverified", System.currentTimeMillis() + 60000);
+        when(review.requireVisitor(anyString(), anyString(), anyString(), anyString()))
+                .thenReturn(Mono.just(new PrototypeReviewService.VisitorScope(share, identity)));
+        var images = mock(PrototypeReviewImageService.class);
+        when(images.upload(anyString(), anyString(), any(), any()))
+                .thenAnswer(
+                        call -> {
+                            preparing.set(true);
+                            return Mono.error(new IllegalStateException("image-boundary"));
+                        });
+        var service =
+                new PrototypeReviewThreadService(
+                        review,
+                        null,
+                        revisions,
+                        threads,
+                        null,
+                        null,
+                        null,
+                        null,
+                        null,
+                        work(new AtomicBoolean(), new AtomicBoolean()),
+                        null,
+                        images,
+                        null);
+        var input = new ReviewTextRequest();
+        input.setRevisionId("r");
+        input.setPageId(page().pageId());
+        input.setAccessKey("key");
+        input.setText("图片说明");
+        input.setClientRequestId("image-key");
+        StepVerifier.create(
+                        service.imageVisitor(
+                                "token",
+                                "thread",
+                                input,
+                                "cookie",
+                                mock(org.springframework.http.codec.multipart.FilePart.class)))
+                .then(
+                        () -> {
+                            assertTrue(releasing.get());
+                            assertFalse(preparing.get());
+                            release.tryEmitEmpty();
+                        })
+                .expectErrorMatches(
+                        error ->
+                                error instanceof IllegalStateException
+                                        && "image-boundary".equals(error.getMessage()))
+                .verify(Duration.ofSeconds(5));
+        assertTrue(preparing.get());
     }
 
     @ParameterizedTest
@@ -200,6 +276,8 @@ class PrototypeReviewThreadBoundaryTest {
                         null,
                         null,
                         work(parsing, new AtomicBoolean()),
+                        null,
+                        null,
                         null);
         var input = new ReviewThreadQueryRequest();
         input.setRevisionId("r");
@@ -265,7 +343,9 @@ class PrototypeReviewThreadBoundaryTest {
                         null,
                         receipts,
                         work(parsing, new AtomicBoolean()),
-                        transactions);
+                        transactions,
+                        null,
+                        null);
         var input = new ReviewMemberTextRequest();
         input.setRevisionId("r");
         input.setPageId(page().pageId());

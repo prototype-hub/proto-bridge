@@ -324,6 +324,42 @@ class EasyormSchemaIntegrationTest {
     }
 
     @Test
+    void reviewImageUpgradePreservesOldTextRowsAndDocumentsNullableColumns() throws Exception {
+        execute(
+                "INSERT INTO p_review_message(id,project_id,version_id,revision_id,thread_id,text,author_type,author_name,visibility,create_time) VALUES ('legacy-image-message','p','v','r','t','historic text','member','PM','public',1)");
+        var columns =
+                List.of(
+                        "image_path",
+                        "image_content_type",
+                        "image_size",
+                        "image_sha256",
+                        "image_width",
+                        "image_height");
+        try {
+            for (String column : columns)
+                execute("ALTER TABLE p_review_message DROP COLUMN " + column);
+            for (int i = 0; i < 2; i++) synchronize(PrototypeReviewMessageEntity.class);
+            assertEquals(
+                    "historic text",
+                    scalar("SELECT text FROM p_review_message WHERE id='legacy-image-message'"));
+            assertEquals(
+                    "6",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.columns WHERE table_schema='public' AND table_name='p_review_message' AND column_name LIKE 'image_%' AND is_nullable='YES' AND coalesce(col_description('p_review_message'::regclass,ordinal_position),'')<>''"));
+            assertEquals(
+                    "true",
+                    scalar(
+                            "SELECT (image_path IS NULL AND image_content_type IS NULL AND image_size IS NULL AND image_sha256 IS NULL AND image_width IS NULL AND image_height IS NULL)::text FROM p_review_message WHERE id='legacy-image-message'"));
+            assertEquals(
+                    "1",
+                    scalar(
+                            "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND indexname='idx_review_message_image'"));
+        } finally {
+            execute("DELETE FROM p_review_message WHERE id='legacy-image-message'");
+        }
+    }
+
+    @Test
     void pageReviewUpgradeAddsThreeDocumentedTablesAndKeepsHistoricalPolicyClosed()
             throws Exception {
         execute(

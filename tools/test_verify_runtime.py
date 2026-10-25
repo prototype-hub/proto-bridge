@@ -3,6 +3,7 @@
 import argparse
 import contextlib
 import copy
+import hashlib
 import importlib.util
 import io
 import json
@@ -21,6 +22,8 @@ import time
 import unittest
 from unittest.mock import patch
 from email.message import Message
+from email import policy
+from email.parser import BytesParser
 
 spec = importlib.util.spec_from_file_location('verify_runtime', Path(__file__).with_name('verify-runtime.py'))
 runtime = importlib.util.module_from_spec(spec)
@@ -225,6 +228,84 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
                       json.dumps(json.dumps({'invitationToken': token}))):
             with self.subTest(kind=value[:25]):
                 self.assertNotIn(token, self.check.redact(value))
+
+    def test_review_image_multipart_has_exact_json_and_image_parts_without_filename_authority(self):
+        payload = {'revisionId': 'fixed-r1', 'pageId': 'page', 'text': 'Private fixture',
+                   'clientRequestId': 'stable-key'}
+        content = runtime.sample_png((20, 70, 110, 255))
+        body, content_type = runtime.review_image_multipart(payload, content)
+        message = BytesParser(policy=policy.default).parsebytes(
+            ('Content-Type: ' + content_type + '\r\nMIME-Version: 1.0\r\n\r\n').encode() + body)
+        parts = list(message.iter_parts())
+        self.assertEqual(['request', 'image'], [part.get_param('name', header='content-disposition') for part in parts])
+        self.assertEqual(payload, json.loads(parts[0].get_payload(decode=True)))
+        self.assertEqual('application/json', parts[0].get_content_type())
+        self.assertEqual(content, parts[1].get_payload(decode=True))
+        self.assertEqual('ignored.bin', parts[1].get_filename())
+        self.assertEqual('application/octet-stream', parts[1].get_content_type())
+
+    def test_public_image_upload_keeps_scoped_cookie_csrf_and_never_inherits_admin_token(self):
+        self.api.token = 'must-not-leak'
+        response = json.dumps({'success': True, 'result': {'id': 'message'}}).encode()
+        with patch.object(runtime.Api, 'request', return_value=(response, Message())) as call:
+            self.check.review_call(self.api, self.grant, 'threads/thread/messages-with-image',
+                {'pageId': 'page', 'text': 'Private fixture'}, cookie='review-cookie', csrf='proof',
+                image=runtime.sample_png((0, 0, 0, 255)))
+        headers = call.call_args.kwargs['headers']
+        self.assertEqual('prototype-review=review-cookie', headers['Cookie'])
+        self.assertEqual('proof', headers['X-Review-CSRF'])
+        self.assertTrue(headers['Content-Type'].startswith('multipart/form-data; boundary='))
+        self.assertNotIn('X-Access-Token', headers)
+        self.assertNotIn('must-not-leak', str(call.call_args))
+        self.assertIn('Private fixture', self.check.secrets_seen)
+
+    def test_private_image_bytes_and_every_security_header_are_required(self):
+        content = runtime.sample_png((1, 2, 3, 255))
+        headers = {'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff',
+                   'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline; filename="image.png"'}
+        self.check.verify_image_content(content, headers, content)
+        for field, invalid in (('Content-Type', 'text/html'), ('X-Content-Type-Options', ''),
+                               ('Cache-Control', 'private'), ('Cache-Control', 'no-store'),
+                               ('Content-Disposition', 'inline; filename="customer.png"')):
+            with self.subTest(field=field, invalid=invalid), self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_image_content(content, dict(headers, **{field: invalid}), content)
+        with self.assertRaises(runtime.VerificationFailure):
+            self.check.verify_image_content(content + b'changed', headers, content)
+
+    def test_image_restore_checks_original_db_scope_metadata_and_public_internal_reads(self):
+        images = [{'id': level, 'visibility': level, 'content': runtime.sample_png((color, 0, 0, 255))}
+                  for level, color in (('public', 10), ('internal', 30))]
+        rows = [{'id': image['id'], 'projectId': 'project', 'versionId': 'version',
+                 'revisionId': 'fixed-r1', 'threadId': 'thread',
+                 'storagePath': 'projects/project/review-images/' + str(index) * 43 + '/image',
+                 'contentType': 'image/png', 'size': len(image['content']),
+                 'sha256': hashlib.sha256(image['content']).hexdigest(), 'width': 1, 'height': 1}
+                for index, image in enumerate(images)]
+        fixture = {'grant': self.grant, 'unverified': {'cookie': 'author'}, 'projectId': 'project',
+                   'versionId': 'version', 'discussion': {'base': {'revisionId': 'fixed-r1', 'pageId': 'page'},
+                   'thread': {'id': 'thread'}, 'memberPath': '/member', 'images': images}}
+        headers = {'Content-Type': 'image/png', 'X-Content-Type-Options': 'nosniff',
+                   'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline; filename=image.png'}
+        def read(method, path, payload, **kwargs):
+            self.assertEqual('POST', method)
+            if kwargs.get('expected') == 404:
+                self.assertIn('/internal/image', path)
+                return b'not disclosed', {}
+            image = next(image for image in images if '/' + image['id'] + '/image' in path)
+            return image['content'], headers
+        with patch.object(self.check, 'sql', return_value=json.dumps(rows)), \
+                patch.object(runtime.Api, 'request', side_effect=read) as call:
+            self.check.verify_review_images(self.api, fixture, 'restored', {'csrfToken': 'proof'})
+        self.assertEqual(4, call.call_count)
+        self.assertEqual(404, call.call_args.kwargs['expected'])
+        self.assertNotIn('X-Access-Token', call.call_args.kwargs['headers'])
+        for field, value in (('sha256', 'b' * 64), ('storagePath', '../outside'),
+                             ('versionId', 'foreign'), ('size', 1), ('width', 2)):
+            modified = copy.deepcopy(rows)
+            modified[0][field] = value
+            with self.subTest(field=field), patch.object(self.check, 'sql', return_value=json.dumps(modified)), \
+                    self.assertRaises(runtime.VerificationFailure):
+                self.check.verify_review_images(self.api, fixture, 'restored', {'csrfToken': 'proof'})
 
 
 class RuntimeSafetyTest(unittest.TestCase):

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Audit a quiescent storage snapshot against every persisted revision reference."""
+"""Audit a quiescent snapshot against retained revision and private review-image references."""
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -25,8 +26,9 @@ def main():
     manifest = json.loads(Path(args.manifest).read_text())
     complete = (isinstance(manifest, dict)
                 and manifest.get('format') == 'prototype-hub-storage-references'
-                and manifest.get('formatVersion') == 2
-                and manifest.get('sourceSchema') == 'immutable-revisions-v1'
+                and manifest.get('formatVersion') == 3
+                and manifest.get('sourceSchema') == 'immutable-revisions-review-images-v1'
+                and manifest.get('imageReferencesChecked') is True
                 and manifest.get('referencesComplete') is True
                 and manifest.get('receiptReferencesChecked') is True
                 and type(manifest.get('integrityErrors')) is int
@@ -34,11 +36,17 @@ def main():
     rows = manifest.get('entries') if isinstance(manifest, dict) else manifest
     if not isinstance(rows, list):
         parser.error('Storage reference entries must be an array')
+    image_rows = manifest.get('imageEntries', []) if isinstance(manifest, dict) else []
+    if not isinstance(image_rows, list):
+        parser.error('Image reference entries must be an array')
+    if isinstance(manifest, dict) and manifest.get('formatVersion') == 3 and 'imageEntries' not in manifest:
+        parser.error('Version 3 requires image reference entries')
+    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 3
+                      and manifest.get('imageReferencesChecked') is True)
     if args.delete_unreferenced:
-        # Old manifests only listed current p_version paths. Accept them for inspection,
-        # but never let that incomplete view turn retained revisions into deletion targets.
+        # Legacy exports cannot prove that a private image directory is unreferenced.
         if not complete:
-            parser.error('Repair requires a complete revision reference export with checked receipt associations in format version 2')
+            parser.error('Repair requires a complete revision reference export with checked receipt and image associations in format version 3')
         if not args.offline or not args.confirm or Path(args.confirm).resolve() != root:
             parser.error('Repair requires --offline and --confirm equal to the absolute storage root')
     referenced = set()
@@ -70,6 +78,43 @@ def main():
         if not path.is_dir():
             findings.append({'kind': 'missing-files', 'projectId': project,
                              'versionId': row.get('id')})
+    referenced_images = set()
+    image_messages = set()
+    for row in image_rows:
+        if not isinstance(row, dict):
+            parser.error('Invalid image reference entry')
+        project, version, message, storage = (row.get(key) for key in
+                                             ('projectId', 'versionId', 'messageId', 'storagePath'))
+        if any(not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', value)
+               for value in (project, version, message)):
+            parser.error('Invalid image resource identity')
+        if not isinstance(storage, str) or not re.fullmatch(
+                r'projects/' + re.escape(project) + r'/review-images/[A-Za-z0-9_-]{43}/image', storage):
+            parser.error('Invalid image storage boundary in manifest')
+        size, digest = row.get('size'), row.get('sha256')
+        if (type(size) is not int or not 0 < size <= 5 * 1024 * 1024 or
+                not isinstance(digest, str) or not re.fullmatch('[0-9a-f]{64}', digest)):
+            parser.error('Invalid image size or checksum in manifest')
+        path = root / storage
+        if path.parent in referenced_images or message in image_messages:
+            parser.error('Duplicate image reference in manifest')
+        referenced_images.add(path.parent)
+        image_messages.add(message)
+        if any(part.is_symlink() for part in
+               (path, path.parent, path.parent.parent, path.parent.parent.parent)):
+            parser.error('Symlink in manifest image boundary')
+        identity = {'projectId': project, 'versionId': version, 'messageId': message}
+        if not path.is_file():
+            findings.append(dict(kind='missing-image', **identity))
+        elif path.stat().st_size != size:
+            findings.append(dict(kind='image-size-mismatch', **identity))
+        else:
+            checksum = hashlib.sha256()
+            with path.open('rb') as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    checksum.update(block)
+            if checksum.hexdigest() != digest:
+                findings.append(dict(kind='image-hash-mismatch', **identity))
     unreferenced = []
     for version in sorted((root / 'projects').glob('*/versions/*')):
         if any(part.is_symlink() for part in
@@ -80,10 +125,24 @@ def main():
             unreferenced.append(version)
             findings.append({'kind': 'unreferenced-directory',
                              'path': str(version.relative_to(root))})
+    for image in sorted((root / 'projects').glob('*/review-images/*')):
+        if any(part.is_symlink() for part in
+               (image, image.parent, image.parent.parent, image.parent.parent.parent)):
+            findings.append({'kind': 'symlink', 'path': str(image.relative_to(root))})
+            continue
+        if (not image.is_dir() or not re.fullmatch('[A-Za-z0-9_-]{43}', image.name) or
+                not re.fullmatch('[A-Za-z0-9_-]{1,128}', image.parent.parent.name)):
+            findings.append({'kind': 'invalid-image-directory', 'path': str(image.relative_to(root))})
+        elif image not in referenced_images:
+            if images_checked:
+                unreferenced.append(image)
+            findings.append({'kind': 'unreferenced-directory' if images_checked else 'unchecked-image-directory',
+                             'path': str(image.relative_to(root))})
     print(json.dumps(findings, ensure_ascii=False, indent=2))
     # A broken snapshot cannot authorize any repair, even of an apparently orphaned
     # directory. Scan every reference first so failure never leaves partial repair.
-    if any(finding['kind'] != 'unreferenced-directory' for finding in findings):
+    if any(finding['kind'] not in ('unreferenced-directory', 'unchecked-image-directory')
+           for finding in findings):
         return 1
     if args.delete_unreferenced:
         for version in unreferenced:

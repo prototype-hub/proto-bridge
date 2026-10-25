@@ -104,6 +104,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
     @Autowired PrototypeRetentionService retention;
     @Autowired PrototypeReviewService review;
     @Autowired com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService reviewThreads;
+    @Autowired com.gaiys.proto.prototypehub.service.FileCleanupService fileCleanup;
     private String admin;
 
     @BeforeEach
@@ -2501,6 +2502,410 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         orphan.grant.path("revisionId").asText()));
     }
 
+    @Test
+    void imageRepliesPreserveExactBytesAndPrivateVisibilityWithoutChangingOldJson()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("文字线程"), 200)
+                        .path("id")
+                        .asText();
+        byte[] png = replyImage("png", 3);
+        JsonNode image = imageReply(f, guest, null, thread, feedbackFields("公开图片"), png, 200);
+        assertEquals(4, image.path("image").size());
+        assertEquals("image/png", image.path("image").path("contentType").asText());
+        assertEquals(png.length, image.path("image").path("size").asInt());
+        assertArrayEquals(png, imageRead(f, guest, null, thread, image.path("id").asText(), 200));
+        JsonNode before =
+                feedback(
+                        f, guest, HttpMethod.POST, "threads/" + thread + "/_detail", Map.of(), 200);
+        byte[] jpeg = replyImage("jpeg", 4);
+        JsonNode note =
+                imageReply(
+                        f,
+                        null,
+                        admin,
+                        thread,
+                        Map.of(
+                                "text",
+                                "内部图片",
+                                "visibility",
+                                "internal",
+                                "clientRequestId",
+                                "private-image"),
+                        jpeg,
+                        200);
+        assertEquals(
+                before,
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/_detail",
+                        Map.of(),
+                        200));
+        imageRead(f, guest, null, thread, note.path("id").asText(), 404);
+        assertArrayEquals(jpeg, imageRead(f, null, admin, thread, note.path("id").asText(), 200));
+        JsonNode visible =
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/messages/_query",
+                        Map.of(),
+                        200);
+        assertEquals(2, visible.path("total").asInt());
+        assertFalse(visible.toString().contains("内部图片"));
+        for (String field :
+                List.of("imagePath", "imageSha256", "storagePath", "sha256", "url", "filename"))
+            assertFalse(image.toString().contains("\"" + field + "\""));
+        JsonNode plain =
+                feedback(
+                        f,
+                        guest,
+                        HttpMethod.POST,
+                        "threads/" + thread + "/messages",
+                        feedbackFields("兼容旧JSON"),
+                        200);
+        assertTrue(plain.path("image").isNull());
+        imageRead(f, guest, null, thread, plain.path("id").asText(), 404);
+        String path =
+                database.sql("select image_path as value from p_review_message where id=:id")
+                        .bind("id", image.path("id").asText())
+                        .map(row -> row.get("value", String.class))
+                        .one()
+                        .block(TIMEOUT);
+        assertTrue(path.startsWith("projects/" + f.project + "/review-images/"));
+        Files.write(FILES.resolve(path), new byte[] {1, 2, 3});
+        imageRead(f, guest, null, thread, image.path("id").asText(), 404);
+    }
+
+    @Test
+    void imageReplayConcurrencyAndRollbackKeepOneGraphAndCandidateOwnership() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("线程"), 200)
+                        .path("id")
+                        .asText();
+        var fields = feedbackFields("相同图片重放");
+        byte[] png = replyImage("png", 3);
+        var barrier = new CyclicBarrier(2);
+        JsonNode first;
+        try (var pool = Executors.newFixedThreadPool(2)) {
+            var a =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return imageReply(f, guest, null, thread, fields, png, 200);
+                            });
+            var b =
+                    pool.submit(
+                            () -> {
+                                barrier.await(5, TimeUnit.SECONDS);
+                                return imageReply(f, guest, null, thread, fields, png, 200);
+                            });
+            first = a.get(20, TimeUnit.SECONDS);
+            assertEquals(first, b.get(20, TimeUnit.SECONDS));
+        }
+        assertEquals(1, imageFileCount());
+        assertEquals(2, count("p_review_message"));
+        assertEquals(2, count("p_review_event"));
+        imageReply(f, guest, null, thread, fields, replyImage("png", 4), 409);
+        feedback(f, guest, HttpMethod.POST, "threads/" + thread + "/messages", fields, 409);
+        var oldFields = feedbackFields("旧文字回执");
+        feedback(f, guest, HttpMethod.POST, "threads/" + thread + "/messages", oldFields, 200);
+        imageReply(f, guest, null, thread, oldFields, png, 409);
+        long receipts = count("p_creation_receipt");
+        sql(
+                "create function reject_image_event_fixture() returns trigger language plpgsql as $$ begin raise exception 'fixture event failure'; end $$");
+        sql(
+                "create trigger reject_image_event_fixture before insert on p_review_event for each row execute function reject_image_event_fixture()");
+        try {
+            imageReply(f, guest, null, thread, feedbackFields("回滚图片"), png, 500);
+        } finally {
+            sql("drop trigger reject_image_event_fixture on p_review_event");
+            sql("drop function reject_image_event_fixture()");
+        }
+        assertEquals(3, count("p_review_message"));
+        assertEquals(3, count("p_review_event"));
+        assertEquals(receipts, count("p_creation_receipt"));
+        assertEquals(1, imageFileCount());
+        assertArrayEquals(png, imageRead(f, guest, null, thread, first.path("id").asText(), 200));
+    }
+
+    @Test
+    void imageInputsAndCurrentAuthorityRejectWithoutFilesAndHardPurgeQueuesImages()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("线程"), 200)
+                        .path("id")
+                        .asText();
+        for (byte[] invalid :
+                List.of(
+                        "<svg/>".getBytes(StandardCharsets.UTF_8),
+                        new byte[] {1, 2},
+                        new byte[5 * 1024 * 1024 + 1]))
+            imageReply(f, guest, null, thread, feedbackFields("无效"), invalid, 400);
+        byte[] png = replyImage("png", 3);
+        imageReply(f, guest, null, thread, feedbackFields("   "), png, 400);
+        assertEquals(0, imageFileCount());
+        Browser stranger = unverified(f, context(f, null), "另一客户", null, 200);
+        imageReply(f, stranger, null, thread, feedbackFields("越权"), png, 404);
+        Actor viewer = actor(List.of("query", "save"));
+        member(f, viewer, "viewer");
+        imageReply(
+                f,
+                null,
+                viewer.token,
+                thread,
+                Map.of("text", "无EDIT", "visibility", "public", "clientRequestId", "no-edit"),
+                png,
+                403);
+        JsonNode saved = imageReply(f, guest, null, thread, feedbackFields("保留图片"), png, 200);
+        String message = saved.path("id").asText();
+        imageRead(f, stranger, null, thread, message, 404);
+        imageRead(f, null, viewer.token, thread, message, 403);
+        fileCleanup
+                .enqueueReviewImage(
+                        f.project,
+                        f.version.path("id").asText(),
+                        database.sql(
+                                        "select image_path as value from p_review_message where id=:id")
+                                .bind("id", message)
+                                .map(row -> row.get("value", String.class))
+                                .one()
+                                .block(TIMEOUT))
+                .block(TIMEOUT);
+        fileCleanup.retryPending().block(TIMEOUT);
+        assertArrayEquals(png, imageRead(f, guest, null, thread, message, 200));
+        sql("update p_review_session set expires_at=1 where guest_id=:id", guest.guest());
+        imageRead(f, guest, null, thread, message, 403);
+        imageReply(f, guest, null, thread, feedbackFields("过期"), png, 403);
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + f.version.path("id").asText(),
+                admin,
+                null,
+                200);
+        assertEquals(1, imageFileCount());
+        imageRead(f, null, admin, thread, message, 404);
+        database.sql("update p_version set deleted_time=:expired where id=:id")
+                .bind("expired", System.currentTimeMillis() - Duration.ofDays(31).toMillis())
+                .bind("id", f.version.path("id").asText())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(retention.purgeVersion(f.version.path("id").asText()).block(TIMEOUT));
+        assertEquals(0, count("p_review_message"));
+        sql("update p_file_cleanup set next_attempt=0");
+        fileCleanup.retryPending().block(TIMEOUT);
+        assertEquals(0, imageFileCount());
+        assertEquals(
+                0,
+                number(
+                        "select count(*) as value from p_file_cleanup where resource_type='review-image' and project_id=:id",
+                        f.project));
+    }
+
+    @Test
+    void imageMultipartAndReadEnforceTransportPartsAndCurrentShareScope() throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "客户", null, 200);
+        String thread =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("线程"), 200)
+                        .path("id")
+                        .asText();
+        byte[] png = replyImage("png", 3);
+        JsonNode saved = imageReply(f, guest, null, thread, feedbackFields("图片"), png, 200);
+        String path =
+                imageBase(f, guest) + thread + "/messages/" + saved.path("id").asText() + "/image";
+        for (String violation : List.of("origin", "csrf", "cookie")) {
+            var request =
+                    client.post()
+                            .uri(path)
+                            .contentType(MediaType.APPLICATION_JSON)
+                            .header(
+                                    "Origin",
+                                    violation.equals("origin")
+                                            ? "https://foreign.example.invalid"
+                                            : ORIGIN)
+                            .header(
+                                    "X-Review-CSRF",
+                                    violation.equals("csrf") ? "wrong" : guest.csrf());
+            if (!violation.equals("cookie")) request.cookie("prototype-review", guest.cookie);
+            request.bodyValue(imageFields(f, Map.of())).exchange().expectStatus().isForbidden();
+        }
+        for (String kind : List.of("duplicate", "unexpected", "bad-json", "missing")) {
+            var multipart = new MultipartBodyBuilder();
+            if (!kind.equals("missing"))
+                multipart.part(
+                        "request",
+                        kind.equals("bad-json") ? "{" : imageFields(f, feedbackFields("必须拒绝")),
+                        MediaType.APPLICATION_JSON);
+            multipart.part(
+                    "image",
+                    new ByteArrayResource(png) {
+                        @Override
+                        public String getFilename() {
+                            return "ignored";
+                        }
+                    });
+            if (kind.equals("duplicate"))
+                multipart.part(
+                        "image",
+                        new ByteArrayResource(png) {
+                            @Override
+                            public String getFilename() {
+                                return "ignored2";
+                            }
+                        });
+            if (kind.equals("unexpected")) multipart.part("extra", "ignored");
+            client.post()
+                    .uri(imageBase(f, guest) + thread + "/messages-with-image")
+                    .header("Origin", ORIGIN)
+                    .header("X-Review-CSRF", guest.csrf())
+                    .cookie("prototype-review", guest.cookie)
+                    .body(BodyInserters.fromMultipartData(multipart.build()))
+                    .exchange()
+                    .expectStatus()
+                    .isBadRequest();
+        }
+        assertEquals(1, imageFileCount());
+        Actor noSave = actor(List.of("query"));
+        member(f, noSave, "editor");
+        Actor noQuery = actor(List.of("save"));
+        member(f, noQuery, "editor");
+        imageReply(
+                f,
+                null,
+                noSave.token,
+                thread,
+                Map.of("text", "无按钮权限", "visibility", "public", "clientRequestId", "no-save"),
+                png,
+                403);
+        imageRead(f, null, noQuery.token, thread, saved.path("id").asText(), 403);
+        String other =
+                feedback(f, guest, HttpMethod.POST, "threads", feedbackFields("其他线程"), 200)
+                        .path("id")
+                        .asText();
+        imageRead(f, guest, null, other, saved.path("id").asText(), 404);
+        feedback(
+                f,
+                guest,
+                HttpMethod.POST,
+                "threads/" + thread + "/messages/" + saved.path("id").asText() + "/image",
+                Map.of("pageId", "f".repeat(64)),
+                404);
+        sql("update p_share set enabled=false where id=:id", f.share.path("id").asText());
+        imageRead(f, guest, null, thread, saved.path("id").asText(), 404);
+        imageReply(f, guest, null, thread, feedbackFields("撤销后不可上传"), png, 404);
+        assertEquals(1, imageFileCount());
+        assertArrayEquals(png, imageRead(f, null, admin, thread, saved.path("id").asText(), 200));
+    }
+
+    private byte[] replyImage(String format, int width) throws IOException {
+        var output = new ByteArrayOutputStream();
+        assertTrue(
+                javax.imageio.ImageIO.write(
+                        new java.awt.image.BufferedImage(
+                                width, 2, java.awt.image.BufferedImage.TYPE_INT_RGB),
+                        format,
+                        output));
+        return output.toByteArray();
+    }
+
+    private long imageFileCount() throws IOException {
+        try (var files = Files.walk(FILES)) {
+            return files.filter(path -> path.getFileName().toString().equals("image")).count();
+        }
+    }
+
+    private Map<String, Object> imageFields(Fixture f, Map<String, Object> values) {
+        var body = new HashMap<String, Object>();
+        body.put("revisionId", f.grant.path("revisionId").asText());
+        body.put("pageId", feedbackPage());
+        body.put("accessKey", f.grant.path("accessKey").asText());
+        body.putAll(values);
+        return body;
+    }
+
+    private JsonNode imageReply(
+            Fixture f,
+            Browser b,
+            String actor,
+            String thread,
+            Map<String, Object> values,
+            byte[] bytes,
+            int status) {
+        var multipart = new MultipartBodyBuilder();
+        multipart.part("request", imageFields(f, values), MediaType.APPLICATION_JSON);
+        multipart.part(
+                "image",
+                new ByteArrayResource(bytes) {
+                    @Override
+                    public String getFilename() {
+                        return "../../ignored.svg";
+                    }
+                },
+                MediaType.APPLICATION_OCTET_STREAM);
+        var request =
+                client.post()
+                        .uri(imageBase(f, b) + thread + "/messages-with-image")
+                        .contentType(MediaType.MULTIPART_FORM_DATA);
+        if (b != null)
+            request.header("Origin", ORIGIN)
+                    .header("X-Review-CSRF", b.csrf())
+                    .cookie("prototype-review", b.cookie);
+        else request.header("X-Access-Token", actor);
+        JsonNode body =
+                request.body(BodyInserters.fromMultipartData(multipart.build()))
+                        .exchange()
+                        .expectStatus()
+                        .isEqualTo(status)
+                        .expectBody(JsonNode.class)
+                        .returnResult()
+                        .getResponseBody();
+        return status == 200 ? body.path("result") : body;
+    }
+
+    private byte[] imageRead(
+            Fixture f, Browser b, String actor, String thread, String message, int status) {
+        var request =
+                client.post()
+                        .uri(imageBase(f, b) + thread + "/messages/" + message + "/image")
+                        .contentType(MediaType.APPLICATION_JSON);
+        if (b != null)
+            request.header("Origin", ORIGIN)
+                    .header("X-Review-CSRF", b.csrf())
+                    .cookie("prototype-review", b.cookie);
+        else request.header("X-Access-Token", actor);
+        var response =
+                request.bodyValue(imageFields(f, Map.of()))
+                        .exchange()
+                        .expectStatus()
+                        .isEqualTo(status);
+        if (status == 200)
+            response.expectHeader()
+                    .valueEquals("X-Content-Type-Options", "nosniff")
+                    .expectHeader()
+                    .valueEquals("Cache-Control", "private, no-store");
+        return response.expectBody().returnResult().getResponseBody();
+    }
+
+    private String imageBase(Fixture f, Browser b) {
+        return b != null
+                ? "/api/prototype-hub/public/shares/"
+                        + f.share.path("token").asText()
+                        + "/review/threads/"
+                : "/api/prototype-hub/versions/"
+                        + f.version.path("id").asText()
+                        + "/review-threads/";
+    }
+
     private Fixture feedbackFixture() throws IOException {
         Fixture f = fixture(true, false);
         management(
@@ -3001,6 +3406,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
                             case "p_review_message" ->
                                     "select count(*) as value from p_review_message";
                             case "p_review_event" -> "select count(*) as value from p_review_event";
+                            case "p_creation_receipt" ->
+                                    "select count(*) as value from p_creation_receipt";
                             case "p_review_invitation" ->
                                     "select count(*) as value from p_review_invitation";
                             case "s_user" -> "select count(*) as value from s_user";
