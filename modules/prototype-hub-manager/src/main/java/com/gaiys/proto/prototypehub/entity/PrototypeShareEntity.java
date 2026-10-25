@@ -22,6 +22,10 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @EnableEntityEvent
 @Schema(description = "原型版本分享链接及访问控制信息")
 public class PrototypeShareEntity extends GenericEntity<String> {
+    @Column(name = "review_allow_comment")
+    @Schema(description = "是否明确允许页面文本评审；历史空值按关闭处理")
+    private Boolean reviewAllowComment;
+
     @Column(name = "review_allow_unverified")
     @Schema(description = "是否明确允许未验证访客；历史空值按关闭处理")
     private Boolean reviewAllowUnverified;

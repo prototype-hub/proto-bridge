@@ -53,6 +53,8 @@ public class PrototypeShareService
     }
 
     public Mono<ReviewPolicyResponse> reviewPolicy(String id, ReviewPolicyRequest input) {
+        if (Boolean.TRUE.equals(input.allowComment()) && !input.enabled())
+            return Mono.error(configInvalid());
         return mutate(
                         id,
                         input.expectedVersion(),
@@ -61,6 +63,8 @@ public class PrototypeShareService
                             // 已发布的旧客户端只传enabled；缺失新字段不得关闭管理员已开启的策略。
                             if (input.allowUnverified() != null)
                                 share.setReviewAllowUnverified(input.allowUnverified());
+                            if (input.allowComment() != null)
+                                share.setReviewAllowComment(input.allowComment());
                         })
                 .map(this::reviewPolicy);
     }
@@ -69,6 +73,8 @@ public class PrototypeShareService
         return new ReviewPolicyResponse(
                 Boolean.TRUE.equals(share.getReviewEnabled()),
                 Boolean.TRUE.equals(share.getReviewAllowUnverified()),
+                Boolean.TRUE.equals(share.getReviewEnabled())
+                        && Boolean.TRUE.equals(share.getReviewAllowComment()),
                 notifications.available(),
                 share.getConfigVersion() == null ? 0 : share.getConfigVersion());
     }
@@ -134,6 +140,7 @@ public class PrototypeShareService
         share.setEnabled(true);
         share.setReviewEnabled(false);
         share.setReviewAllowUnverified(false);
+        share.setReviewAllowComment(false);
         share.setRevoked(false);
         share.setConfigVersion(1L);
         share.setRevisionMode(mode.name());
@@ -319,6 +326,9 @@ public class PrototypeShareService
                         .set(
                                 PrototypeShareEntity::getReviewAllowUnverified,
                                 Boolean.TRUE.equals(share.getReviewAllowUnverified()))
+                        .set(
+                                PrototypeShareEntity::getReviewAllowComment,
+                                Boolean.TRUE.equals(share.getReviewAllowComment()))
                         .set(
                                 PrototypeShareEntity::getRevoked,
                                 Boolean.TRUE.equals(share.getRevoked()))

@@ -117,7 +117,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(21, localTypes.size());
+        assertEquals(26, localTypes.size());
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -160,10 +160,15 @@ class DatabaseDescriptionIntegrationTest {
                         "p_review_guest",
                         "p_review_challenge",
                         "p_review_session",
-                        "p_review_rate"),
+                        "p_review_rate",
+                        "p_review_unverified_guest",
+                        "p_review_invitation",
+                        "p_review_thread",
+                        "p_review_message",
+                        "p_review_event"),
                 tables);
-        // 包含邮箱身份、短会话/验证码与限频字段，以及分享默认关闭的身份开关。
-        assertEquals(193, describedColumns);
+        // 包含两类访客、邀请及页面线程/消息/outbox；历史分享的评审开关仍默认关闭。
+        assertEquals(259, describedColumns);
         assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
@@ -184,7 +189,9 @@ class DatabaseDescriptionIntegrationTest {
                         "description",
                         "revision_mode",
                         "revoked",
-                        "config_version")) assertFalse(comment("p_share", name).isBlank(), name);
+                        "config_version",
+                        "review_allow_comment"))
+            assertFalse(comment("p_share", name).isBlank(), name);
         assertFalse(columnNames("s_menu").contains("children"));
         assertFalse(columnNames("s_menu").contains("granted"));
         assertTrue(columnNames("s_user_setting").contains("setting_key"));

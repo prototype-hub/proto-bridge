@@ -85,6 +85,56 @@ public class PrototypeReviewService {
                                         .defaultIfEmpty(context(share, revisionId, cookie, null)));
     }
 
+    /** 评审读写的唯一访客授权；匿名上下文不能代替当前会话及当前访客行。 */
+    public Mono<VisitorScope> requireVisitor(
+            String token, String revisionId, String key, String cookie) {
+        return requireScope(token, revisionId, key)
+                .flatMap(
+                        share -> {
+                            if (!Boolean.TRUE.equals(share.getReviewAllowComment())
+                                    || (share.getRevisionMode() != null
+                                            && !"fixed".equals(share.getRevisionMode())))
+                                return Mono.error(PrototypeReviewThreadService.commentsDisabled());
+                            return sessions.createQuery()
+                                    .where(
+                                            PrototypeReviewSessionEntity::getId,
+                                            PrototypeReviewKeys.digest(cookie))
+                                    .fetch()
+                                    .singleOrEmpty()
+                                    .filter(
+                                            session ->
+                                                    validSession(
+                                                            session,
+                                                            share,
+                                                            revisionId,
+                                                            System.currentTimeMillis()))
+                                    .flatMap(
+                                            session ->
+                                                    sessionIdentity(session, share)
+                                                            .map(
+                                                                    identity ->
+                                                                            new VisitorScope(
+                                                                                    share,
+                                                                                    identity)))
+                                    .switchIfEmpty(
+                                            Mono.error(
+                                                    PrototypeReviewThreadService::sessionRequired));
+                        });
+    }
+
+    /** 调用方实际事务内按项目→版本持锁，再次核验身份与完整授权代次。 */
+    public Mono<VisitorScope> lockedVisitor(
+            String token, String revisionId, String key, String cookie) {
+        return requireVisitor(token, revisionId, key, cookie)
+                .flatMap(
+                        before ->
+                                access.lockProject(before.share().getProjectId())
+                                        .then(access.lockVersion(before.share().getVersionId()))
+                                        .then(requireVisitor(token, revisionId, key, cookie)));
+    }
+
+    public record VisitorScope(PrototypeShareEntity share, ReviewIdentity identity) {}
+
     /** 明确选择低保障路径；持父锁后再次校验策略，既不降级已验证会话也不找回旧访客。 */
     public Mono<Verified> unverified(String token, ReviewUnverifiedRequest input, String cookie) {
         return lockedScope(token, input.revisionId(), input.accessKey())
@@ -175,7 +225,10 @@ public class PrototypeReviewService {
             PrototypeReviewSessionEntity session, PrototypeShareEntity share) {
         if (!knownLevel(session)) return Mono.error(denied());
         if (emailLevel(session))
-            return guests.findById(session.getGuestId())
+            return guests.createQuery()
+                    .where(PrototypeReviewGuestEntity::getId, session.getGuestId())
+                    .fetch()
+                    .singleOrEmpty()
                     .filter(
                             guest ->
                                     !Boolean.FALSE.equals(guest.getEnabled())
@@ -183,7 +236,10 @@ public class PrototypeReviewService {
                     .map(guest -> identity(guest, session.getExpiresAt()));
         if (!Boolean.TRUE.equals(share.getReviewAllowUnverified())) return Mono.empty();
         return unverifiedGuests
-                .findById(session.getGuestId())
+                .createQuery()
+                .where(PrototypeReviewUnverifiedGuestEntity::getId, session.getGuestId())
+                .fetch()
+                .singleOrEmpty()
                 .filter(
                         guest ->
                                 Boolean.TRUE.equals(guest.getEnabled())
@@ -815,6 +871,7 @@ public class PrototypeReviewService {
                 revisionId,
                 true,
                 Boolean.TRUE.equals(share.getReviewAllowUnverified()),
+                Boolean.TRUE.equals(share.getReviewAllowComment()),
                 notifications.available(),
                 PrototypeReviewKeys.csrf(cookie),
                 identity);
