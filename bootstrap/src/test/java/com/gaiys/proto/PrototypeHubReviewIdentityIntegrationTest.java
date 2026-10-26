@@ -2862,6 +2862,418 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         .asInt());
     }
 
+    @Test
+    void memberResponsibilityOverviewPagesCombinesStateAndRefreshesAssignment() throws Exception {
+        Fixture f = feedbackFixture(List.of("index.html", "details.html"));
+        Browser guest = unverified(f, context(f, null), "责任总览客户", null, 200);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version");
+        Actor other = actor(List.of("query"), "prototype-hub-version");
+        member(f, editor, "editor");
+        member(f, other, "editor");
+        var created = new ArrayList<JsonNode>();
+        for (int i = 0; i < 45; i++) {
+            var fields = new HashMap<>(feedbackFields("责任反馈" + i));
+            fields.put("pageId", reviewPage(i % 2 == 0 ? "index.html" : "details.html"));
+            JsonNode thread = feedback(f, guest, HttpMethod.POST, "threads", fields, 200);
+            created.add(thread);
+            if (i < 22 || i == 44) {
+                database.sql(
+                                "update p_review_thread set assignee_id=:actor,assignee_name='PM',assignment_version=1 where id=:id")
+                        .bind("actor", i == 44 ? other.id : editor.id)
+                        .bind("id", thread.path("id").asText())
+                        .fetch()
+                        .rowsUpdated()
+                        .block(TIMEOUT);
+            }
+        }
+        for (int index : List.of(0, 22)) {
+            JsonNode thread = created.get(index);
+            pmFeedback(
+                    f,
+                    thread.path("id").asText() + "/status",
+                    HttpMethod.PUT,
+                    admin,
+                    Map.of(
+                            "pageId",
+                            thread.path("pageId").asText(),
+                            "state",
+                            "resolved",
+                            "expectedVersion",
+                            0,
+                            "clientRequestId",
+                            UUID.randomUUID().toString()),
+                    200);
+        }
+        sql("update p_review_thread set public_updated_at=1000");
+        String first = created.getFirst().path("id").asText();
+        sql("update p_review_thread set public_updated_at=2000 where id=:id", first);
+        long events = count("p_review_event");
+        long receipts = count("p_creation_receipt");
+        JsonNode all = pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200);
+        assertEquals(45, all.path("total").asInt());
+        var nullable = new HashMap<String, Object>();
+        nullable.put("assignment", null);
+        assertEquals(all, pmFeedback(f, "_overview", HttpMethod.POST, editor.token, nullable, 200));
+        for (String filter : List.of("mine", "unassigned")) {
+            JsonNode one =
+                    pmFeedback(
+                            f,
+                            "_overview",
+                            HttpMethod.POST,
+                            editor.token,
+                            Map.of("assignment", filter),
+                            200);
+            JsonNode two =
+                    pmFeedback(
+                            f,
+                            "_overview",
+                            HttpMethod.POST,
+                            editor.token,
+                            Map.of("assignment", filter, "pageIndex", 1),
+                            200);
+            assertEquals(22, one.path("total").asInt());
+            assertEquals(0, one.path("pageIndex").asInt());
+            assertEquals(20, one.path("pageSize").asInt());
+            assertEquals(20, one.path("data").size());
+            assertEquals(22, two.path("total").asInt());
+            assertEquals(2, two.path("data").size());
+            var actual = new ArrayList<>(one.path("data").findValuesAsText("id"));
+            actual.addAll(two.path("data").findValuesAsText("id"));
+            List<String> expected =
+                    created
+                            .subList(
+                                    filter.equals("mine") ? 0 : 22, filter.equals("mine") ? 22 : 44)
+                            .stream()
+                            .map(row -> row.path("id").asText())
+                            .sorted()
+                            .collect(java.util.stream.Collectors.toCollection(ArrayList::new));
+            if (filter.equals("mine")) {
+                expected.remove(first);
+                expected.addFirst(first);
+            }
+            assertEquals(expected, actual);
+            JsonNode beyond =
+                    pmFeedback(
+                            f,
+                            "_overview",
+                            HttpMethod.POST,
+                            editor.token,
+                            Map.of("assignment", filter, "pageIndex", 99),
+                            200);
+            assertEquals(22, beyond.path("total").asInt());
+            assertEquals(99, beyond.path("pageIndex").asInt());
+            assertTrue(beyond.path("data").isEmpty());
+            assertEquals(
+                    1,
+                    pmFeedback(
+                                    f,
+                                    "_overview",
+                                    HttpMethod.POST,
+                                    editor.token,
+                                    Map.of("assignment", filter, "state", "resolved"),
+                                    200)
+                            .path("total")
+                            .asInt());
+            assertEquals(
+                    21,
+                    pmFeedback(
+                                    f,
+                                    "_overview",
+                                    HttpMethod.POST,
+                                    editor.token,
+                                    Map.of("assignment", filter, "state", "open"),
+                                    200)
+                            .path("total")
+                            .asInt());
+        }
+        assertEquals(
+                List.of(created.getLast().path("id").asText()),
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                other.token,
+                                Map.of("assignment", "mine"),
+                                200)
+                        .path("data")
+                        .findValuesAsText("id"));
+        assertEquals(
+                0,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                admin,
+                                Map.of(
+                                        "assignment",
+                                        "mine",
+                                        "actorId",
+                                        editor.id,
+                                        "assigneeId",
+                                        editor.id),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(events, count("p_review_event"));
+        assertEquals(receipts, count("p_creation_receipt"));
+        String changed = created.get(24).path("id").asText();
+        assertEquals(
+                1,
+                number(
+                        "select count(*) as value from p_review_thread where id=:id and assignee_id is null and assignment_version is null",
+                        changed));
+        pmFeedback(
+                f,
+                changed + "/assignment",
+                HttpMethod.PUT,
+                editor.token,
+                assignmentFields(editor.id, 0, "overview-assign"),
+                200);
+        assertEquals(
+                23,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("assignment", "mine"),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                21,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("assignment", "unassigned"),
+                                200)
+                        .path("total")
+                        .asInt());
+        pmFeedback(
+                f,
+                changed + "/assignment",
+                HttpMethod.PUT,
+                editor.token,
+                assignmentFields(null, 1, "overview-clear"),
+                200);
+        assertEquals(
+                22,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("assignment", "mine"),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                22,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("assignment", "unassigned"),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(all, pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200));
+    }
+
+    @Test
+    void memberResponsibilityOverviewNeverTreatsAssignmentAsPermissionOrPublicScope()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "本人", null, 200);
+        Browser another = unverified(f, context(f, null), "其他访客", null, 200);
+        String thread = assignmentThread(f, guest);
+        assignmentThread(f, another);
+        Actor editor = actor(List.of("query", "save"), "prototype-hub-version");
+        Actor noQuery = actor(List.of("save"), "prototype-hub-version");
+        Actor outsider = actor(List.of("query"), "prototype-hub-version");
+        member(f, editor, "editor");
+        member(f, noQuery, "editor");
+        pmFeedback(
+                f,
+                thread + "/assignment",
+                HttpMethod.PUT,
+                editor.token,
+                assignmentFields(editor.id, 0, "private-queue"),
+                200);
+        pmFeedback(
+                f,
+                thread + "/messages",
+                HttpMethod.POST,
+                editor.token,
+                Map.of("text", "队列内部备注", "visibility", "internal", "clientRequestId", "queue-note"),
+                200);
+        JsonNode own = overview(f, guest, Map.of(), 200);
+        assertEquals(1, own.path("total").asInt());
+        for (String filter : List.of("mine", "unassigned", "arbitrary")) {
+            assertEquals(
+                    own,
+                    overview(
+                            f,
+                            guest,
+                            Map.of(
+                                    "assignment",
+                                    filter,
+                                    "actorId",
+                                    editor.id,
+                                    "assigneeId",
+                                    outsider.id),
+                            200));
+        }
+        JsonNode memberResult =
+                pmFeedback(
+                        f,
+                        "_overview",
+                        HttpMethod.POST,
+                        editor.token,
+                        Map.of("assignment", "mine"),
+                        200);
+        assertEquals(own, memberResult);
+        for (String field :
+                List.of(
+                        "assigneeId",
+                        "assigneeName",
+                        "assignmentVersion",
+                        "assignmentUpdatedAt",
+                        "messages",
+                        "email",
+                        "guestId",
+                        "shareId")) {
+            assertFalse(memberResult.path("data").get(0).has(field));
+        }
+        assertFalse(memberResult.toString().contains("队列内部备注"));
+        Fixture foreign = feedbackFixture();
+        for (String filter : List.of("mine", "unassigned")) {
+            pmFeedback(
+                    f,
+                    "_overview",
+                    HttpMethod.POST,
+                    admin,
+                    Map.of(
+                            "assignment",
+                            filter,
+                            "revisionId",
+                            foreign.grant.path("revisionId").asText()),
+                    404);
+            pmFeedback(
+                    foreign,
+                    "_overview",
+                    HttpMethod.POST,
+                    admin,
+                    Map.of("assignment", filter, "revisionId", f.grant.path("revisionId").asText()),
+                    404);
+            pmFeedback(
+                    f,
+                    "_overview",
+                    HttpMethod.POST,
+                    noQuery.token,
+                    Map.of("assignment", filter),
+                    403);
+        }
+        member(f, editor, "viewer");
+        pmFeedback(
+                f, "_overview", HttpMethod.POST, editor.token, Map.of("assignment", "mine"), 403);
+        member(f, editor, "editor");
+        management(
+                HttpMethod.DELETE,
+                "/prototype-hub/projects/" + f.project + "/members/" + editor.id,
+                admin,
+                null,
+                200);
+        pmFeedback(
+                f, "_overview", HttpMethod.POST, editor.token, Map.of("assignment", "mine"), 404);
+        sql("update p_review_thread set assignee_id=:id", outsider.id);
+        pmFeedback(
+                f, "_overview", HttpMethod.POST, outsider.token, Map.of("assignment", "mine"), 404);
+        assertEquals(
+                0,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                admin,
+                                Map.of("assignment", "unassigned"),
+                                200)
+                        .path("total")
+                        .asInt());
+        member(f, editor, "editor");
+        sql("update p_review_thread set assignee_id=:id", editor.id);
+        sql("update s_user set status=0 where id=:id", editor.id);
+        assertEquals(
+                "PROTOTYPE_HUB_USER_UNAVAILABLE",
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                editor.token,
+                                Map.of("assignment", "mine"),
+                                403)
+                        .path("code")
+                        .asText());
+        assertEquals(
+                0,
+                pmFeedback(
+                                f,
+                                "_overview",
+                                HttpMethod.POST,
+                                admin,
+                                Map.of("assignment", "unassigned"),
+                                200)
+                        .path("total")
+                        .asInt());
+        assertEquals(
+                2,
+                pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200)
+                        .path("total")
+                        .asInt());
+    }
+
+    @Test
+    void memberResponsibilityOverviewValidatesSelectorAndPreservesDefaultAndLifecycle()
+            throws Exception {
+        Fixture f = feedbackFixture();
+        Browser guest = unverified(f, context(f, null), "筛选客户", null, 200);
+        assignmentThread(f, guest);
+        for (Object invalid :
+                List.of("", "all", "Mine", "mine ", "other", 0, 1, true, false, List.of("mine"))) {
+            pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("assignment", invalid), 400);
+        }
+        for (Map<String, Object> invalid :
+                List.of(
+                        Map.<String, Object>of("assignment", "mine", "pageIndex", -1),
+                        Map.<String, Object>of("assignment", "unassigned", "pageSize", 101),
+                        Map.<String, Object>of("assignment", "mine", "state", "other"),
+                        Map.<String, Object>of("assignment", "unassigned", "revisionId", ""))) {
+            pmFeedback(f, "_overview", HttpMethod.POST, admin, invalid, 400);
+        }
+        var nullSelector = new HashMap<String, Object>();
+        nullSelector.put("assignment", null);
+        JsonNode all = pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200);
+        assertEquals(all, pmFeedback(f, "_overview", HttpMethod.POST, admin, nullSelector, 200));
+        assertEquals(
+                all,
+                pmFeedback(
+                        f,
+                        "_overview",
+                        HttpMethod.POST,
+                        admin,
+                        Map.of("assignment", "unassigned"),
+                        200));
+        assertEquals(overview(f, guest, Map.of(), 200), all);
+        sql("update p_version set deleted_time=1 where id=:id", f.version.path("id").asText());
+        pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("assignment", "unassigned"), 404);
+        sql("update p_version set deleted_time=null where id=:id", f.version.path("id").asText());
+        sql("update p_project set deleted_time=1 where id=:id", f.project);
+        pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("assignment", "mine"), 404);
+    }
+
     private JsonNode overview(Fixture f, Browser guest, Map<String, Object> fields, int status) {
         return exchange(f, "threads/_overview", fields, guest.cookie, guest.csrf(), ORIGIN, status)
                 .data;

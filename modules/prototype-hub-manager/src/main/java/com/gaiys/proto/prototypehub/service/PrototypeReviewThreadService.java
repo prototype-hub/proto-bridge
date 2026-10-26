@@ -6,12 +6,14 @@ import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewRateEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewThreadEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeReviewKeys;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewMemberThreadOverviewRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
@@ -87,39 +89,61 @@ public class PrototypeReviewThreadService {
                         });
     }
 
-    /** 先核当前项目EDIT和修订精确关联，不遍历清单或为总览创建空页面作用域。 */
+    /** 负责人仅收窄当前成员有权编辑的修订；分派关系本身不授予访问权限。 */
     public Mono<PagerResult<ReviewThreadResponse>> overviewMember(
-            String versionId, ReviewThreadOverviewRequest input) {
-        return access.requireVersion(versionId, PrototypeProjectAccessService.Action.EDIT)
+            String versionId, ReviewMemberThreadOverviewRequest input) {
+        return access.current()
                 .flatMap(
-                        version ->
-                                revisions
-                                        .createQuery()
-                                        .select(PrototypeRevisionEntity::getId)
-                                        .where(
-                                                PrototypeRevisionEntity::getId,
-                                                input.getRevisionId())
-                                        .and(
-                                                PrototypeRevisionEntity::getProjectId,
-                                                version.getProjectId())
-                                        .and(PrototypeRevisionEntity::getVersionId, versionId)
-                                        .fetch()
-                                        .singleOrEmpty()
-                                        .switchIfEmpty(
-                                                Mono.error(
-                                                        () ->
-                                                                PrototypeHubException.missing(
-                                                                        "revision")))
+                        actor ->
+                                access.requireVersion(
+                                                actor,
+                                                versionId,
+                                                PrototypeProjectAccessService.Action.EDIT,
+                                                true)
                                         .flatMap(
-                                                ignored ->
-                                                        QueryHelper.queryPager(
-                                                                overviewQuery(
-                                                                        version.getProjectId(),
-                                                                        versionId,
-                                                                        input),
-                                                                threads::createQuery,
-                                                                PrototypeReviewThreadService
-                                                                        ::response)));
+                                                version ->
+                                                        memberOverview(
+                                                                version, actor.userId(), input)));
+    }
+
+    private Mono<PagerResult<ReviewThreadResponse>> memberOverview(
+            PrototypeVersionEntity version,
+            String actorId,
+            ReviewMemberThreadOverviewRequest input) {
+        return revisions
+                .createQuery()
+                .select(PrototypeRevisionEntity::getId)
+                .where(PrototypeRevisionEntity::getId, input.getRevisionId())
+                .and(PrototypeRevisionEntity::getProjectId, version.getProjectId())
+                .and(PrototypeRevisionEntity::getVersionId, version.getId())
+                .fetch()
+                .singleOrEmpty()
+                .switchIfEmpty(Mono.error(() -> PrototypeHubException.missing("revision")))
+                .flatMap(
+                        ignored ->
+                                QueryHelper.queryPager(
+                                        memberOverviewQuery(
+                                                version.getProjectId(),
+                                                version.getId(),
+                                                actorId,
+                                                input),
+                                        threads::createQuery,
+                                        PrototypeReviewThreadService::response));
+    }
+
+    private static QueryParamEntity memberOverviewQuery(
+            String projectId,
+            String versionId,
+            String actorId,
+            ReviewMemberThreadOverviewRequest input) {
+        QueryParamEntity query = overviewQuery(projectId, versionId, input);
+        if ("mine".equals(input.getAssignment())) {
+            query.toQuery().and(PrototypeReviewThreadEntity::getAssigneeId, actorId);
+        } else if ("unassigned".equals(input.getAssignment())) {
+            // 历史空负责人同样未分派；不根据账号状态或当前成员资格重新解释已保存的分派。
+            query.toQuery().isNull(PrototypeReviewThreadEntity::getAssigneeId);
+        }
+        return query;
     }
 
     /** COUNT与分页均在固定修订条件下执行；公开更新时间避免内部活动改变排序。 */
