@@ -5,9 +5,9 @@ import com.gaiys.proto.prototypehub.service.PrototypeReviewThreadService;
 import com.gaiys.proto.prototypehub.web.request.ReviewAssignmentCandidateRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewAssignmentRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMemberTextRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewMemberThreadOverviewRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
-import com.gaiys.proto.prototypehub.web.request.ReviewThreadOverviewRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewAssigneeResponse;
@@ -49,9 +49,10 @@ public class PrototypeReviewThreadController {
 
     @PostMapping("/_overview")
     @QueryAction
-    @Operation(summary = "在项目编辑权限范围内分页查看固定修订全部页面反馈")
+    @Operation(summary = "在项目编辑权限范围内按负责人分页查看固定修订全部页面反馈")
     public Mono<PagerResult<ReviewThreadResponse>> overview(
-            @PathVariable String versionId, @Valid @RequestBody ReviewThreadOverviewRequest input) {
+            @PathVariable String versionId,
+            @Valid @RequestBody ReviewMemberThreadOverviewRequest input) {
         return threads.overviewMember(versionId, input);
     }
 

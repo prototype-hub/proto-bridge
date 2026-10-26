@@ -156,7 +156,7 @@ EasyORM增加 `p_share.review_enabled/review_allow_unverified/review_allow_comme
 | `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性、创建时间及可空单图元数据；没有消息编辑/删除或通用附件入口 |
 | `p_review_event` | 同事务领域事件outbox，仅存相关ID、事件类型、作者种类和时间；不存正文、邮箱、凭据，不代表业务发送任务 |
 
-固定修订的跨页反馈总览复用p_review_thread及原Thread投影，不新增持久字段或表。索引 `idx_review_thread_overview(revision_id,public_updated_at,id)` 支持固定修订按公开更新时间和ID分页；由EasyORM增补，保留旧数据。总览的公开范围仍限定share_id、guest_id及verification_level，内部备注与负责人字段不参与公开排序、计数或投影；整库备份及v3存储引用格式保持不变。
+固定修订的跨页反馈总览复用p_review_thread及原Thread投影，不新增持久字段或表。索引 `idx_review_thread_overview(revision_id,public_updated_at,id)` 支持固定修订按公开更新时间和ID分页；另增复合索引 `(revision_id,assignee_id,public_updated_at,id)` 支持成员责任筛选后的COUNT与分页排序。均由EasyORM增补，保留旧数据，重复同步不重复建索引。成员mine按当前服务端账号匹配assignee_id，unassigned仅匹配NULL，旧空值自然计入；停用或撤员不改变已有非空分派。总览的公开范围仍限定share_id、guest_id及verification_level，内部备注与负责人字段不参与公开排序、计数或投影；整库备份及v3存储引用格式保持不变，不新增恢复覆盖声明。
 
 p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_name`（128）、`assignment_version`（Long）、`assignment_updated_at`（Unix毫秒）。旧空值按未分派、版本0及空更新时间解释，不回填猜测的负责人。姓名是分派时快照，available按当前启用账号及owner/editor绑定计算；停用或撤员不自动清空或转交，同一账号重新合格可再次可用。负责人独立于state/config_version/public_updated_at，不改变原公开Thread投影或排序，也不构成授权。
 

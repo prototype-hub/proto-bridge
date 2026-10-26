@@ -274,7 +274,7 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 | 请求 | 输入 | 结果 |
 | --- | --- | --- |
 | `POST /_query` | `{revisionId,pageId,pageIndex,pageSize,state?}` | Thread的PagerResult |
-| `POST /_overview` | `{revisionId,pageIndex,pageSize,state?}`，不需pageId | 当前固定修订全部页面的Thread分页 |
+| `POST /_overview` | `{revisionId,pageIndex,pageSize,state?,assignment?}`，不需pageId | 当前固定修订全部页面的Thread分页；assignment仅成员入口支持 |
 | `POST /{threadId}/_detail` | `{revisionId,pageId}` | 当前管理范围内的单个Thread，不受列表分页或state筛选影响 |
 | `POST /{threadId}/messages/_query` | `{revisionId,pageId,pageIndex,pageSize}` | 含内部备注的Message分页 |
 | `POST /{threadId}/messages` | `{revisionId,pageId,text,visibility:'public'|'internal',clientRequestId}` | Message，成员作者从当前登录身份获取 |
@@ -282,7 +282,11 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 管理端不新建客户顶层线程。分享或访客停用后，有权成员仍可处理归档反馈；项目、版本或修订本身不可用时继续拒绝。线程为 `{id,revisionId,pageId,pageName,pagePath,summary,authorName,authorCompany,verificationLevel,state,configVersion,createdAt,updatedAt,anchor}`，summary取初始公开文本前200个Java字符，作者资料与保障等级为首次投稿快照。消息为 `{id,threadId,text,authorType,authorName,authorCompany,verificationLevel,visibility,createdAt,image}`；authorType为guest/member，成员verificationLevel为null。响应不返回作者ID、完整邮箱或凭据。
 
-跨页总览使用独立请求，不放宽原逐页请求的pageId要求。revisionId必填，公开端还必填accessKey；pageIndex为0–10000、默认0，pageSize为1–100、默认20，state可省略或为精确的open/resolved，空字符串无效。服务端在固定项目、版本和修订范围内先过滤再真实COUNT、分页，按公开updatedAt降序、ID升序；越界页返回空data并保留真实total，不回退末页。公开总览仍同时限定当前shareId、guestId及保障等级，不因跨页而跨分享或合并身份；成员总览仍要求版本query与当前项目EDIT。两端返回相同Thread投影和已有不可变页面快照，不附带消息、内部备注数量或负责人，不受内部备注或分派的时间与版本变化影响。
+跨页总览使用独立请求，不放宽原逐页请求的pageId要求。revisionId必填，公开端还必填accessKey；pageIndex为0–10000、默认0，pageSize为1–100、默认20，state可省略或为精确的open/resolved，空字符串无效。服务端在固定项目、版本和修订范围内先过滤再真实COUNT、分页，按公开updatedAt降序、ID升序；越界页返回空data并保留真实total，不回退末页。公开总览仍同时限定当前shareId、guestId及保障等级，不因跨页而跨分享或合并身份；成员总览仍要求版本query与当前项目EDIT。两端返回相同Thread投影和已有不可变页面快照，不附带消息、内部备注数量或负责人；内部备注与分派不改变公开时间、状态版本或排序。
+
+仅成员总览支持可选assignment：精确字符串mine表示分派给当前登录账号，unassigned表示assignee_id为NULL，省略或null表示全部；空字符串、all及其他值无效。当前账号由服务端解析，不接受客户端指定actor或assignee ID。责任筛选与state按AND组合，COUNT和分页使用相同条件，旧客户端省略筛选保持原结果。停用或撤员等不可用负责人仍属已分派，须通过原授权入口明确清除，不自动归入未分派；账号删除仍沿原同步清除规则处理。被分派本身不授予权限，公开总览保持原请求DTO、解码行为和本人范围，不支持成员责任筛选或返回内部分派数据。
+
+成员界面提供“全部负责人／分派给我／未分派”，修改任一筛选重置到第一页，清除同时重置状态和责任筛选；手动刷新或重试保留当前组合。范围、修订或实际账号变化重置筛选并取消旧请求，迟到结果不能覆盖新范围。分派或清除仍在原线程入口完成，返回总览后须明确刷新才能反映当前分派；不轮询、不自动转交或新增通知。
 
 总览只读，不自动加载每条消息或全部分页。外壳明确选择一行后，先核对其修订、线程及已加载manifest中唯一非目录页面，再导航到原revisionId/pageId/threadId目标并由详情接口重新授权；URL不携带凭据或正文。打开、关闭总览及返回同一线程不清空原文字、File、锚点、请求键或分派意图。跨目标时若有草稿、未知结果或正在编辑的分派，须明确确认放弃；取消保持原payload、请求键和地址，不能把未知请求自动重投。
 
