@@ -16,6 +16,7 @@ import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadCreateRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewThreadOverviewRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
@@ -57,6 +58,92 @@ public class PrototypeReviewThreadService {
     private final TransactionalOperator transactions;
     private final PrototypeReviewImageService images;
     private final FileCleanupService cleanup;
+
+    /** 总览只省略页面条件，分享、身份命名空间与当前会话的授权范围均保持。 */
+    public Mono<PagerResult<ReviewThreadResponse>> overviewVisitor(
+            String token, ReviewThreadOverviewRequest input, String cookie) {
+        return review.requireVisitor(token, input.getRevisionId(), input.getAccessKey(), cookie)
+                .flatMap(
+                        grant -> {
+                            var query =
+                                    overviewQuery(
+                                            grant.share().getProjectId(),
+                                            grant.share().getVersionId(),
+                                            input);
+                            query.toQuery()
+                                    .and(
+                                            PrototypeReviewThreadEntity::getShareId,
+                                            grant.share().getId())
+                                    .and(
+                                            PrototypeReviewThreadEntity::getGuestId,
+                                            grant.identity().guestId())
+                                    .and(
+                                            PrototypeReviewThreadEntity::getVerificationLevel,
+                                            grant.identity().verificationLevel());
+                            return QueryHelper.queryPager(
+                                    query,
+                                    threads::createQuery,
+                                    PrototypeReviewThreadService::response);
+                        });
+    }
+
+    /** 先核当前项目EDIT和修订精确关联，不遍历清单或为总览创建空页面作用域。 */
+    public Mono<PagerResult<ReviewThreadResponse>> overviewMember(
+            String versionId, ReviewThreadOverviewRequest input) {
+        return access.requireVersion(versionId, PrototypeProjectAccessService.Action.EDIT)
+                .flatMap(
+                        version ->
+                                revisions
+                                        .createQuery()
+                                        .select(PrototypeRevisionEntity::getId)
+                                        .where(
+                                                PrototypeRevisionEntity::getId,
+                                                input.getRevisionId())
+                                        .and(
+                                                PrototypeRevisionEntity::getProjectId,
+                                                version.getProjectId())
+                                        .and(PrototypeRevisionEntity::getVersionId, versionId)
+                                        .fetch()
+                                        .singleOrEmpty()
+                                        .switchIfEmpty(
+                                                Mono.error(
+                                                        () ->
+                                                                PrototypeHubException.missing(
+                                                                        "revision")))
+                                        .flatMap(
+                                                ignored ->
+                                                        QueryHelper.queryPager(
+                                                                overviewQuery(
+                                                                        version.getProjectId(),
+                                                                        versionId,
+                                                                        input),
+                                                                threads::createQuery,
+                                                                PrototypeReviewThreadService
+                                                                        ::response)));
+    }
+
+    /** COUNT与分页均在固定修订条件下执行；公开更新时间避免内部活动改变排序。 */
+    private static QueryParamEntity overviewQuery(
+            String projectId, String versionId, ReviewThreadOverviewRequest input) {
+        QueryParamEntity query =
+                QueryParamEntity.newQuery()
+                        .where(PrototypeReviewThreadEntity::getProjectId, projectId)
+                        .and(PrototypeReviewThreadEntity::getVersionId, versionId)
+                        .and(PrototypeReviewThreadEntity::getRevisionId, input.getRevisionId())
+                        .when(
+                                input.getState() != null,
+                                condition ->
+                                        condition.and(
+                                                PrototypeReviewThreadEntity::getState,
+                                                input.getState()))
+                        .orderByDesc(PrototypeReviewThreadEntity::getPublicUpdatedAt)
+                        .orderByAsc(PrototypeReviewThreadEntity::getId)
+                        .getParam();
+        query.doPaging(input.getPageIndex(), input.getPageSize());
+        // 不将越界页回退到末页；与逐页接口相同，不承诺并发写入时的COUNT强快照。
+        query.setParallelPager(true);
+        return query;
+    }
 
     public Mono<PagerResult<ReviewThreadResponse>> queryVisitor(
             String token, ReviewThreadQueryRequest input, String cookie) {

@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.web.request.ReviewMessageQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewPageRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewTextRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadCreateRequest;
+import com.gaiys.proto.prototypehub.web.request.ReviewThreadOverviewRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.ReviewThreadStateRequest;
 import com.gaiys.proto.prototypehub.web.response.ReviewMessageResponse;
@@ -39,6 +40,18 @@ public class PublicPrototypeReviewThreadController {
     private final PrototypeReviewThreadService threads;
     private final ReviewImageMultipart multipart;
     private final ReviewRequestSecurity security;
+
+    @PostMapping("/_overview")
+    @Operation(summary = "分页读取当前访客本人固定修订的全部页面反馈")
+    public Mono<PagerResult<ReviewThreadResponse>> overview(
+            @PathVariable String token,
+            @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
+                    ReviewThreadOverviewRequest input,
+            ServerWebExchange exchange) {
+        security.origin(exchange);
+        String cookie = security.unsafeCookie(exchange);
+        return threads.overviewVisitor(token, input, cookie);
+    }
 
     @PostMapping("/_query")
     @Operation(summary = "读取当前访客本人页面线程")
