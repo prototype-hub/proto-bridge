@@ -84,6 +84,26 @@ class StorageExportPostgresTest(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.assertGreater(self.export(mutation)['integrityErrors'], 0)
 
+    def test_optional_work_items_check_fixed_associations_without_exporting_private_content(self):
+        create = """
+          CREATE TABLE p_work_item(id text primary key,project_id text,version_id text,
+            revision_id text,page_id text,url text,note text);
+          INSERT INTO p_work_item VALUES('item','project','version','r1','page',
+            'https://example.invalid/private-task','private business note');
+          INSERT INTO p_creation_receipt VALUES('item-receipt','version','r1');
+        """
+        manifest = self.export(create)
+        self.assertTrue(manifest['referencesComplete'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertNotIn('private-task', json.dumps(manifest))
+        self.assertNotIn('private business note', json.dumps(manifest))
+        for mutation in ("UPDATE p_work_item SET project_id='missing';",
+                         "UPDATE p_work_item SET version_id='missing';",
+                         "UPDATE p_work_item SET revision_id='missing';",
+                         "UPDATE p_work_item SET project_id=null;"):
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(create + mutation)['integrityErrors'], 0)
+
     def test_partial_invalid_or_duplicate_image_metadata_is_not_full_authority(self):
         for mutation in ("UPDATE p_review_message SET image_sha256=null WHERE id='public-message';",
                          "UPDATE p_review_message SET image_size=0 WHERE id='public-message';",

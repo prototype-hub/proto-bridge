@@ -9,7 +9,7 @@ final class PrototypeHubTestData {
 
     static void clear(DatabaseClient database) {
         database.sql(
-                        "truncate table p_review_event, p_review_message, p_review_thread, p_review_session, p_review_challenge, p_review_rate, p_review_guest, p_review_invitation, p_review_unverified_guest,"
+                        "truncate table p_work_item, p_review_event, p_review_message, p_review_thread, p_review_session, p_review_challenge, p_review_rate, p_review_guest, p_review_invitation, p_review_unverified_guest,"
                                 + " p_preview_session, p_project_member, p_creation_receipt,"
                                 + " p_share, p_file_cleanup, p_revision, p_version, p_project")
                 .fetch()

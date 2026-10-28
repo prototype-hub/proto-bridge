@@ -8,6 +8,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeWorkItemEntity;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import java.time.Duration;
@@ -46,6 +47,7 @@ public class PrototypeRetentionService {
     private final QueryHelper queries;
     private final PrototypeReviewService review;
     private final PrototypeReviewThreadService reviewThreads;
+    private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
 
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
@@ -393,6 +395,11 @@ public class PrototypeRetentionService {
         return reviewThreads
                 .purgeVersion(id)
                 .then(review.purgeVersion(id))
+                .then(
+                        workItems
+                                .createDelete()
+                                .where(PrototypeWorkItemEntity::getVersionId, id)
+                                .execute())
                 .then(
                         sessions.createDelete()
                                 .where(PrototypePreviewSessionEntity::getVersionId, id)

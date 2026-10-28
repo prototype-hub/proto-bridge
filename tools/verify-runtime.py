@@ -39,7 +39,7 @@ FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
 REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
-TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_share',
+TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_work_item', 'p_share',
           *REVIEW_TABLES, 'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')

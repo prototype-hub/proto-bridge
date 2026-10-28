@@ -2,6 +2,8 @@
 -- unmigrated legacy projection; never audit history from current-version rows only.
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL
+ AS prototype_hub_has_work_items \gset
 \set prototype_hub_review_thread_table :prototype_hub_table_prefix 'review_thread'
 \set prototype_hub_review_message_table :prototype_hub_table_prefix 'review_message'
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_review_thread_table')) IS NOT NULL
@@ -91,6 +93,16 @@ WITH storage_references AS (
  LEFT JOIN :"prototype_hub_review_thread_table" t ON t.id=m.thread_id
  WHERE t.id IS NULL OR m.project_id IS DISTINCT FROM t.project_id
   OR m.version_id IS DISTINCT FROM t.version_id OR m.revision_id IS DISTINCT FROM t.revision_id
+\endif
+\if :prototype_hub_has_work_items
+ UNION ALL
+ SELECT w.id FROM :"prototype_hub_work_item_table" w
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=w.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=w.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=w.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM w.project_id OR r.project_id IS DISTINCT FROM w.project_id
+  OR r.version_id IS DISTINCT FROM w.version_id
 \endif
 \if :prototype_hub_has_review_images
  UNION ALL

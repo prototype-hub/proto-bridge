@@ -129,6 +129,23 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 非法参数或损坏清单返回 400，未登录返回 401，缺少通用动作或项目内角色不足沿既有规则返回 403；修订不存在、关联其他版本/项目或目标已软删返回 404，未迁移版本返回 409。每次比较重新校验当前授权和目标状态；保留数据及旧预览 URL 不扩大读取范围。
 
+## 固定页面工作项引用
+
+成员可在固定修订的选定页面手工保存工作项 HTTP/HTTPS 地址与纯文本备注，不抓取链接内容、不向外部系统发送消息，也不改变项目授权。
+
+| 请求 | 输入与结果 |
+| --- | --- |
+| `POST /prototype-hub/versions/{id}/work-items/_query` | 必填 `revisionId/pageId`，`pageIndex` 默认0、范围0–10000，`pageSize` 默认20、范围1–100；返回标准 `{data,total,pageIndex,pageSize}` |
+| `POST /prototype-hub/versions/{id}/work-items` | 必填 `revisionId/pageId/url/clientRequestId`，可选 `note`，返回新引用 |
+| `PUT /prototype-hub/versions/{id}/work-items/{itemId}` | 创建字段加必填 `expectedVersion`，更新地址与备注 |
+| `POST /prototype-hub/versions/{id}/work-items/{itemId}/_delete` | 必填 `revisionId/pageId/expectedVersion/clientRequestId`，成功返回true |
+
+响应为 `id/projectId/versionId/revisionId/pageId/url/note/configVersion/createdAt/updatedAt`。查询要求 `prototype-hub-version.query` 与当前项目READ；增改删要求 `prototype-hub-version.save` 与当前项目EDIT。没有公开分享或guest接口，普通项目viewer只读。每次请求及幂等重放均重新检查当前账号、项目、版本、固定修订及清单页面；上传新修订不会迁移旧引用。
+
+地址最长2048字符，只允许带有效host的HTTP/HTTPS，不接受账号信息、控制/空白字符及超范围端口；备注最长2000字符，省略/null解释为空字符串，客户端按纯文本显示。`clientRequestId` 为1–128个非空白可打印ASCII字符，同一账号、操作和固定页面内用于持久去重；原始键及请求内容不写入回执。创建版本为0，更新CAS递增；过期版本返回409 / `PROTOTYPE_HUB_WORK_ITEM_CONFLICT`。相同键改变内容返回409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`，原成功键重放返回当前引用；引用已删除时旧创建/更新键冲突，不复活数据，删除键仍可重放true。网络结果未知时保留原键，先刷新核对，再由用户决定重试。
+
+非法输入返回400，未登录401，缺动作或当前项目角色不足403，未绑定项目、目标不存在、跨范围、已软删或页面不在固定清单中404。引用随版本软删保留，恢复后重新按当前权限读取；30天永久清理时与修订及其回执同事务删除。手工删除引用即时删除该行，不删除任何外部工作项。
+
 ## 项目与版本软删除
 
 `DELETE /prototype-hub/versions/{id}` 保留逻辑版本、当前指针、全部修订、创建回执与文件，在原事务锁边界内写入 `deletedTime`（Unix 毫秒）。`DELETE /prototype-hub/projects/{id}` 同样保留项目与成员谱系；有活动版本时仍返回 409，只有已删除版本不阻止删除项目。重复访问已删除对象按不存在处理，不能用 ADMIN 例外读取已删除业务对象。
