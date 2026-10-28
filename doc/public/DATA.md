@@ -101,6 +101,12 @@ EasyORM 自动同步 `p_installation` 和 `p_creation_receipt`。应用在结构
 
 带 `Idempotency-Key` 的成功创建将摘要和资源标识写入 `p_creation_receipt`，与业务插入原子提交；回执不保存原始键或请求内容。删除资源不会删除对应回执，仍删除时旧请求返回冲突，避免误重建。回收站恢复不新增回执；原键在当前权限和请求指纹校验通过后重放同一 ID 与原快照，不额外占用容量。不要把这两张表作为缓存清空，也不要单独重置安装身份或回执；常规数据库备份应包含它们，并与原型文件做同窗口联合备份。备份恢复后保留身份、资源关联和创建重试语义；接口及错误码见[API 说明](API.md)。
 
+## 固定页面工作项引用
+
+EasyORM增补 `p_work_item`，保存 `project_id/version_id/revision_id/page_id`、手工 `url/note`、独立 `config_version` 和创建/更新时间；旧表与业务数据不改写。索引 `(revision_id,page_id,created_at,id)` 支持固定页面数据库分页，另有version_id索引用于版本永久清理。引用固定于原修订，不随current指针更新复制或迁移，也不成为访问外部系统或项目的权限。
+
+写入沿当前账号→项目→版本锁序，与 `p_creation_receipt` 原子提交。回执resource_id归逻辑版本、revision_id归实际修订，原始请求键和备注不写入回执；引用行删除后保留回执，防止未知结果重试复活旧引用。软删保留行和回执，30天永久清理版本时在同一事务清除。备份应保留完整表、固定修订及回执；URL和备注属于项目私有业务资料，不放入公开日志或运行证据。此表不引入文件引用，存储清单仍为v3。
+
 ## 不可变修订与旧内容迁移
 
 `p_version` 继续保存逻辑版本和 `current_revision_id`；`storage_path/entry_file` 是当前修订的兼容投影。`p_revision` 保存不可变文件路径、入口、上传时名称/说明、规范化清单 JSON/SHA-256、实际文件数/总字节和创建信息。`p_share`、`p_preview_session`、`p_creation_receipt` 增加 `revision_id`：固定分享和内部预览固定快照，创建回执重放原成功快照。数据库和原型文件必须联合保存全部历史；只备份当前 `p_version.storage_path` 会丢失历史和分享内容。

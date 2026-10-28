@@ -86,3 +86,10 @@ SELECT 'project_deletion_state',count(*),md5(coalesce(jsonb_agg(
 SELECT 'version_deletion_state',count(*),md5(coalesce(jsonb_agg(
  jsonb_build_array(id,project_id,deleted_time) ORDER BY id)::text,'[]')) FROM :"prototype_hub_version_table";
 \endif
+
+-- Work item references are private durable page metadata; emit hashes, never URLs or notes.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL AS prototype_hub_has_work_items \gset
+\if :prototype_hub_has_work_items
+SELECT 'work_items',count(*),md5(coalesce(jsonb_agg(to_jsonb(w) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_work_item_table" w;
+\endif

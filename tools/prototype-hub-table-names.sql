@@ -13,3 +13,4 @@
 \set prototype_hub_preview_session_table :prototype_hub_table_prefix 'preview_session'
 \set prototype_hub_receipt_table :prototype_hub_table_prefix 'creation_receipt'
 \set prototype_hub_installation_table :prototype_hub_table_prefix 'installation'
+\set prototype_hub_work_item_table :prototype_hub_table_prefix 'work_item'

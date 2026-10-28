@@ -117,7 +117,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(26, localTypes.size());
+        assertEquals(27, localTypes.size());
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -151,6 +151,7 @@ class DatabaseDescriptionIntegrationTest {
                         "p_project",
                         "p_version",
                         "p_revision",
+                        "p_work_item",
                         "p_share",
                         "p_installation",
                         "p_creation_receipt",
@@ -167,8 +168,8 @@ class DatabaseDescriptionIntegrationTest {
                         "p_review_message",
                         "p_review_event"),
                 tables);
-        // 包含两类访客、邀请及页面线程/消息/outbox；历史分享的评审开关仍默认关闭。
-        assertEquals(259, describedColumns);
+        // 包含两类访客、邀请、反馈及固定页面工作项引用；历史评审开关仍默认关闭。
+        assertEquals(280, describedColumns);
         assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
