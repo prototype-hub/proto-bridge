@@ -16,6 +16,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.gaiys.proto.prototypehub.configuration.properties.PrototypeCapacityProperties;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
@@ -58,6 +59,7 @@ import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -86,7 +88,7 @@ import reactor.core.publisher.Signal;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
-/** 固定 5/5 容量、持久化身份及创建重试的真实 PostgreSQL/HTTP/文件系统闭环。 */
+/** 部署容量、持久化身份及创建重试的真实 PostgreSQL/HTTP/文件系统闭环。 */
 @SpringBootTest(
         webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT,
         properties = {
@@ -126,6 +128,7 @@ class PrototypeHubCapacityIntegrationTest {
         registry.add("prototype-hub.storage.root", () -> FILES.toString());
     }
 
+    @Autowired PrototypeCapacityProperties capacity;
     @Autowired PrototypeProjectService projects;
     @Autowired PrototypeProjectAccessService access;
     @Autowired ReactiveUserService users;
@@ -153,6 +156,8 @@ class PrototypeHubCapacityIntegrationTest {
 
     @BeforeEach
     void isolateBusinessData() throws IOException {
+        capacity.setProjectLimit("5");
+        capacity.setVersionLimit("5");
         PrototypeHubTestData.clear(database);
         SecureZipExtractor.deleteRecursively(FILES);
         Files.createDirectories(FILES);
@@ -181,6 +186,143 @@ class PrototypeHubCapacityIntegrationTest {
     @AfterAll
     static void removeFiles() throws IOException {
         SecureZipExtractor.deleteRecursively(FILES);
+    }
+
+    @ParameterizedTest(name = "project limit={0}, version limit={1}")
+    @CsvSource({"5,5", "-1,5", "5,-1", "-1,-1"})
+    void independentLimitsApplyToNewResourcesRestoresAndIdempotentReplay(
+            int projectLimit, int versionLimit) throws Exception {
+        capacity.setProjectLimit(Integer.toString(projectLimit));
+        capacity.setVersionLimit(Integer.toString(versionLimit));
+        String project =
+                asAdmin(projects.create(input("matrix"), actor, "matrix-project"))
+                        .block(TIMEOUT)
+                        .getId();
+        createProjects(4);
+        if (projectLimit == -1) project();
+        else
+            expectCode(
+                    asAdmin(projects.create(input("full"), actor)),
+                    "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertEquals(
+                project,
+                asAdmin(projects.create(input("matrix"), actor, "matrix-project"))
+                        .block(TIMEOUT)
+                        .getId());
+        var projectUsage = projects.usage().block(TIMEOUT).projects();
+        assertEquals(projectLimit, projectUsage.limit());
+        assertEquals(projectLimit == -1 ? 6 : 5, projectUsage.used());
+        assertEquals(projectLimit == -1 ? -1 : 0, projectUsage.remaining());
+        assertEquals(projectLimit == -1, projectUsage.canCreate());
+        assertFalse(projectUsage.overLimit());
+
+        byte[] zip = zip("matrix");
+        var first = upload(project, "matrix", zip, "matrix-version").block(TIMEOUT);
+        for (int index = 1; index < 5; index++)
+            upload(project, "matrix-" + index, zip, null).block(TIMEOUT);
+        if (versionLimit == -1) upload(project, "extra", zip, null).block(TIMEOUT);
+        else expectCode(upload(project, "full", zip, null), "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
+        assertEquals(
+                first.getId(),
+                upload(project, "matrix", zip, "matrix-version").block(TIMEOUT).getId());
+        var versionUsage = versions.usage(project).block(TIMEOUT).versions();
+        assertEquals(versionLimit, versionUsage.limit());
+        assertEquals(versionLimit == -1 ? 6 : 5, versionUsage.used());
+        assertEquals(versionLimit == -1 ? -1 : 0, versionUsage.remaining());
+        assertEquals(versionLimit == -1, versionUsage.canCreate());
+        assertFalse(versionUsage.overLimit());
+        asAdmin(uploads.update(first.getId(), "updated", null, file(zip("new revision"))))
+                .block(TIMEOUT);
+        assertEquals(versionUsage.used(), versions.usage(project).block(TIMEOUT).versions().used());
+        asAdmin(deletion.deleteVersion(first.getId())).block(TIMEOUT);
+        asAdmin(deletion.restoreVersion(first.getId())).block(TIMEOUT);
+        assertEquals(versionUsage.used(), versions.usage(project).block(TIMEOUT).versions().used());
+        String empty =
+                projects.activeQuery()
+                        .not(PrototypeProjectEntity::getId, project)
+                        .fetchOne()
+                        .block(TIMEOUT)
+                        .getId();
+        asAdmin(deletion.deleteProject(empty)).block(TIMEOUT);
+        asAdmin(deletion.restoreProject(empty)).block(TIMEOUT);
+        assertEquals(projectUsage.used(), projects.usage().block(TIMEOUT).projects().used());
+    }
+
+    @Test
+    void configuredFiniteLimitsKeepTheLastSlotAtomicAcrossCreationAndRestore() throws Exception {
+        capacity.setProjectLimit("2");
+        capacity.setVersionLimit("2");
+        String project = project();
+        String deleted = project();
+        asAdmin(deletion.deleteProject(deleted)).block(TIMEOUT);
+        var replica =
+                context.getAutowireCapableBeanFactory().createBean(PrototypeDeletionService.class);
+        assertLastSlot(
+                concurrent(
+                        List.of(
+                                asAdmin(replica.restoreProject(deleted)),
+                                asAdmin(projects.create(input("new"), actor)))),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertEquals(2, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(2, projects.usage().block(TIMEOUT).projects().limit());
+
+        byte[] zip = zip("finite");
+        String version = upload(project, "restore", zip, null).block(TIMEOUT).getId();
+        asAdmin(deletion.deleteVersion(version)).block(TIMEOUT);
+        upload(project, "active", zip, null).block(TIMEOUT);
+        assertLastSlot(
+                concurrent(
+                        List.of(
+                                asAdmin(replica.restoreVersion(version)),
+                                upload(project, "new", zip, null))),
+                "PROTOTYPE_HUB_VERSION_LIMIT_REACHED");
+        assertEquals(2, versions.usage(project).block(TIMEOUT).versions().used());
+        assertEquals(2, versions.usage(project).block(TIMEOUT).versions().limit());
+    }
+
+    @Test
+    void unlimitedCapacityDoesNotGrantAnonymousOrUnprivilegedHttpAccess() {
+        capacity.setProjectLimit("-1");
+        capacity.setVersionLimit("-1");
+        String project = project();
+        client.post()
+                .uri("/prototype-hub/projects")
+                .bodyValue(Map.of("name", "anonymous"))
+                .exchange()
+                .expectStatus()
+                .isUnauthorized();
+        String token =
+                response(
+                                client.post()
+                                        .uri("/authorize/login")
+                                        .bodyValue(
+                                                Map.of(
+                                                        "username",
+                                                        users.findById(otherActor)
+                                                                .block(TIMEOUT)
+                                                                .getUsername(),
+                                                        "password",
+                                                        PASSWORD))
+                                        .exchange(),
+                                200)
+                        .path("result")
+                        .path("token")
+                        .asText();
+        assertFalse(token.isBlank());
+        client.post()
+                .uri("/prototype-hub/projects")
+                .header("X-Access-Token", token)
+                .bodyValue(Map.of("name", "unprivileged"))
+                .exchange()
+                .expectStatus()
+                .isForbidden();
+        client.get()
+                .uri("/prototype-hub/versions/_usage?projectId=" + project)
+                .header("X-Access-Token", token)
+                .exchange()
+                .expectStatus()
+                .isForbidden();
+        assertEquals(1, count("p_project"));
     }
 
     @Test
