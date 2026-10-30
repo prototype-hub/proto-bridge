@@ -299,7 +299,7 @@ class PrototypeHubNamingMigrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getCode).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(15, actual.size());
+        assertEquals(16, actual.size());
         assertTrue(actual.containsKey("prototype-hub"));
         MenuEntity project = actual.get("prototype-hub/Project");
         assertNotNull(project);
@@ -323,7 +323,7 @@ class PrototypeHubNamingMigrationTest {
             assertEquals(PERMISSIONS, resources);
         }
         assertFalse(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(15, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(16, menus.createQuery().count().block(TIMEOUT));
     }
 
     private void assertConflict(String conflictSql, String expectedMessage) throws Exception {

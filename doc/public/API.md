@@ -395,3 +395,13 @@ Assignment为 `{threadId,assignmentVersion,updatedAt,assignee:null|{userId,name,
 | 409 | `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT` | 同键内容不一致，或首次创建的资源尚处于保留的删除状态 |
 
 更改 API/DTO/错误语义时同时更新前端请求类型与契约测试。当前完整接口以实际运行版本 OpenAPI 与源码为准，不能用旧审计路由数量宣称逐路由验收。
+
+## 统计概览与分享访问确认
+
+`GET /prototype-hub/statistics?days=7`（或`30`）复用`prototype-hub-project:query`，并重验活跃账号、当前项目范围和有效ADMIN角色/绑定。`projectCount`统计当前可读非软删项目，`versionCount`统计其非软删逻辑版本，均包含归档；修订不充当版本。无`prototype-hub-version:query`时`versionCount=null`。有效分享及PV进一步限定可管理分享的项目角色（owner/editor/有效ADMIN）；viewer不会因为通用share动作而获得分享管理统计。无`prototype-hub-share:query`时`shareCount/visits/trend/ranking=null`，而不是零。
+
+响应含`timeZone=Asia/Shanghai`、含今天的`fromDate/toDate`、Unix毫秒`collectedSince`、`retentionDays=35`及上述四项指标。`trend`按日期升序最多30项`{date,visits}`，起算日前为null，已采集日期没有确认事件为0；起算当天只有起算时间之后的数据。`ranking`是同一窗口和分享管理scope内最多10个非零项目`{projectId,projectName,visits}`，按访问量降序、ID升序稳定排列。有效分享排除停用、撤销、过期、无有效修订或祖先软删；历史访问仍按当时实际修订归属，不随current移动，但项目/版本当前不可见时不返回其历史。
+
+公开分享成功访问授权响应增补可选`visitTicket`，未通过密码条件时为null。外层预览实际成功加载后调用`POST /prototype-hub/public/shares/{token}/{accessKey}/revisions/{revisionId}/visits`，请求`{"ticket":"…"}`，成功（含同票重放）为标准`result=true`。服务端推导全部归属和首次接收时间，不接受客户端项目/修订/时间字段；同票并发或重试只保存一行，刷新重新打开可有新票，同一外层切页不累加。信息读取、密码表单/失败、资源HTTP、目录或内部预览不计数。
+
+该POST复用既有精确Origin及`Sec-Fetch-Site`校验，开发代理须正确设置`prototype-hub.review.trusted-origin`；不要求先创建访客身份或携带身份Cookie。票据24小时有效，绑定分享、版本、修订和当前分享配置，使用独立服务端持久密钥；公开或旧运行凭据均不能签发。票过期/篡改为403，分享/祖先失效沿现有403/404语义。采集是与资源读取分离的尽力确认，失败不得阻止浏览；PV不是UV、人数、合规审计或绝对精确测量，不从通用日志回填。

@@ -117,7 +117,8 @@ class PrototypeReviewReadBoundaryTest {
                         mock(TransactionalOperator.class),
                         access,
                         revisions,
-                        mock(NotificationGateway.class)) {
+                        mock(NotificationGateway.class),
+                        mock(PrototypeInstallationService.class)) {
                     @Override
                     public ReactiveRepository<PrototypeShareEntity, String> getRepository() {
                         return shareRepository;

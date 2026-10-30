@@ -2,10 +2,13 @@ package com.gaiys.proto.prototypehub.web;
 
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeShareService;
+import com.gaiys.proto.prototypehub.service.PrototypeStatisticsService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.ShareVerifyRequest;
+import com.gaiys.proto.prototypehub.web.request.ShareVisitRequest;
 import com.gaiys.proto.prototypehub.web.response.PublicShareResponse;
+import com.gaiys.proto.prototypehub.web.security.ReviewRequestSecurity;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -22,6 +25,7 @@ import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Mono;
 
 /**
@@ -38,6 +42,8 @@ public class PublicPrototypeShareController {
     private final PrototypeShareService shares;
     private final PrototypeRevisionService revisions;
     private final PrototypeStorageService storage;
+    private final PrototypeStatisticsService statistics;
+    private final ReviewRequestSecurity security;
 
     @GetMapping("/shares/{token}")
     @Operation(summary = "查询公开原型分享信息")
@@ -92,6 +98,19 @@ public class PublicPrototypeShareController {
         return shares.requireRevisionAccess(token, accessKey, revisionId)
                 .flatMap(revision -> storage.resolveResource(revision, resourcePath))
                 .map(PrototypeRuntimeController::response);
+    }
+
+    /** 与访客身份无关；运行凭据、限时事件票据和精确Origin共同限制公开写入。 */
+    @PostMapping("/shares/{token}/{accessKey}/revisions/{revisionId}/visits")
+    @Operation(summary = "确认一次成功的外层分享访问", description = "资源请求和切页不计数；重复提交同一票据不重复计数")
+    public Mono<Boolean> visit(
+            @PathVariable String token,
+            @PathVariable String accessKey,
+            @PathVariable String revisionId,
+            @Valid @RequestBody ShareVisitRequest input,
+            ServerWebExchange exchange) {
+        security.origin(exchange);
+        return statistics.record(token, accessKey, revisionId, input.ticket()).thenReturn(true);
     }
 
     @GetMapping(value = "/inspector.js", produces = "application/javascript")

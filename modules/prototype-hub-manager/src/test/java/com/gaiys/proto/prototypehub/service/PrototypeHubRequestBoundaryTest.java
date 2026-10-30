@@ -105,7 +105,8 @@ class PrototypeHubRequestBoundaryTest {
                             revisions,
                             mock(
                                     com.gaiys.proto.prototypehub.service.notification
-                                            .NotificationGateway.class));
+                                            .NotificationGateway.class),
+                            mock(PrototypeInstallationService.class));
             StepVerifier.create(
                             shares.createShare(
                                     "version",

@@ -7,6 +7,7 @@ import com.gaiys.proto.prototypehub.enums.SharePasswordAction;
 import com.gaiys.proto.prototypehub.enums.ShareRevisionMode;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.keys.PrototypeShareKeys;
+import com.gaiys.proto.prototypehub.service.keys.PrototypeVisitTickets;
 import com.gaiys.proto.prototypehub.service.notification.NotificationGateway;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ReviewPolicyRequest;
@@ -46,6 +47,7 @@ public class PrototypeShareService
     private final PrototypeProjectAccessService access;
     private final PrototypeRevisionService revisions;
     private final NotificationGateway notifications;
+    private final PrototypeInstallationService installations;
 
     public Mono<ReviewPolicyResponse> reviewPolicy(String id) {
         return access.requireShare(id, PrototypeProjectAccessService.Action.SHARE)
@@ -455,8 +457,10 @@ public class PrototypeShareService
     private Mono<PublicShareResponse> info(
             PrototypeShareEntity share, PrototypeRevisionEntity revision, boolean grant) {
         return projects.requireById(share.getProjectId())
+                .zipWith(installations.current())
                 .map(
-                        project -> {
+                        context -> {
+                            var project = context.getT1();
                             String key =
                                     grant
                                             ? PrototypeShareKeys.derive(share, revision.getId())
@@ -492,7 +496,14 @@ public class PrototypeShareService
                                     grant
                                             && Boolean.TRUE.equals(share.getReviewEnabled())
                                             && Boolean.TRUE.equals(
-                                                    share.getReviewAllowUnverified()));
+                                                    share.getReviewAllowUnverified()),
+                                    grant
+                                            ? PrototypeVisitTickets.issue(
+                                                    context.getT2().getStatisticsSigningKey(),
+                                                    share,
+                                                    revision.getId(),
+                                                    System.currentTimeMillis())
+                                            : null);
                         });
     }
 
