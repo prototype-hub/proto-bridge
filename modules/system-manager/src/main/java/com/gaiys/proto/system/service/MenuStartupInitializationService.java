@@ -62,6 +62,18 @@ public class MenuStartupInitializationService {
 
     /** 仅补已存在产品树中缺失的回收站入口；不重写自定义菜单、禁用项或任何角色授权。 */
     public Mono<Boolean> ensureRecycleMenuIfMissing() {
+        return ensureBuiltInMenuIfMissing(RECYCLE_ID, RECYCLE_CODE, RECYCLE_URL);
+    }
+
+    /** 仅补缺失统计入口，保留既有首页、自定义/禁用菜单和角色授权。 */
+    public Mono<Boolean> ensureStatisticsMenuIfMissing() {
+        return ensureBuiltInMenuIfMissing(
+                "prototype-hub-statistics",
+                "prototype-hub/Statistics",
+                "/prototype-hub/statistics");
+    }
+
+    private Mono<Boolean> ensureBuiltInMenuIfMissing(String id, String code, String url) {
         return Mono.defer(
                         () ->
                                 initializationLock
@@ -77,29 +89,26 @@ public class MenuStartupInitializationService {
                                         .flatMap(
                                                 parent ->
                                                         menus.createQuery()
-                                                                .where(
-                                                                        MenuEntity::getId,
-                                                                        RECYCLE_ID)
-                                                                .or(
-                                                                        MenuEntity::getCode,
-                                                                        RECYCLE_CODE)
+                                                                .where(MenuEntity::getId, id)
+                                                                .or(MenuEntity::getCode, code)
                                                                 .or(
                                                                         MenuEntity
                                                                                 ::getComponentCode,
-                                                                        RECYCLE_CODE)
-                                                                .or(MenuEntity::getUrl, RECYCLE_URL)
+                                                                        code)
+                                                                .or(MenuEntity::getUrl, url)
                                                                 .count()
                                                                 .flatMap(
                                                                         count ->
                                                                                 count > 0
                                                                                         ? Mono.just(
                                                                                                 false)
-                                                                                        : insertRecycleMenu()))
+                                                                                        : insertBuiltInMenu(
+                                                                                                id)))
                                         .defaultIfEmpty(false))
                 .as(transactions::transactional);
     }
 
-    private Mono<Boolean> insertRecycleMenu() {
+    private Mono<Boolean> insertBuiltInMenu(String id) {
         return Mono.fromCallable(() -> readMenus(new ClassPathResource(DEFAULT_RESOURCE)))
                 .subscribeOn(Schedulers.boundedElastic())
                 .map(
@@ -107,12 +116,12 @@ public class MenuStartupInitializationService {
                                 rows.stream()
                                         .filter(row -> PROTOTYPE_PARENT.equals(row.getId()))
                                         .flatMap(row -> row.getChildren().stream())
-                                        .filter(row -> RECYCLE_ID.equals(row.getId()))
+                                        .filter(row -> id.equals(row.getId()))
                                         .findFirst()
                                         .orElseThrow(
                                                 () ->
                                                         new IllegalStateException(
-                                                                "Packaged recycle menu is missing")))
+                                                                "Packaged built-in menu is missing")))
                 // 复用官方树保存补齐path/level，并保留已有父节点的展示配置。
                 .flatMap(row -> menus.save(Mono.just(row)).thenReturn(true));
     }

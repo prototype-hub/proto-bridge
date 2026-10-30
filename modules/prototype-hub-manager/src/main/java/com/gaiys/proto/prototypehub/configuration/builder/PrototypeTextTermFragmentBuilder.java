@@ -32,7 +32,7 @@ public final class PrototypeTextTermFragmentBuilder extends AbstractTermFragment
 
     public static final PrototypeTextTermFragmentBuilder OWNER_PRESENT =
             new PrototypeTextTermFragmentBuilder(
-                    "prototype-owner-present", "原型所有者非空白", (field, term) -> present(field));
+                    "prototype-owner-present", "原型所有者非空白", (field, term) -> ownerPresent(field));
 
     public static final PrototypeTextTermFragmentBuilder LITERAL_CONTAINS =
             new PrototypeTextTermFragmentBuilder(
@@ -75,7 +75,8 @@ public final class PrototypeTextTermFragmentBuilder extends AbstractTermFragment
                 List.of(context.render(predicate)), context.extractBindValues(predicate));
     }
 
-    private static Condition present(Field<String> field) {
+    /** 与跨表授权聚合共用空白owner规则，不能将旧无主项目向普通成员开放。 */
+    public static Condition ownerPresent(Field<String> field) {
         // SQL TRIM 默认只处理空格；去掉 Java 的完整空白集合才能与详情入口 isBlank 保持同一规则。
         Field<String> remaining = field;
         for (String whitespace : JAVA_WHITESPACE) {

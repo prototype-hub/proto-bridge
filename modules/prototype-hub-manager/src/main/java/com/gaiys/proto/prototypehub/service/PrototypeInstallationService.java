@@ -32,6 +32,23 @@ public class PrototypeInstallationService
                                         .doNothingOnConflict(true)
                                         .execute()
                                         .reactive())
+                .then(
+                        createUpdate()
+                                .set(
+                                        PrototypeInstallationEntity::getStatisticsStartedAt,
+                                        System.currentTimeMillis())
+                                .where(PrototypeInstallationEntity::getId, SINGLETON_ID)
+                                .isNull(PrototypeInstallationEntity::getStatisticsStartedAt)
+                                .execute())
+                .then(
+                        createUpdate()
+                                .set(
+                                        PrototypeInstallationEntity::getStatisticsSigningKey,
+                                        UUID.randomUUID().toString().replace("-", "")
+                                                + UUID.randomUUID().toString().replace("-", ""))
+                                .where(PrototypeInstallationEntity::getId, SINGLETON_ID)
+                                .isNull(PrototypeInstallationEntity::getStatisticsSigningKey)
+                                .execute())
                 .then(current());
     }
 

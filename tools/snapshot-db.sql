@@ -93,3 +93,10 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_tab
 SELECT 'work_items',count(*),md5(coalesce(jsonb_agg(to_jsonb(w) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_work_item_table" w;
 \endif
+
+-- Access aggregates must be reproducible after restoring the matching whole database.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_share_visit_table')) IS NOT NULL AS prototype_hub_has_share_visits \gset
+\if :prototype_hub_has_share_visits
+SELECT 'share_visits',count(*),md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_share_visit_table" v;
+\endif

@@ -46,6 +46,7 @@ public class PrototypeRetentionService {
     private final ObservationRegistry observations;
     private final QueryHelper queries;
     private final PrototypeReviewService review;
+    private final PrototypeStatisticsService statistics;
     private final PrototypeReviewThreadService reviewThreads;
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
 
@@ -81,6 +82,16 @@ public class PrototypeRetentionService {
                                         error -> {
                                             log.warn(
                                                     "Prototype review event cleanup pending: errorType={}",
+                                                    error.getClass().getSimpleName());
+                                            return Mono.empty();
+                                        }))
+                .then(
+                        statistics
+                                .cleanup()
+                                .onErrorResume(
+                                        error -> {
+                                            log.warn(
+                                                    "Prototype statistics cleanup pending: errorType={}",
                                                     error.getClass().getSimpleName());
                                             return Mono.empty();
                                         }))
@@ -392,8 +403,9 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return reviewThreads
+        return statistics
                 .purgeVersion(id)
+                .then(reviewThreads.purgeVersion(id))
                 .then(review.purgeVersion(id))
                 .then(
                         workItems
@@ -436,9 +448,15 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                sessions.createDelete()
-                                        .where(PrototypePreviewSessionEntity::getProjectId, id)
-                                        .execute()
+                                statistics
+                                        .purgeProject(id)
+                                        .then(
+                                                sessions.createDelete()
+                                                        .where(
+                                                                PrototypePreviewSessionEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 shares.createDelete()
                                                         .where(

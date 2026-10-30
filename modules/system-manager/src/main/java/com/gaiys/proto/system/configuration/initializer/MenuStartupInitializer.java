@@ -27,6 +27,7 @@ public class MenuStartupInitializer implements ApplicationRunner {
         initialization
                 .initializeIfEmpty()
                 .then(initialization.ensureRecycleMenuIfMissing())
+                .then(initialization.ensureStatisticsMenuIfMissing())
                 .block(Duration.ofMinutes(2));
     }
 }

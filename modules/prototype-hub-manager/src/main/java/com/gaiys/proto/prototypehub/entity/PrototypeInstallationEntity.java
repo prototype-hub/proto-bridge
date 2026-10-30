@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.entity;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import io.swagger.v3.oas.annotations.media.Schema;
 import javax.persistence.Column;
 import javax.persistence.Table;
@@ -20,6 +21,15 @@ public class PrototypeInstallationEntity extends GenericEntity<String> {
     @Column(name = "create_time", nullable = false)
     @Schema(description = "部署身份创建时间（Unix 毫秒）")
     private Long createTime;
+
+    @JsonIgnore
+    @Column(name = "statistics_signing_key", length = 64)
+    @Schema(description = "服务端统计票据签名密钥；仅初始化一次，随数据库备份，禁止对外返回")
+    private String statisticsSigningKey;
+
+    @Column(name = "statistics_started_at")
+    @Schema(description = "首次启用分享访问采集的Unix毫秒；升级前历史不推测为零")
+    private Long statisticsStartedAt;
 
     @Column(name = "retention_deleted_time")
     @Schema(description = "到期版本扫描游标的删除时间；仅作跨轮清理进度，不改变30天截止规则")

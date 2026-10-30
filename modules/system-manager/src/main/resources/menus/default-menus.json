@@ -250,6 +250,41 @@
             }
           }
         ]
+      },
+      {
+        "id": "prototype-hub-statistics",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "统计概览",
+        "code": "prototype-hub/Statistics",
+        "url": "/prototype-hub/statistics",
+        "icon": "BarChartOutlined",
+        "sortIndex": 3,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "统计概览",
+            "en_US": "Overview",
+            "en": "Overview"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/Statistics",
+        "permissions": [
+          {
+            "permission": "prototype-hub-project",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": []
       }
     ]
   },

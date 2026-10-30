@@ -18,4 +18,5 @@ public record PublicShareResponse(
         @Schema(description = "授权通过后返回的快照页面目录地址") String pagesUrl,
         @Schema(description = "该分享是否已显式开启访客身份") boolean reviewEnabled,
         @Schema(description = "邮箱身份是否已开启且验证邮件可用") boolean reviewAvailable,
-        @Schema(description = "授权后可见的未验证访客策略") boolean reviewUnverifiedAllowed) {}
+        @Schema(description = "授权后可见的未验证访客策略") boolean reviewUnverifiedAllowed,
+        @Schema(description = "授权成功后返回的24小时外层访问票据；加载成功后确认，不是访客身份") String visitTicket) {}
