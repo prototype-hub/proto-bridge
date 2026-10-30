@@ -167,7 +167,7 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 两种回收站查询复用上方分页 DTO、大小限制、名称字面匹配及稳定排序；授权、删除状态与未满 30 天的期限在数据库 COUNT 和分页前生效，不接受客户端 `includeDeleted` 来扩大普通查询。响应增加 `deletedTime`，活动对象为 null，已删除对象为删除时的 Unix 毫秒；不增加客户端可改写的到期字段。
 
-恢复按当前身份、当前项目角色及默认 5/5 容量重新校验，不沿用删除时的权限或配额。恢复和新建使用相同数据库锁边界，多副本争抢最后名额只有一次成功。容量不足返回原项目/版本容量 409；对象已经活动返回 409 / `PROTOTYPE_HUB_RESOURCE_ACTIVE`；不存在、保留期已满或父项目仍删除返回 404。权限不足沿用项目范围的 403/404 规则，失败不会清空删除标记、改变引用或占用额度。
+恢复按当前身份、当前项目角色及服务端当前有效容量（缺省 5/5）重新校验，不沿用删除时的权限或配额。恢复和新建使用相同数据库锁边界，多副本争抢最后名额只有一次成功。容量不足返回原项目/版本容量 409；对象已经活动返回 409 / `PROTOTYPE_HUB_RESOURCE_ACTIVE`；不存在、保留期已满或父项目仍删除返回 404。权限不足沿用项目范围的 403/404 规则，失败不会清空删除标记、改变引用或占用额度。
 
 恢复保留原项目/版本 ID、成员谱系、当前修订指针、全部修订和创建回执，不新增回执。恢复后同一原创建键仍须通过当前权限和指纹校验，成功只重放同一 ID 与原成功快照，不额外占用名额。删除记录尚未永久清理时旧键仍冲突；资源及关联回执永久清理后，该键不再提供去重保证，相同键的新请求仍须通过当前权限和容量校验，可能创建新 ID，不会复活旧 ID。恢复父项目不会复活其子版本、旧内部预览或已经撤销的分享。恢复后需重新打开内部预览或新建分享；旧公开链接、旧密码授权及旧运行文件凭据继续拒绝。
 
@@ -374,7 +374,7 @@ Assignment为 `{threadId,assignmentVersion,updatedAt,assignee:null|{userId,name,
 
 ## 原型容量与创建重试
 
-同一数据库的部署最多保有 **5 个项目**，每个项目最多保有 **5 个逻辑版本**。用量按未软删除的项目/逻辑版本记录计算，与操作者、列表筛选和应用副本无关；删除释放占用，编辑项目及 `PUT /prototype-hub/versions/{id}` 更新 ZIP 仅增加修订，不增加逻辑版本占用。历史数据库已有超限数据时仍可启动、读取、分享、修改和删除，只拒绝继续新增；项目仍有活动版本时须先删除版本再删除项目，保留的已删除版本不占用额度。
+同一数据库的部署按服务端有效额度控制项目总量和每项目逻辑版本量，缺省均为 **5**。用量按未软删除的项目/逻辑版本记录计算，与操作者、列表筛选和应用副本无关；删除释放占用，编辑项目及 `PUT /prototype-hub/versions/{id}` 更新 ZIP 仅增加修订，不增加逻辑版本占用。历史数据库已有超限数据时仍可启动、读取、分享、修改和删除，只拒绝继续新增或占额恢复；项目仍有活动版本时须先删除版本再删除项目，保留的已删除版本不占用额度。
 
 以下路径相对于后端 API 根路径，响应列给出统一响应体的 `result`：
 
@@ -383,7 +383,7 @@ Assignment为 `{threadId,assignmentVersion,updatedAt,assignee:null|{userId,name,
 | `GET /prototype-hub/projects/_usage` | `{installationId, projects: Capacity}` | `prototype-hub-project` 的 `query` |
 | `GET /prototype-hub/versions/_usage?projectId=…` | `{projectId, versions: Capacity}` | `prototype-hub-version` 的 `query`，项目须可见 |
 
-`Capacity` 包含 `used`、`limit`、`remaining`、`overLimit`、`canCreate`。当前 `limit=5`，`remaining=max(0,limit-used)`；达到上限时 `canCreate=false`，只有超过上限时 `overLimit=true`。`installationId` 是随数据库持久保存的 UUID，重启和数据库备份恢复不会主动重置，详见[数据说明](DATA.md)。用量为查询时快照，创建或恢复时仍由服务端事务重新校验。
+`Capacity` 包含 `used`、`limit`、`remaining`、`overLimit`、`canCreate`。有限额度下 `remaining=max(0,limit-used)`；达到上限时 `canCreate=false`，只有超过上限时 `overLimit=true`。对应维度不限时，`limit=-1`、`remaining=-1`、`overLimit=false`、`canCreate=true`，`used` 仍为实际用量。前端以服务端 `canCreate` 判断容量准入，不将不限额度作为分母；操作权限、资源状态和幂等校验继续独立生效。`installationId` 是随数据库持久保存的 UUID，重启和数据库备份恢复不会主动重置，详见[数据说明](DATA.md)。用量为查询时快照，创建或恢复时仍由服务端事务重新校验。
 
 `POST /prototype-hub/projects` 与 `POST /prototype-hub/projects/{projectId}/versions` 接受可选的 `Idempotency-Key` 请求头。提供时须为 1–128 个可打印 ASCII 非空白字符；客户端对同一次创建意图的失败重试沿用该键，修改创建内容或开始新的创建意图时换键。键按当前用户、创建动作和所属项目绑定；项目元数据、版本元数据及原始 ZIP 字节的 SHA-256 参与请求指纹。相同键与内容在重新校验当前项目访问范围后返回首次创建的同一资源，不再占用容量；版本创建重放中的 `revisionId`、名称和说明对应原成功快照，`currentRevisionId` 与 `revisionCount` 对应当前真实状态，重放不会把当前指针切回旧修订；失去范围后不能借旧回执读取资源。内容不同或该资源的删除记录尚未永久清理时返回冲突，不重新创建。30 天到期后，后台永久清理资源及其回执，旧键的去重期限随之结束；后续请求可能按当前权限和容量创建新 ID。回执与资源在同一事务提交，回执不保存原始键或完整请求；上传重放会清理本次临时文件。未提供键的客户端保持普通 POST 语义，不保证重复请求只创建一次。
 
