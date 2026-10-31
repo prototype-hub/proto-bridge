@@ -1,8 +1,8 @@
 package com.gaiys.proto.prototypehub.service;
 
-import com.gaiys.proto.prototypehub.configuration.properties.PrototypeCapacityProperties;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.license.PrototypeEntitlementProvider;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
 import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
 import com.gaiys.proto.prototypehub.web.response.ProjectUsageResponse;
@@ -27,7 +27,7 @@ public class PrototypeProjectService
     private final PrototypeCreationReceiptService receipts;
     private final TransactionalOperator transactions;
     private final PrototypeProjectAccessService access;
-    private final PrototypeCapacityProperties capacity;
+    private final PrototypeEntitlementProvider entitlements;
 
     /** 业务读取排除软删；原始仓储仍供授权谱系维护与文件引用检查使用。 */
     public ReactiveQuery<PrototypeProjectEntity> activeQuery() {
@@ -84,20 +84,20 @@ public class PrototypeProjectService
 
     /** 用量只读真实数据；超过上限的既有库仍可启动、查看、修改和删除。 */
     public Mono<ProjectUsageResponse> usage() {
-        return installations
+        return entitlements
                 .current()
                 .flatMap(
-                        installation ->
+                        status ->
                                 activeQuery()
                                         .count()
                                         .map(
                                                 used ->
                                                         new ProjectUsageResponse(
-                                                                installation.getInstallationId(),
+                                                                status.installationId(),
                                                                 CapacityUsage.from(
                                                                         used.longValue(),
-                                                                        capacity
-                                                                                .getProjectLimit()))));
+                                                                        status.enforcedCapacity()
+                                                                                .projectLimit()))));
     }
 
     private Mono<PrototypeProjectEntity> createWithinCapacity(
@@ -121,19 +121,28 @@ public class PrototypeProjectService
 
     /** 创建与恢复共用安装行锁内的实际活动项目额度。 */
     public Mono<Void> requireCapacity() {
-        return activeQuery()
-                .count()
+        return entitlements
+                .current()
                 .flatMap(
-                        used ->
-                                CapacityUsage.from(used.longValue(), capacity.getProjectLimit())
-                                                .canCreate()
-                                        ? Mono.empty()
-                                        : Mono.error(
-                                                new PrototypeHubException(
-                                                        "error.prototype-hub.project_limit_reached",
-                                                        "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED",
-                                                        409,
-                                                        capacity.getProjectLimit())));
+                        status ->
+                                activeQuery()
+                                        .count()
+                                        .flatMap(
+                                                used -> {
+                                                    int limit =
+                                                            status.enforcedCapacity()
+                                                                    .projectLimit();
+                                                    return CapacityUsage.from(
+                                                                            used.longValue(), limit)
+                                                                    .canCreate()
+                                                            ? Mono.empty()
+                                                            : Mono.error(
+                                                                    new PrototypeHubException(
+                                                                            "error.prototype-hub.project_limit_reached",
+                                                                            "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED",
+                                                                            409,
+                                                                            limit));
+                                                }));
     }
 
     public Mono<PrototypeProjectEntity> update(String id, ProjectRequest input, String actor) {

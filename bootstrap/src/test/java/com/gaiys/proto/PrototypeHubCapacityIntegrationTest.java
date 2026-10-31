@@ -16,7 +16,6 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
-import com.gaiys.proto.prototypehub.configuration.properties.PrototypeCapacityProperties;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
@@ -31,10 +30,13 @@ import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
 import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
+import com.gaiys.proto.prototypehub.service.license.PrototypeCapacityPolicy;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
+import com.gaiys.proto.prototypehub.web.response.PrototypeLicenseStatus.EnforcedCapacity;
+import com.gaiys.proto.prototypehub.web.response.PrototypeLicenseStatus.VerifiedEntitlements;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -64,7 +66,10 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.context.TestConfiguration;
 import org.springframework.context.ApplicationContext;
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Import;
 import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.buffer.DefaultDataBufferFactory;
 import org.springframework.http.HttpMethod;
@@ -101,6 +106,7 @@ import reactor.test.StepVerifier;
             "prototype-hub.cleanup.interval-ms=3600000"
         })
 @Testcontainers
+@Import(PrototypeHubCapacityIntegrationTest.CapacityConfiguration.class)
 class PrototypeHubCapacityIntegrationTest {
     private static final Duration TIMEOUT = Duration.ofSeconds(30);
     private String actor;
@@ -128,7 +134,7 @@ class PrototypeHubCapacityIntegrationTest {
         registry.add("prototype-hub.storage.root", () -> FILES.toString());
     }
 
-    @Autowired PrototypeCapacityProperties capacity;
+    @Autowired TestCapacityPolicy capacity;
     @Autowired PrototypeProjectService projects;
     @Autowired PrototypeProjectAccessService access;
     @Autowired ReactiveUserService users;
@@ -189,7 +195,7 @@ class PrototypeHubCapacityIntegrationTest {
     }
 
     @ParameterizedTest(name = "project limit={0}, version limit={1}")
-    @CsvSource({"5,5", "-1,5", "5,-1", "-1,-1"})
+    @CsvSource({"5,5"})
     void independentLimitsApplyToNewResourcesRestoresAndIdempotentReplay(
             int projectLimit, int versionLimit) throws Exception {
         capacity.setProjectLimit(Integer.toString(projectLimit));
@@ -281,9 +287,9 @@ class PrototypeHubCapacityIntegrationTest {
     }
 
     @Test
-    void unlimitedCapacityDoesNotGrantAnonymousOrUnprivilegedHttpAccess() {
-        capacity.setProjectLimit("-1");
-        capacity.setVersionLimit("-1");
+    void capacityDoesNotGrantAnonymousOrUnprivilegedHttpAccess() {
+        capacity.setProjectLimit("5");
+        capacity.setVersionLimit("5");
         String project = project();
         client.post()
                 .uri("/prototype-hub/projects")
@@ -887,6 +893,7 @@ class PrototypeHubCapacityIntegrationTest {
         var service =
                 new PrototypeUploadService(
                         projects,
+                        installations,
                         versions,
                         observedStorage,
                         extractor,
@@ -1157,6 +1164,32 @@ class PrototypeHubCapacityIntegrationTest {
                         .getResponseBody();
         assertNotNull(body);
         return body;
+    }
+
+    @TestConfiguration(proxyBeanMethods = false)
+    static class CapacityConfiguration {
+        @Bean
+        TestCapacityPolicy testCapacityPolicy() {
+            return new TestCapacityPolicy();
+        }
+    }
+
+    /** 仅测试事务容量边界，不通过生产部署配置取得准入。 */
+    static class TestCapacityPolicy implements PrototypeCapacityPolicy {
+        private volatile int projects = 5;
+        private volatile int versions = 5;
+
+        void setProjectLimit(String value) {
+            projects = Integer.parseInt(value);
+        }
+
+        void setVersionLimit(String value) {
+            versions = Integer.parseInt(value);
+        }
+
+        public EnforcedCapacity resolve(VerifiedEntitlements claims) {
+            return new EnforcedCapacity(projects, versions, "free");
+        }
     }
 
     private static Path temporaryStorage() {

@@ -3,6 +3,7 @@ package com.gaiys.proto.prototypehub.web.response;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.util.List;
+import java.util.Map;
 
 /** 安装级凭证状态：已验声明与当前实际准入分别展示，不代表高级模块已激活。 */
 @Schema(description = "安装与本地凭证状态")
@@ -79,10 +80,30 @@ public record PrototypeLicenseStatus(
             @Schema(description = "每项目免费逻辑版本额度") int baseVersionsPerProject,
             @Schema(description = "基础实现没有高级激活能力") List<String> features) {}
 
-    /** 仅反映现有部署准入，不根据未执行的声明扩容。 */
+    /** 实际准入快照；保留统一版本字段，逐项目差异由同一快照解析，不能据声明在前端自行扩容。 */
     @Schema(description = "实际准入容量")
     public record EnforcedCapacity(
             @Schema(description = "当前项目上限") int projectLimit,
             @Schema(description = "当前每项目版本上限") int versionLimit,
-            @Schema(description = "当前准入来源") String source) {}
+            @Schema(description = "当前准入来源") String source,
+            @Schema(description = "指定项目实际版本上限；空表表示统一上限")
+                    Map<String, Integer> projectVersionLimits) {
+        public EnforcedCapacity {
+            if (!java.util.Set.of("free", "license").contains(source == null ? "" : source))
+                throw new IllegalArgumentException("Capacity source is required");
+            if (projectLimit < 1 || versionLimit < 1)
+                throw new IllegalArgumentException("Capacity must be finite and positive");
+            projectVersionLimits = Map.copyOf(projectVersionLimits);
+            if (projectVersionLimits.values().stream().anyMatch(limit -> limit < 1))
+                throw new IllegalArgumentException("Project capacity must be finite and positive");
+        }
+
+        public EnforcedCapacity(int projectLimit, int versionLimit, String source) {
+            this(projectLimit, versionLimit, source, Map.of());
+        }
+
+        public int versionLimitFor(String projectId) {
+            return projectVersionLimits.getOrDefault(projectId, versionLimit);
+        }
+    }
 }

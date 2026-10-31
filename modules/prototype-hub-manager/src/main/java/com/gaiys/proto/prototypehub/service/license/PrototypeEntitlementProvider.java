@@ -4,7 +4,8 @@ import com.gaiys.proto.prototypehub.web.response.PrototypeLicenseStatus;
 import reactor.core.publisher.Mono;
 
 /**
- * 基础版公共凭证读取契约；供已授权模块读取已验声明和免费回退，不提供商业激活、试用或容量执行。 不缓存状态；每次订阅从持久记录与当前信任配置重新验证。Web调用方必须自行校验安装级权限。
+ * 基础版公共凭证读取契约；供已授权模块读取已验声明、免费权益和当前实际容量快照。 不缓存状态；每次订阅从持久记录与当前信任配置重新验证，纯策略消费由独立模块提供。
+ * 不执行商业激活或试用起算；Web调用方必须自行校验安装级权限。
  *
  * @since 1.0.0
  * @see com.gaiys.proto.prototypehub.service.PrototypeLicenseService

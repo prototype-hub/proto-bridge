@@ -34,7 +34,9 @@ import org.testcontainers.junit.jupiter.Testcontainers;
             "proto.redis.enabled=false",
             "proto.logging.elasticsearch.enabled=false",
             "proto.security.login-encryption-enabled=false",
-            "prototype-hub.cleanup.interval-ms=3600000"
+            "prototype-hub.cleanup.interval-ms=3600000",
+            "prototype-hub.capacity.project-limit=-1",
+            "prototype-hub.capacity.version-limit=999"
         })
 @Testcontainers
 class PrototypeLicenseIntegrationTest {

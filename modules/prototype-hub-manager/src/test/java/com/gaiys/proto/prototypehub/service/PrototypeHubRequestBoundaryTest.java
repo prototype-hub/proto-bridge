@@ -39,6 +39,7 @@ class PrototypeHubRequestBoundaryTest {
         var upload =
                 new PrototypeUploadService(
                         projects,
+                        mock(PrototypeInstallationService.class),
                         versions,
                         storage,
                         extractor,
