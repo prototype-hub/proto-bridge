@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.web.response;
 
+import com.fasterxml.jackson.annotation.JsonInclude;
 import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
 import io.swagger.v3.oas.annotations.media.Schema;
 
@@ -19,4 +20,9 @@ public record ReviewThreadResponse(
         @Schema(description = "仅状态变更递增的并发版本") long configVersion,
         @Schema(description = "创建Unix毫秒") long createdAt,
         @Schema(description = "最近公开更新Unix毫秒，不含内部备注") long updatedAt,
-        @Schema(description = "不可变根文档CSS像素位置快照，历史或未指定时为空") ReviewAnchor anchor) {}
+        @Schema(description = "不可变根文档CSS像素位置快照，历史或未指定时为空") ReviewAnchor anchor,
+        @JsonInclude(JsonInclude.Include.NON_NULL) @Schema(description = "当前访客是否可显式重开；成员省略")
+                Boolean canReopen,
+        @JsonInclude(JsonInclude.Include.NON_NULL)
+                @Schema(description = "访客访问来源：own或associated；成员省略")
+                String accessMode) {}

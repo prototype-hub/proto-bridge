@@ -267,6 +267,25 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 停用后已打开设备的context返回session:null，匿名原型预览仍依分享自身策略。重新启用不会恢复任何旧Cookie、旧验证码或到期时间：邮箱身份必须重新OTP且保留原guestId；未验证身份无法重新证明原身份，新建也不会找回旧ID。发送中的邮件可能已被SMTP受理，但状态切换阻止该旧验证码用于验证，平台不能撤回已投递邮件。管理状态变更不退还发送或身份创建限额，不改变其他身份或项目的数据。
 
+## 人工核实后的历史评审授权
+
+项目 owner 或当前有效 ADMIN 可在核实线下依据后，将一个旧未验证访客在**同一分享、逻辑版本及固定修订**中的历史公开线程授权给本项目已有且启用的邮箱访客。此操作不合并身份、不修改历史作者、原消息或草稿，也不恢复旧未验证会话。来源以已有线程为准，来源访客行已到期清理仍可处理；不能按姓名或公司自动匹配。
+
+接口基于 `/prototype-hub/projects/{projectId}/review-associations`。查询要求 `prototype-hub-project.query`，创建及撤销要求 `prototype-hub-project.save`，同时要求当前项目 MEMBERS 能力（owner/有效 ADMIN）；editor/viewer 无此能力。
+
+| 请求 | 输入 | 结果 |
+| --- | --- | --- |
+| `POST /_detail` | `{sourceThreadId}` | 来源线程、版本/分享/固定修订、当前分享版本、eligible/unavailableReason、当前未撤销关联 |
+| `POST /_query` | `{sourceThreadId,pageIndex,pageSize}` | 同来源完整固定范围的授权审计分页，包含已撤销及失效记录 |
+| `POST /` | `{sourceThreadId,targetGuestId,expectedShareVersion,expectedTargetVersion,evidenceReference,clientRequestId}` | 新授权；目标只能选已有启用邮箱访客，核实依据为必填纯文本（最多1000字符） |
+| `PUT /{associationId}/revoke` | `{expectedVersion,reason,clientRequestId}` | CAS撤销及当前审计状态；reason必填且最多1000字符 |
+
+记录状态为 `active`、`invalidated` 或 `revoked`，包含创建/撤销操作人、时间、依据/原因及独立 configVersion；不返回分享密钥、代次摘要或来源私有身份ID。未撤销的同来源固定范围只能有一个授权，失效记录仍占此槽，必须显式撤销后重新核实创建。分享配置/密钥代次变化或目标停用再启用均使旧授权失效，新的有效邮箱会话不能使其复活。
+
+创建/撤销复用操作人和完整语义隔离的 clientRequestId：同键同内容返回当前状态，不重复授权或审计变更；改内容返回409。旧创建键在撤销后重放仍返回 revoked，不能恢复授权；陈旧分享、目标或授权版本，以及重复未撤销授权返回409。结果不明确时保留原键，刷新当前状态后由用户明确重试。
+
+目标仍须用自己的有效邮箱评审会话及当前相同分享证明访问。公开线程列表/总览的 COUNT、分页和详情在数据库中应用“本人或当前有效授权”范围，消息和图片继续只读 public；新建线程、消息作者、限频和回执始终使用实际邮箱访客。公开 Thread 额外返回 `accessMode:'own'|'associated'` 与 `canReopen`；只有本人且 resolved 时 canReopen 为 true，管理端省略这两个新增字段。关联访客可以公开文字/图片回复，回复 resolved 线程沿原规则自动重开，但不能调用显式状态接口。撤销后未来读取、图片、写入及旧回执重放重新校验并拒绝；已传回客户端的字节不能收回。
+
 ## 固定页面文字反馈
 
 反馈绑定平台外壳选中的固定修订与唯一manifest页面，不跟随iframe内部导航。仅启用身份和allowComment的有效fixed分享可用；旧页面没有唯一pageId、页面不在清单或分享跟随最新时不提供反馈入口。服务端按清单校验pageId并生成pageName/pagePath，不接受客户端提供作者或页面路径作为授权依据。当前支持文字线程、网页双向回复、内部备注、解决/重开、成员专用线程负责人、访客创建时的根页面点/矩形/椭圆位置快照，以及访客初始投稿和已有线程回复中的单张手动图片；不含跨frame或语义元素定位、通用附件、全局分派队列、消息编辑删除或业务通知。
@@ -275,16 +294,16 @@ context设置 `prototype-review` Cookie：HttpOnly、默认Secure、SameSite=Str
 
 | 请求 | 额外输入 | 结果 |
 | --- | --- | --- |
-| `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人线程的PagerResult |
-| `POST /threads/_overview` | `{revisionId,accessKey,pageIndex,pageSize,state?}`，不需pageId | 当前固定修订中本人跨页线程的PagerResult |
-| `POST /threads/{threadId}/_detail` | 无 | 当前本人范围内的单个Thread，不受列表分页或state筛选影响 |
+| `POST /threads/_query` | `{pageIndex,pageSize,state?}` | 本人或当前有效人工授权线程的PagerResult |
+| `POST /threads/_overview` | `{revisionId,accessKey,pageIndex,pageSize,state?}`，不需pageId | 当前固定修订中本人或当前有效人工授权跨页线程的PagerResult |
+| `POST /threads/{threadId}/_detail` | 无 | 当前本人或有效人工授权范围内的单个Thread，不受列表分页或state筛选影响 |
 | `POST /threads` | `{text,clientRequestId,anchor?}` | Thread，含初始公开消息的原子创建结果 |
 | `POST /threads/_with-image` | multipart中的request含`{text,clientRequestId,anchor?}`及上述页面字段，另含image | Thread，首条公开消息附单张图片 |
 | `POST /threads/{threadId}/messages/_query` | `{pageIndex,pageSize}` | 仅公开消息的PagerResult |
 | `POST /threads/{threadId}/messages` | `{text,clientRequestId}` | Message，作者始终来自当前访客会话 |
 | `PUT /threads/{threadId}/status` | `{state:'open',expectedVersion,clientRequestId}` | Thread，访客只能重开 |
 
-逐页接口的本人范围同时匹配项目、逻辑版本、分享、固定修订、页面、保障等级命名空间和guestId；跨页总览仅省略页面条件，不能读取其他客户、其他分享或另一保障等级的线程。同项目邮箱重新OTP可找回同一身份，但仍须当前相同分享授权；新分享不继承原分享线程，未验证身份丢失或到期后不能按姓名/邮箱恢复。分享或访客停用、身份过期、禁反馈后，公开读取与写入均失效，不删除已有反馈。
+逐页接口的本人范围同时匹配项目、逻辑版本、分享、固定修订、页面、保障等级命名空间和guestId；跨页总览仅省略页面条件；邮箱访客另可按上述显式人工授权读取同分享固定修订的来源历史公开线程，没有有效授权的其他客户、其他分享或另一保障等级仍不可读。同项目邮箱重新OTP可找回同一身份，但仍须当前相同分享授权；新分享不继承原分享线程，未验证身份丢失或到期后不能按姓名/邮箱恢复。分享或访客停用、身份过期、禁反馈后，公开读取与写入均失效，不删除已有反馈。
 
 管理接口基于 `/prototype-hub/versions/{versionId}/review-threads`，查询要求版本query，写入要求版本save，且始终同时要求当前项目EDIT。仅有项目READ的查看者不能读取客户反馈或内部备注：
 
@@ -317,13 +336,13 @@ anchor仅可在访客创建线程时提交，省略或null表示无位置；旧�
 
 消息新增 `image:null|{contentType,size,width,height}`；contentType为image/png或image/jpeg，size为原始字节数，宽高为真实像素。旧文字消息为null，不返回文件路径、文件名、URL、内容摘要或额外身份信息。图片继承所属消息的public/internal可见性，内部图片不进入公开消息列表、计数或时间投影。每条消息最多一张，不支持追加、替换、单图删除或无正文投稿。
 
-读取用 `POST /{threadId}/messages/{messageId}/image`，JSON为该端原ReviewPageRequest：管理端含revisionId/pageId，公开端再含accessKey。每次读取重验当前项目/分享/身份、固定修订页面以及message→thread关联；公开端只能读取本人当前线程的公开图片。返回真实image/png或image/jpeg字节，带nosniff、private/no-store及固定安全inline文件名image.png或image.jpg；缺失或损坏时明确失败，不回退其他消息或最新修订。没有公开GET、静态资源路径或永久签名链接，分享密码、身份失效和项目撤权同样阻断未来读取；已交付到客户端的字节不能撤回。
+读取用 `POST /{threadId}/messages/{messageId}/image`，JSON为该端原ReviewPageRequest：管理端含revisionId/pageId，公开端再含accessKey。每次读取重验当前项目/分享/身份、固定修订页面以及message→thread关联；公开端只能读取本人或当前有效人工授权线程的公开图片。返回真实image/png或image/jpeg字节，带nosniff、private/no-store及固定安全inline文件名image.png或image.jpg；缺失或损坏时明确失败，不回退其他消息或最新修订。没有公开GET、静态资源路径或永久签名链接，分享密码、身份失效和项目撤权同样阻断未来读取；已交付到客户端的字节不能撤回。
 
 附图创建与纯文字创建共享原clientRequestId的创建操作范围。省略或null的anchor保持原文字指纹；非空anchor按固定字段顺序加入指纹，附图再追加真实图片SHA-256。同键同文字、锚点及图片字节返回原线程，不重复线程、首消息、事件或限频。同键改文字、锚点、图片或在无锚点/有锚点、文字/图片间切换返回原409幂等冲突。图片回复仍沿用各自原回复操作范围，同键同文字、可见性及图片字节重放原消息。原文字指纹和已有回执保持兼容；成功写入只保留实际首消息或回复所引用的图片，重放清理本次未引用的上传候选。未知结果保留同一File和请求键，由用户明确重试；改变内容才代表新意图。文件落盘与数据库不伪称跨资源原子事务：线程、消息、事件和回执同事务，明确回滚/未进入事务时补偿候选文件，UNKNOWN保留潜在已提交内容；进程崩溃遗留的未引用候选由停写后的完整v3离线审计处理。
 
 图片错误为400 / `PROTOTYPE_HUB_REVIEW_IMAGE_INVALID`（实际格式、解码或维度）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_TOO_LARGE`（原图字节预算）、400 / `PROTOTYPE_HUB_REVIEW_IMAGE_PARTS_INVALID`（part、JSON、校验及multipart解析预算）和404 / `PROTOTYPE_HUB_REVIEW_IMAGE_UNAVAILABLE`（无图、缺文件或完整性失败）。解析期超限可能先返回PARTS_INVALID，原Origin、CSRF、会话、权限及409幂等冲突码保持。
 
-线程详情沿用上述页面与当前身份校验，不从threadId反推或授权另一页面。缺失、其他分享/访客/身份等级或不匹配项目、版本、修订、页面的线程统一返回404 / `PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE`；分享策略、会话和页面自身失效仍返回各自既有错误。详情只返回同一Thread投影，不附带内部消息数量或时间，不修改状态、限频、回执或领域事件。消息仍通过原分页接口读取。
+线程详情沿用上述页面与当前身份校验，不从threadId反推或授权另一页面。缺失、没有当前本人/有效人工授权、其他分享或不匹配项目、版本、修订、页面的线程统一返回404 / `PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE`；分享策略、会话和页面自身失效仍返回各自既有错误。详情只返回同一Thread投影，不附带内部消息数量或时间，不修改状态、限频、回执或领域事件。消息仍通过原分页接口读取。
 
 成员预览和公开分享可在原页面深链中加入 `threadId`：`?revisionId={rid}&pageId={pageId}&threadId={threadId}`。threadId为43位URL安全随机标识；线程目标必须是三个单值、非空、格式有效的完整标识，重复、非法或不完整目标显示错误，不自动打开首页、另一线程或新建投稿。URL仅定位，仍须完成当前项目授权或分享密码、访客身份及待用邀请流程；完成后继续定位，不自动发码、退出身份、放弃邀请或提交文字。未验证身份丢失后，链接不能恢复原身份。
 

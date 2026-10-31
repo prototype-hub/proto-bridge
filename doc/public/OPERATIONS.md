@@ -129,3 +129,11 @@ Internal exports reuse the existing upload/extraction limits: at most 20,000 sel
 Preparation uses the existing bounded `FileWork` scheduler and an exclusive OS temporary directory named `prototypehub-assets-*`; archives are streamed to disk, then streamed to the response in 64 KiB buffers. Allow temporary disk space for up to four maximum outputs, plus normal upload storage, and configure the process temporary directory on a suitably private volume. Each selected source is checked against current account/action/project/version authorization before its size/hash copy, and the completed output is reauthorized before sending. This can require one authorization round trip per file; maximum-size throughput has not been established by the API contract. No database transaction spans compression or transmission.
 
 Normal completion, preparation errors and client cancellation close the request's streams and delete only its exclusive directory. Cancellation marks the attempt before queued cleanup, preventing a late queued file operation from recreating the directory. A hard process/OS crash cannot run reactive cleanup; after confirming the owning process is stopped, operators may remove its stale `prototypehub-assets-*` directories from the configured OS temporary location. There is no background export or automatic crash-recovery claim. Do not delete active directories or prototype source storage. Already delivered bytes cannot be revoked. Existing storage backup/restore and source permissions remain required; missing/corrupt files yield a failure before a complete attachment is sent.
+
+## 历史评审授权升级与回退
+
+升级前停止旧写入节点，联合备份数据库和原型文件，在隔离副本验证恢复。启动由EasyORM增补 `p_review_association` 和索引，保留原身份、线程、作者及消息；确认旧数据、可空唯一授权槽和重启后的活动/撤销记录正常，再配套发布前端。避免混跑忽略新增授权状态的后端节点。
+
+人工核实依据由有权操作人填写，服务端不验证其线下事实，也不发送邮件或业务通知。授权不代替邮箱身份验证；实际访问仍依赖有效评审会话、当前分享和固定修订。分享策略/密钥变化、访客停用再启用后应刷新状态，显式撤销旧记录再重新核实，不能手改代次、槽或审计以恢复授权。撤销影响未来请求，已交付图片不能召回。
+
+仅回退此功能时停止新写入并回退配套前后端，保留新表和审计，不执行删表或逆向改写原作者。旧后端忽略关联并恢复原本人访问边界；已经保存的邮箱访客回复仍以该访客署名。回退前在副本验证旧JAR兼容；灾难恢复另按同窗口数据库/文件备份流程执行。项目/版本永久清理会删除其关联及操作回执，普通身份/事件到期清理不会删除该审计。

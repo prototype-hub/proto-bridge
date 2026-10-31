@@ -42,7 +42,7 @@ public class PublicPrototypeReviewThreadController {
     private final ReviewRequestSecurity security;
 
     @PostMapping("/_overview")
-    @Operation(summary = "分页读取当前访客本人固定修订的全部页面反馈")
+    @Operation(summary = "分页读取当前访客本人及经授权历史反馈")
     public Mono<PagerResult<ReviewThreadResponse>> overview(
             @PathVariable String token,
             @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
@@ -54,7 +54,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("/_query")
-    @Operation(summary = "读取当前访客本人页面线程")
+    @Operation(summary = "读取当前访客本人或经授权历史线程")
     public Mono<PagerResult<ReviewThreadResponse>> query(
             @PathVariable String token,
             @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody
@@ -66,7 +66,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("/{threadId}/_detail")
-    @Operation(summary = "定位当前访客本人页面线程")
+    @Operation(summary = "定位当前访客本人或经授权历史线程")
     public Mono<ReviewThreadResponse> detail(
             @PathVariable String token,
             @PathVariable String threadId,
@@ -104,7 +104,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("/{threadId}/messages/_query")
-    @Operation(summary = "分页读取本人线程的公开消息")
+    @Operation(summary = "分页读取有权线程的公开消息")
     public Mono<PagerResult<ReviewMessageResponse>> messages(
             @PathVariable String token,
             @PathVariable String threadId,
@@ -117,7 +117,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("/{threadId}/messages")
-    @Operation(summary = "追加本人对客消息并在需要时重开")
+    @Operation(summary = "追加有权线程的对客消息并在需要时重开")
     public Mono<ReviewMessageResponse> reply(
             @PathVariable String token,
             @PathVariable String threadId,
@@ -130,7 +130,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping(value = "/{threadId}/messages-with-image", consumes = "multipart/form-data")
-    @Operation(summary = "向本人已有线程追加一张PNG/JPEG和必填正文")
+    @Operation(summary = "向有权已有线程追加一张PNG/JPEG和必填正文")
     public Mono<ReviewMessageResponse> image(
             @PathVariable String token, @PathVariable String threadId, ServerWebExchange exchange) {
         security.origin(exchange);
@@ -143,7 +143,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("/{threadId}/messages/{messageId}/image")
-    @Operation(summary = "按当前身份和线程范围读取本人公开消息图片")
+    @Operation(summary = "按当前身份和线程范围读取有权公开消息图片")
     public Mono<ResponseEntity<Resource>> image(
             @PathVariable String token,
             @PathVariable String threadId,

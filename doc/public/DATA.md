@@ -162,7 +162,7 @@ EasyORM增加 `p_share.review_enabled/review_allow_unverified/review_allow_comme
 | `p_review_message` | 线程纯文本消息、guest/member作者快照、public/internal可见性、创建时间及可空单图元数据；没有消息编辑/删除或通用附件入口 |
 | `p_review_event` | 同事务领域事件outbox，仅存相关ID、事件类型、作者种类和时间；不存正文、邮箱、凭据，不代表业务发送任务 |
 
-固定修订的跨页反馈总览复用p_review_thread及原Thread投影，不新增持久字段或表。索引 `idx_review_thread_overview(revision_id,public_updated_at,id)` 支持固定修订按公开更新时间和ID分页；另增复合索引 `(revision_id,assignee_id,public_updated_at,id)` 支持成员责任筛选后的COUNT与分页排序。均由EasyORM增补，保留旧数据，重复同步不重复建索引。成员mine按当前服务端账号匹配assignee_id，unassigned仅匹配NULL，旧空值自然计入；停用或撤员不改变已有非空分派。总览的公开范围仍限定share_id、guest_id及verification_level，内部备注与负责人字段不参与公开排序、计数或投影；整库备份及v3存储引用格式保持不变，不新增恢复覆盖声明。
+固定修订的跨页反馈总览复用p_review_thread及原Thread投影，不新增持久字段或表。索引 `idx_review_thread_overview(revision_id,public_updated_at,id)` 支持固定修订按公开更新时间和ID分页；另增复合索引 `(revision_id,assignee_id,public_updated_at,id)` 支持成员责任筛选后的COUNT与分页排序。均由EasyORM增补，保留旧数据，重复同步不重复建索引。成员mine按当前服务端账号匹配assignee_id，unassigned仅匹配NULL，旧空值自然计入；停用或撤员不改变已有非空分派。总览的公开范围限定相同share_id及固定修订，再按guest_id/verification_level本人或当前有效人工授权过滤；内部备注与负责人字段不参与公开排序、计数或投影；整库备份及v3存储引用格式保持不变，不新增恢复覆盖声明。
 
 p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_name`（128）、`assignment_version`（Long）、`assignment_updated_at`（Unix毫秒）。旧空值按未分派、版本0及空更新时间解释，不回填猜测的负责人。姓名是分派时快照，available按当前启用账号及owner/editor绑定计算；停用或撤员不自动清空或转交，同一账号重新合格可再次可用。负责人独立于state/config_version/public_updated_at，不改变原公开Thread投影或排序，也不构成授权。
 
@@ -264,3 +264,13 @@ A database rollback can also roll back the accepted sequence. Offline verificati
 固定修订图片/SVG 导出复用 `p_revision.manifest_json/manifest_sha256/storage_path`，无新表、列、迁移、导出任务表或权限缓存。保存清单的 UTF-8 字节须匹配其 SHA256；仅选择规范原路径及 `image/*` 条目，实际原文件在准备附件时逐项校验大小和 SHA256。导出不会重写清单、上传包、源文件或逻辑版本当前修订。
 
 ZIP 内及独立下载的对账 JSON 描述本次固定修订和实际选择集合，不包含平台令牌、分享密钥或内部存储路径。导出临时目录不是持久数据或备份来源；回滚新增控制器/服务即可关闭入口，不需要逆向数据迁移。现有修订与存储备份方式继续适用。
+
+## 历史评审授权与审计
+
+EasyORM加法创建 `p_review_association`，不回填或改写原访客、线程、消息。记录绑定项目、逻辑版本、分享、固定修订、来源unverified身份与目标email身份；保存授权时分享配置版本/私有密钥摘要、目标版本、人工核实依据、创建操作人/时间及撤销操作人/时间/原因。来源不设外键依赖未验证访客行，身份到期清理不能删除授权审计。
+
+`active_scope_key` 是服务端计算的可空唯一槽；未撤销记录占槽，撤销置NULL，PostgreSQL允许多条NULL历史。分享/目标代次失效不释放槽或改换目标；显式撤销后新建才形成新记录。旧分享/邮箱访客的NULL配置版本按0解释，所有新授权版本必填。新增索引及表由现有实体同步管理，不引入独立迁移框架。
+
+授权和撤销在项目→版本锁下复验当前账号、项目范围、代次与CAS，关联操作回执与审计同事务。公开写入/附图最终落库和撤销使用相同锁顺序；撤销先提交后不能再提交新的关联回复或重放。历史作者、已提交回复及图片不因撤销改写或删除，回复作者保留实际目标邮箱访客。
+
+整库备份必须包含新表及相关 `p_creation_receipt`，与原评审数据和文件保持同窗口；新增表不改变v3文件引用格式。软删阻断访问并保留审计，只有授权的项目/版本永久清理才有界删除该范围的关联与创建/撤销回执，不误删其他项目。此保留期不随八小时访客或30天事件清理缩短。
