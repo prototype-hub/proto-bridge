@@ -1,7 +1,7 @@
 -- Save before and after; counts alone cannot prove identity/relationship preservation.
 -- Select prototype_hub_table_prefix=protohub_ before V15; the default reads current p_* tables.
 \ir prototype-hub-table-names.sql
--- Identity and durable sweep cursors must both survive a quiescent backup/restore.
+-- Identity, accepted credential/sequence and durable sweep cursors must survive a quiescent backup/restore.
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_installation_table')) IS NOT NULL AS prototype_hub_has_installation \gset
 \if :prototype_hub_has_installation
 SELECT 'installation',count(*),md5(coalesce(jsonb_agg(to_jsonb(i) ORDER BY id)::text,'[]'))

@@ -285,6 +285,59 @@
           }
         ],
         "buttons": []
+      },
+      {
+        "id": "prototype-hub-license",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "授权与安装",
+        "code": "prototype-hub/License",
+        "url": "/prototype-hub/license",
+        "icon": "SafetyCertificateOutlined",
+        "sortIndex": 4,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "授权与安装",
+            "en_US": "License & installation",
+            "en": "License & installation"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/License",
+        "permissions": [
+          {
+            "permission": "prototype-hub-license",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": [
+          {
+            "id": "import",
+            "name": "导入凭证",
+            "permissions": [
+              {
+                "permission": "prototype-hub-license",
+                "actions": [
+                  "save"
+                ]
+              }
+            ],
+            "i18nMessages": {
+              "zh_CN": "导入凭证",
+              "en_US": "Import credential",
+              "en": "Import credential"
+            }
+          }
+        ]
       }
     ]
   },

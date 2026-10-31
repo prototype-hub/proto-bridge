@@ -31,6 +31,39 @@ public class PrototypeInstallationEntity extends GenericEntity<String> {
     @Schema(description = "首次启用分享访问采集的Unix毫秒；升级前历史不推测为零")
     private Long statisticsStartedAt;
 
+    @JsonIgnore
+    @Column(name = "license_document")
+    @org.hswebframework.ezorm.rdb.mapping.annotation.ColumnType(
+            jdbcType = java.sql.JDBCType.LONGVARCHAR,
+            javaType = String.class)
+    @Schema(description = "规范化已接收凭证封套；只在服务端重新验签，不对外返回")
+    private String licenseDocument;
+
+    @JsonIgnore
+    @Column(name = "license_id", length = 64)
+    @Schema(description = "已接收授权谱系；不因信任配置变更重置")
+    private String licenseId;
+
+    @JsonIgnore
+    @Column(name = "license_sequence")
+    @Schema(description = "已接收单调序列，拒绝旧凭证覆盖")
+    private Long licenseSequence;
+
+    @JsonIgnore
+    @Column(name = "license_fingerprint", length = 64)
+    @Schema(description = "已接收规范封套SHA256，用于幂等及结果核对")
+    private String licenseFingerprint;
+
+    @JsonIgnore
+    @Column(name = "license_accepted_at")
+    @Schema(description = "首次接收当前凭证Unix毫秒，重复导入不移动")
+    private Long licenseAcceptedAt;
+
+    @JsonIgnore
+    @Column(name = "license_key_id", length = 64)
+    @Schema(description = "当前凭证签名公钥标识")
+    private String licenseKeyId;
+
     @Column(name = "retention_deleted_time")
     @Schema(description = "到期版本扫描游标的删除时间；仅作跨轮清理进度，不改变30天截止规则")
     private Long retentionDeletedTime;

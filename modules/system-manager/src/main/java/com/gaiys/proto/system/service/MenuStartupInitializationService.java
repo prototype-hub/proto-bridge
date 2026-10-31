@@ -73,6 +73,12 @@ public class MenuStartupInitializationService {
                 "/prototype-hub/statistics");
     }
 
+    /** 仅补缺失的安装凭证入口，不改变原菜单、首页或角色授权。 */
+    public Mono<Boolean> ensureLicenseMenuIfMissing() {
+        return ensureBuiltInMenuIfMissing(
+                "prototype-hub-license", "prototype-hub/License", "/prototype-hub/license");
+    }
+
     private Mono<Boolean> ensureBuiltInMenuIfMissing(String id, String code, String url) {
         return Mono.defer(
                         () ->

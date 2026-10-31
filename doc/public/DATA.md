@@ -244,3 +244,12 @@ EasyORM增补`p_share_visit`及`p_installation.statistics_started_at/statistics_
 访问表主键是服务端签名票据中的随机事件ID，列仅有`project_id/version_id/revision_id/share_id/visit_day/received_at`，不保存公开share token、accessKey、票据、IP、邮箱、指纹或访客身份。首次接收按固定`Asia/Shanghai`自然日写入，重放不改日期。官方EasyORM upsert的唯一键冲突忽略保证跨副本一次保存；数据库结构化COUNT/GROUP BY直接聚合，不使用内存累计、客户端全量计数或另一个日计数副本。查询先下推当前项目/角色/软删范围，索引`(visit_day,project_id)`和`version_id`支撑时间窗与永久清理。当前平台实际支持PostgreSQL；jOOQ统计渲染有PostgreSQL/H2映射，但不代表整个平台已经支持H2或其他数据库。
 
 既有维护周期每次最多删除500条早于“今天减34天”的事件，目标保留含今天的35个自然日；故障或积压可延迟物理删除，但统计窗口最多30天，不会返回到期事件。超过24小时的票据早已失效，不会因清理去重记录而重计。版本永久清理在原项目→版本锁/事务中先删除访问事件；软删期间保留事件但授权聚合隐藏，恢复不复活旧分享。备份须保留完整安装行及访问表，`tools/snapshot-db.sql`输出整表摘要而不输出密钥；存储引用清单仍为v3，统计没有文件资源。没有采集的上线前历史明确未知，不自动补零或从HTTP日志回填。
+
+
+## Accepted installation credentials
+
+EasyORM additively synchronizes `p_installation.license_document`, `license_id`, `license_sequence`, `license_fingerprint`, `license_accepted_at` and `license_key_id`. All are server-only entity fields; normal entity serialization omits them. The bounded canonical envelope is reverified on each public-provider read against the current trust configuration, installation binding and time. Removed keys make persisted claims untrusted without deleting the accepted sequence or record. No in-memory entitlement cache or second counter is maintained.
+
+Imports use the existing installation row lock inside a reactive transaction, recheck the live administrator, validate the candidate, then replace all accepted fields together. Concurrent copies therefore produce one acceptance and idempotent replays; descending/conflicting sequences cannot overwrite newer records. Existing project/version admission and data are unchanged. Source-code rollback retains these additive fields and the accepted record; never reset the persistent installation ID. The complete installation row must remain in database backups, and the existing installation digest in `tools/snapshot-db.sql` covers these new fields without printing the original envelope.
+
+A database rollback can also roll back the accepted sequence. Offline verification cannot absolutely prevent cloning, local clock rollback or database rollback. After recovery, compare the installation identity, latest issuer record, accepted sequence and fingerprint before accepting a replacement. Restore does not delete prototypes or disable the basic product.

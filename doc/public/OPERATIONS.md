@@ -107,3 +107,12 @@ HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.tru
 整库`pg_dump`须包含`p_share_visit`及`p_installation`完整行；保存并对比`tools/snapshot-db.sql`的`installation/share_visits`摘要。恢复时在停写副本核对采集起点、签名密钥、访问事件、实际修订和聚合结果，再打开流量；不打印或提交原始密钥/备份。签名密钥丢失会使未过期票据失效，不应为了找回票据重置统计起点或清空历史。35自然日保留由既有维护周期每次最多删除500条到期事件，故障或积压可延迟物理删除，统计不会返回窗口外事件；永久版本或项目清理同事务删除对应访问记录；当前访问量是尽力记录，资源浏览与统计确认独立，采集失败不会阻止浏览但可能缺数。
 
 本次升级为加法变更。仅回退统计功能时，先停止新增采集并回退配套前后端代码，保留新增表、安装起点、签名密钥和已采记录；不需要为关闭统计界面恢复整库，不删除新表或重置安装行。回退前在副本验证目标旧JAR能读取原有业务并保留新增数据。整库恢复用于灾难恢复或已确定的数据损坏，需要数据库与文件使用同一时间点并对账，且会影响备份后的业务写入，不能与普通代码回退混为一谈。跨副本依赖同一数据库唯一键及项目→版本锁，不依赖进程缓存；没有高级商业模块也可独立构建和运行此基础能力。
+
+
+## Local credential trust and recovery
+
+Configure `prototype-hub.license.trusted-public-keys` as a map from issuer key ID to Ed25519 X509 SubjectPublicKeyInfo DER encoded with standard Base64. The default is empty; no production issuer key is bundled. Invalid key encodings and private/RSA keys fail startup. Obtain public keys through your trusted issuer channel and keep the signing private key outside the application, deployment configuration, source repository and backups exported for support. Never trust a key supplied inside an uploaded credential.
+
+Administrators use **License & installation** to download the persistent installation request, import the resulting complete credential and inspect the verified declaration separately from actual admission. No network activation, payment, trial restart or advanced-module activation occurs. Replacing the trust configuration takes effect on application restart; reads then revalidate the persisted credential. Retain an old public key during an intended rotation until a newer credential is accepted, or expect the old record to show untrusted. A failed import preserves the previous accepted record.
+
+Include the full `p_installation` row in quiescent database backup/restore. Compare the installation digest, ID, accepted sequence and fingerprint before reopening writes. Keep the issuer's latest credential/sequence for recovery reconciliation: local-only code cannot guarantee anti-rollback after restoring an older database. Do not publish raw database rows, credential documents, signatures or support logs containing submitted documents. Code rollback leaves additive fields in place and does not change existing files or capacity admission. Authentication-only OTP and existing basic resource operations remain independent.
