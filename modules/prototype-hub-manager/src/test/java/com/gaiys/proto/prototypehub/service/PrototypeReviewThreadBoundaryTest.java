@@ -100,6 +100,7 @@ class PrototypeReviewThreadBoundaryTest {
                         work,
                         transactions,
                         null,
+                        null,
                         null);
         var input = new ReviewThreadCreateRequest();
         input.setRevisionId("r");
@@ -175,6 +176,7 @@ class PrototypeReviewThreadBoundaryTest {
                         work(new AtomicBoolean(), new AtomicBoolean()),
                         null,
                         images,
+                        null,
                         null);
         var input = new ReviewThreadCreateRequest();
         input.setRevisionId("r");
@@ -280,6 +282,7 @@ class PrototypeReviewThreadBoundaryTest {
                         work(parsing, new AtomicBoolean()),
                         null,
                         null,
+                        null,
                         null);
         var input = new ReviewThreadQueryRequest();
         input.setRevisionId("r");
@@ -346,6 +349,7 @@ class PrototypeReviewThreadBoundaryTest {
                         receipts,
                         work(parsing, new AtomicBoolean()),
                         transactions,
+                        null,
                         null,
                         null);
         var input = new ReviewMemberTextRequest();

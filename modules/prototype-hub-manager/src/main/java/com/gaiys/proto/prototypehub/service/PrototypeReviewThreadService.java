@@ -60,8 +60,9 @@ public class PrototypeReviewThreadService {
     private final TransactionalOperator transactions;
     private final PrototypeReviewImageService images;
     private final FileCleanupService cleanup;
+    private final PrototypeReviewAssociationService associations;
 
-    /** 总览只省略页面条件，分享、身份命名空间与当前会话的授权范围均保持。 */
+    /** 总览只省略页面条件；本人或当前关联授权条件与COUNT一起下推数据库。 */
     public Mono<PagerResult<ReviewThreadResponse>> overviewVisitor(
             String token, ReviewThreadOverviewRequest input, String cookie) {
         return review.requireVisitor(token, input.getRevisionId(), input.getAccessKey(), cookie)
@@ -72,20 +73,59 @@ public class PrototypeReviewThreadService {
                                             grant.share().getProjectId(),
                                             grant.share().getVersionId(),
                                             input);
+                            var identity = grant.identity();
+                            if ("email".equals(identity.verificationLevel())) {
+                                return associations
+                                        .visitorQuery(
+                                                grant.share().getProjectId(),
+                                                grant.share().getVersionId(),
+                                                input.getRevisionId(),
+                                                grant.share().getId(),
+                                                identity.guestId(),
+                                                identity.verificationLevel(),
+                                                query)
+                                        .flatMap(
+                                                join ->
+                                                        join.orderByDesc(
+                                                                        PrototypeReviewThreadEntity
+                                                                                ::getPublicUpdatedAt)
+                                                                .orderByAsc(
+                                                                        PrototypeReviewThreadEntity
+                                                                                ::getId)
+                                                                .fetchPaged(
+                                                                        rows ->
+                                                                                Mono.just(
+                                                                                        rows
+                                                                                                .stream()
+                                                                                                .map(
+                                                                                                        row ->
+                                                                                                                response(
+                                                                                                                        row
+                                                                                                                                .getThread(),
+                                                                                                                        identity
+                                                                                                                                .guestId(),
+                                                                                                                        identity
+                                                                                                                                .verificationLevel()))
+                                                                                                .toList())));
+                            }
                             query.toQuery()
                                     .and(
                                             PrototypeReviewThreadEntity::getShareId,
                                             grant.share().getId())
                                     .and(
                                             PrototypeReviewThreadEntity::getGuestId,
-                                            grant.identity().guestId())
+                                            identity.guestId())
                                     .and(
                                             PrototypeReviewThreadEntity::getVerificationLevel,
-                                            grant.identity().verificationLevel());
+                                            identity.verificationLevel());
                             return QueryHelper.queryPager(
                                     query,
                                     threads::createQuery,
-                                    PrototypeReviewThreadService::response);
+                                    row ->
+                                            response(
+                                                    row,
+                                                    identity.guestId(),
+                                                    identity.verificationLevel()));
                         });
     }
 
@@ -183,8 +223,7 @@ public class PrototypeReviewThreadService {
     public Mono<ReviewThreadResponse> detailVisitor(
             String token, String threadId, ReviewPageRequest input, String cookie) {
         return visitorPage(token, input, cookie)
-                .flatMap(scope -> requireThread(scope, threadId))
-                .map(PrototypeReviewThreadService::response);
+                .flatMap(scope -> requireThread(scope, threadId).map(row -> response(row, scope)));
     }
 
     /** 内部扩展复用同一页面授权与清单读取边界，不暴露访客凭据或复制权限规则。 */
@@ -242,8 +281,10 @@ public class PrototypeReviewThreadService {
                                                                     id ->
                                                                             requireThread(scope, id)
                                                                                     .map(
-                                                                                            PrototypeReviewThreadService
-                                                                                                    ::response))
+                                                                                            row ->
+                                                                                                    response(
+                                                                                                            row,
+                                                                                                            scope)))
                                                             .switchIfEmpty(
                                                                     Mono.defer(
                                                                             () ->
@@ -293,7 +334,7 @@ public class PrototypeReviewThreadService {
                                         .map(
                                                 row ->
                                                         new PrototypeReviewImageService.Stored<>(
-                                                                response(row), null)))
+                                                                response(row, scope), null)))
                 .switchIfEmpty(Mono.defer(() -> newThread(scope, input, request, image)));
     }
 
@@ -619,6 +660,37 @@ public class PrototypeReviewThreadService {
                         .orderByDesc(PrototypeReviewThreadEntity::getPublicUpdatedAt)
                         .orderByAsc(PrototypeReviewThreadEntity::getId)
                         .getParam();
+        if (scope.visitor() && "email".equals(scope.level())) {
+            if (input.getState() != null)
+                query.toQuery().and(PrototypeReviewThreadEntity::getState, input.getState());
+            query.doPaging(input.getPageIndex(), input.getPageSize());
+            query.setParallelPager(true);
+            return associations
+                    .visitorQuery(
+                            scope.projectId(),
+                            scope.versionId(),
+                            scope.revisionId(),
+                            scope.shareId(),
+                            scope.actorId(),
+                            scope.level(),
+                            query)
+                    .flatMap(
+                            join ->
+                                    join.orderByDesc(
+                                                    PrototypeReviewThreadEntity::getPublicUpdatedAt)
+                                            .orderByAsc(PrototypeReviewThreadEntity::getId)
+                                            .fetchPaged(
+                                                    rows ->
+                                                            Mono.just(
+                                                                    rows.stream()
+                                                                            .map(
+                                                                                    row ->
+                                                                                            response(
+                                                                                                    row
+                                                                                                            .getThread(),
+                                                                                                    scope))
+                                                                            .toList())));
+        }
         if (scope.visitor()) {
             query.toQuery().and(PrototypeReviewThreadEntity::getShareId, scope.shareId());
             query.toQuery().and(PrototypeReviewThreadEntity::getGuestId, scope.actorId());
@@ -628,11 +700,35 @@ public class PrototypeReviewThreadService {
             query.toQuery().and(PrototypeReviewThreadEntity::getState, input.getState());
         query.doPaging(input.getPageIndex(), input.getPageSize());
         query.setParallelPager(true);
-        return QueryHelper.queryPager(
-                query, threads::createQuery, PrototypeReviewThreadService::response);
+        return QueryHelper.queryPager(query, threads::createQuery, row -> response(row, scope));
     }
 
     private Mono<PrototypeReviewThreadEntity> requireThread(Scope scope, String id) {
+        if (scope.visitor() && "email".equals(scope.level())) {
+            var filter =
+                    QueryParamEntity.newQuery()
+                            .where(PrototypeReviewThreadEntity::getId, id)
+                            .and(PrototypeReviewThreadEntity::getPageId, scope.page().pageId())
+                            .getParam();
+            return associations
+                    .visitorQuery(
+                            scope.projectId(),
+                            scope.versionId(),
+                            scope.revisionId(),
+                            scope.shareId(),
+                            scope.actorId(),
+                            scope.level(),
+                            filter)
+                    .flatMapMany(query -> query.fetch())
+                    .map(PrototypeReviewAssociationService.ThreadRow::getThread)
+                    .singleOrEmpty()
+                    .switchIfEmpty(Mono.error(PrototypeReviewThreadService::unavailable));
+        }
+        return requireOwnedThread(scope, id);
+    }
+
+    /** 显式状态操作保留原作者边界；关联授权仅扩展读取/公开回复。 */
+    private Mono<PrototypeReviewThreadEntity> requireOwnedThread(Scope scope, String id) {
         var query =
                 threads.createQuery()
                         .where(PrototypeReviewThreadEntity::getId, id)
@@ -760,7 +856,7 @@ public class PrototypeReviewThreadService {
                 .then(receipts.record(request, row.getId(), scope.revisionId()))
                 .thenReturn(
                         new PrototypeReviewImageService.Stored<>(
-                                response(row), image == null ? null : message.getId()));
+                                response(row, scope), image == null ? null : message.getId()));
     }
 
     private Mono<ReviewMessageResponse> append(
@@ -873,7 +969,7 @@ public class PrototypeReviewThreadService {
 
     private Mono<ReviewThreadResponse> state(
             Scope scope, String id, ReviewThreadStateRequest input) {
-        return requireThread(scope, id)
+        return requireOwnedThread(scope, id)
                 .flatMap(
                         thread -> {
                             var request =
@@ -887,10 +983,8 @@ public class PrototypeReviewThreadService {
                             return receipts.replay(
                                             request,
                                             resource ->
-                                                    requireThread(scope, resource)
-                                                            .map(
-                                                                    PrototypeReviewThreadService
-                                                                            ::response))
+                                                    requireOwnedThread(scope, resource)
+                                                            .map(row -> response(row, scope)))
                                     .switchIfEmpty(
                                             Mono.defer(
                                                     () -> {
@@ -933,7 +1027,8 @@ public class PrototypeReviewThreadService {
                                                                                 request,
                                                                                 id,
                                                                                 scope.revisionId()))
-                                                                .thenReturn(response(thread));
+                                                                .thenReturn(
+                                                                        response(thread, scope));
                                                     }));
                         });
     }
@@ -1114,6 +1209,7 @@ public class PrototypeReviewThreadService {
                                                 .execute()
                                                 .then()))
                 .then(events.createDelete().where(field, id).execute())
+                .then(associations.purge(field, id))
                 .then();
     }
 
@@ -1139,7 +1235,19 @@ public class PrototypeReviewThreadService {
                 .then();
     }
 
-    private static ReviewThreadResponse response(PrototypeReviewThreadEntity row) {
+    static ReviewThreadResponse response(PrototypeReviewThreadEntity row) {
+        return response(row, null, null);
+    }
+
+    private static ReviewThreadResponse response(PrototypeReviewThreadEntity row, Scope scope) {
+        return scope.visitor() ? response(row, scope.actorId(), scope.level()) : response(row);
+    }
+
+    private static ReviewThreadResponse response(
+            PrototypeReviewThreadEntity row, String actor, String level) {
+        boolean own =
+                Objects.equals(actor, row.getGuestId())
+                        && Objects.equals(level, row.getVerificationLevel());
         return new ReviewThreadResponse(
                 row.getId(),
                 row.getRevisionId(),
@@ -1154,7 +1262,9 @@ public class PrototypeReviewThreadService {
                 row.getConfigVersion(),
                 row.getCreateTime(),
                 row.getPublicUpdatedAt(),
-                row.getAnchor());
+                row.getAnchor(),
+                actor == null ? null : own && "resolved".equals(row.getState()),
+                actor == null ? null : own ? "own" : "associated");
     }
 
     private static ReviewMessageResponse response(PrototypeReviewMessageEntity row) {
@@ -1183,7 +1293,7 @@ public class PrototypeReviewThreadService {
                 "PROTOTYPE_HUB_REVIEW_SESSION_REQUIRED");
     }
 
-    private static PrototypeHubException unavailable() {
+    static PrototypeHubException unavailable() {
         return new PrototypeHubException(
                 "error.prototype-hub.review_thread_unavailable",
                 "PROTOTYPE_HUB_REVIEW_THREAD_UNAVAILABLE",
