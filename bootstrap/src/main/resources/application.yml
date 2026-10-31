@@ -95,6 +95,8 @@ management: # 管理端配置
         enabled: true # 是否启用探针
       show-details: never # 是否显示详细信息
 prototype-hub: # PrototypeHub 配置
+  license: # 本地凭证验签；仅部署显式信任的 Ed25519 X509 DER 公钥（Base64），私钥不得放入应用
+    trusted-public-keys: {} # 以 keyId 为键；缺省拒绝任何凭证导入
   review: # 邮箱身份 Cookie 和可信前端配置
     cookie-secure: ${PROTOTYPEHUB_REVIEW_COOKIESECURE:true} # 仅本地 HTTP 测试可设 false
     trusted-origin: ${PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN:} # 如 https://prototype.example.com，留空使用请求 URI 的源
