@@ -67,6 +67,12 @@ public class PrototypeRevisionService
         return require(version, revisionId, false);
     }
 
+    /** 调用入口完成当前READ后显式读取有界清单；仅供固定修订资产操作，不解析current。 */
+    public Mono<PrototypeRevisionEntity> requireManifest(
+            PrototypeVersionEntity version, String revisionId) {
+        return require(version, revisionId, true);
+    }
+
     private Mono<PrototypeRevisionEntity> require(
             PrototypeVersionEntity version, String revisionId, boolean includeManifest) {
         if (version.getCurrentRevisionId() == null || revisionId == null)

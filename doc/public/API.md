@@ -420,3 +420,32 @@ Canonical v1 bytes use compact JSON UTF-8, recursively sort object keys lexicogr
 Accepted records are full replacements. Within the existing license lineage, a newer sequence replaces the previous one, the same sequence and canonical document is idempotent, and older sequences or different content at the same sequence are conflicts. A different lineage is a conflict requiring issuer review. A key rotation therefore requires a newer signed sequence. `issuedAt` and `notBefore` must not be in the future at import. Trial and maintenance dates are declarations for later consumers; this interface does not implement trial activation or terminate permanent runtime capacity on a maintenance date.
 
 The installation request downloaded by the administrator contains only `{schemaVersion:1,installationId,algorithm:"Ed25519",purpose:"prototype-hub-license-request"}`. Query responses never return the original envelope, signature, order ID, statistics signing key or private keys. Existing menus and user homepage selections are retained; the optional `prototype-hub/License` entry uses the independent installation actions.
+
+
+## 固定修订原始图片与 SVG
+
+内部成员使用 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/assets`；所有入口要求当前有效账号、`prototype-hub-version.query` 与当前项目 READ 的交集，修订须真实属于该逻辑版本和项目。列表与导出固定显式修订，不自动切换最新修订；分享 token、guest 或预览凭证不授予此下载权限。
+
+`GET` 参数为 `pageIndex`（默认0，0–10000）、`pageSize`（默认50，1–100）、`search`（最长256字符，忽略大小写的原路径字面包含，`%`/`_` 为普通字符）。结果沿统一 `result` 封装：`{projectId,versionId,revisionId,manifestSha256,pageIndex,pageSize,total,totalBytes,assetCount,assetBytes,data}`；`data` 项为 `{path,size,sha256,mediaType}`，仅包含保存清单中的 `image/*`（包括 SVG），按原始路径 Java 字符串自然顺序排列。`total/totalBytes` 属于筛选集合，`assetCount/assetBytes` 属于完整修订资产集合；不返回存储路径或运行凭证。
+
+三个 POST 子路径 `/_file`、`/_zip`、`/_manifest` 使用相同 JSON：
+
+```json
+{"expectedManifestSha256":"64位小写十六进制SHA256","all":false,"paths":["图片/logo.svg"]}
+```
+
+`paths` 最多20000项，须是清单中的精确、唯一原路径；`all=false` 必须非空，`/_file` 仅接受一个路径。ZIP/JSON 可传 `all=true,paths=[]`，表示该修订的全部资产，与列表 search 无关。POST 成功直接返回附件字节，不使用 JSON 成功封装；原始 SVG 始终 attachment。响应包含 UTF-8 `filename*`、`private, no-store`、`nosniff` 和 `no-referrer`。
+
+ZIP 保留原始相对路径，并附 `META-INF/prototype-assets.json` 对账清单。单独 JSON 及 ZIP 内 JSON 的字段均为 `{formatVersion:1,projectId,versionId,revisionId,manifestSha256,total,totalBytes,files:[{path,size,sha256,mediaType}]}`，集合与本次所选文件一致；哈希来自经实际源字节复核的不可变清单。单文件返回原始字节，ZIP 不改写图片/SVG 内容。
+
+| 状态与错误码 | 含义与恢复 |
+| --- | --- |
+| 400 `ASSET_SELECTION_INVALID` | 空、重复、越界或不属于清单的选择，重新选择 |
+| 409 `ASSET_MANIFEST_CONFLICT` | 预期清单哈希不一致，重新读取该固定修订 |
+| 409 `ASSET_MANIFEST_UNAVAILABLE` | 保存清单缺失或损坏，由管理员核查，不猜测文件集合 |
+| 409 `ASSET_CONTENT_UNAVAILABLE` | 源文件缺失、大小或 SHA256 不一致，核查存储备份后重试 |
+| 413 `ASSET_EXPORT_LIMIT_EXCEEDED` | 超过文件数、输入、输出或 JSON 预算，缩小选择 |
+| 429 `ASSET_EXPORT_BUSY` | 四个导出槽已满，稍后重试 |
+| 401/403/404 | 沿既有身份、通用动作和项目/版本/修订范围语义，不返回部分附件 |
+
+参数格式错误沿既有400校验响应。读取保存清单后，每个所选源文件复制前再次读取当前授权，全部准备完成后再次检查当前账号、动作、项目范围和软删除状态，才发送附件。准备失败不会发送部分成功包；已经发送的字节无法远程收回。
