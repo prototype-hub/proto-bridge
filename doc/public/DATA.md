@@ -95,7 +95,7 @@ python3 tools/generate-menu-resource.py /path/to/exported-menu.json modules/syst
 
 EasyORM 自动同步 `p_installation` 和 `p_creation_receipt`。应用在结构同步后初始化 `p_installation` 的单例记录，首次生成 UUID；后续启动及多个应用副本共用已有身份，不按进程、机器或 IP 重新生成。身份初始化不以存量是否超限作为启动条件，也不删除或改写已有项目、版本。
 
-容量直接统计 `p_project` 与项目下 `p_version` 的活动记录（`deleted_time IS NULL`），不维护独立累计扣额计数器。默认最多 5 个项目、每项目 5 个逻辑版本；删除释放当前占用，同一逻辑版本更新仅增加修订，不新增逻辑版本。项目创建在事务内锁安装记录，版本创建在 ZIP 校验解压完成后通过短事务锁所属项目，再检查活动行数、插入资源及回执；同数据库的应用副本使用同一锁边界。历史超限数据继续保留，只有新增受限。
+容量直接统计 `p_project` 与项目下 `p_version` 的活动记录（`deleted_time IS NULL`），不维护独立累计扣额计数器。默认最多 5 个项目、每项目 5 个逻辑版本；删除释放当前占用，同一逻辑版本更新仅增加修订，不新增逻辑版本。项目创建在事务内锁安装记录，版本创建在 ZIP 校验解压完成后通过短事务依次锁安装记录、所属项目，再检查活动行数、插入资源及回执；同数据库的应用副本使用同一锁边界。历史超限数据继续保留，只有新增受限。
 
 上传或替换的事务最终结果为 `UNKNOWN` 时，系统保留候选目录并记录错误；应先确认数据库中的文件归属再处理目录，不自动按回滚删除文件。
 
@@ -132,7 +132,7 @@ EasyORM 只补齐上述表、字段、索引及描述，**启动时不自动将�
 
 EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示活动，旧记录保持活动，无需批量回填。项目与版本 DELETE 在原项目/版本锁及事务内写入删除时间，保留原 ID、成员谱系、逻辑版本与当前指针、全部修订、公开分享、创建回执及文件；清除内部预览会话，永久撤销并停用保留的分享。查询和计数在数据库侧排除已删除对象及父项目，ADMIN 例外也不开放它们；原始引用/锁/维护查询仍包含保留行。只有活动版本阻止删除项目。删除释放活动占用，不重置安装身份或项目绑定，旧创建键重放仍冲突。
 
-回收站仅在当前恢复范围内查询删除记录，逐项恢复通过类型化 ORM 将 `deleted_time` 置空，保留原 ID 和引用。恢复项目只恢复父项目；恢复版本前必须先恢复其父项目。项目恢复重新取得用户、安装身份、项目锁，版本恢复重新取得用户、项目、版本锁，按当前授权与活动行数重验当前有效容量（缺省 5/5）；失败保持原删除标记。旧内部会话和已撤销分享不会恢复，恢复后需重新申请预览或新建分享。接口、授权范围与冲突码见[回收站 API](API.md#回收站与逐项恢复)。
+回收站仅在当前恢复范围内查询删除记录，逐项恢复通过类型化 ORM 将 `deleted_time` 置空，保留原 ID 和引用。恢复项目只恢复父项目；恢复版本前必须先恢复其父项目。项目恢复重新取得用户、安装身份、项目锁，版本恢复重新取得用户、安装身份、项目、版本锁，按当前授权与活动行数重验当前有效容量（缺省 5/5）；失败保持原删除标记。旧内部会话和已撤销分享不会恢复，恢复后需重新申请预览或新建分享。接口、授权范围与冲突码见[回收站 API](API.md#回收站与逐项恢复)。
 
 项目和版本各自从 `deleted_time` 起保留固定 **30 × 24 小时**，到期条件为 `deleted_time <= 当前服务端时间 - 30 天`。null 表示活动，未来删除时间不提前到期。未满期限可按原权限逐项恢复；到期立即从回收站 COUNT/分页排除，锁内恢复重验期限并返回 404，不以磁盘文件是否仍在判断可恢复性。升级前已经到期的旧墓碑同样进入自动清理范围，不从升级时刻重新计算 30 天。
 
@@ -250,6 +250,10 @@ EasyORM增补`p_share_visit`及`p_installation.statistics_started_at/statistics_
 
 EasyORM additively synchronizes `p_installation.license_document`, `license_id`, `license_sequence`, `license_fingerprint`, `license_accepted_at` and `license_key_id`. All are server-only entity fields; normal entity serialization omits them. The bounded canonical envelope is reverified on each public-provider read against the current trust configuration, installation binding and time. Removed keys make persisted claims untrusted without deleting the accepted sequence or record. No in-memory entitlement cache or second counter is maintained.
 
-Imports use the existing installation row lock inside a reactive transaction, recheck the live administrator, validate the candidate, then replace all accepted fields together. Concurrent copies therefore produce one acceptance and idempotent replays; descending/conflicting sequences cannot overwrite newer records. Existing project/version admission and data are unchanged. Source-code rollback retains these additive fields and the accepted record; never reset the persistent installation ID. The complete installation row must remain in database backups, and the existing installation digest in `tools/snapshot-db.sql` covers these new fields without printing the original envelope.
+Imports use the existing installation row lock inside a reactive transaction, recheck the live administrator, validate the candidate, then replace all accepted fields together. Concurrent copies therefore produce one acceptance and idempotent replays; descending/conflicting sequences cannot overwrite newer records. Project/version admission reads the current enforced capacity under the installation lock; existing resource counts, creation receipts and data are retained, without a separate capacity-debit table. Source-code rollback retains these additive fields and the accepted record; never reset the persistent installation ID. The complete installation row must remain in database backups, and the existing installation digest in `tools/snapshot-db.sql` covers these new fields without printing the original envelope.
 
 A database rollback can also roll back the accepted sequence. Offline verification cannot absolutely prevent cloning, local clock rollback or database rollback. After recovery, compare the installation identity, latest issuer record, accepted sequence and fingerprint before accepting a replacement. Restore does not delete prototypes or disable the basic product.
+
+### 有限容量扩展与安装锁
+
+公共 `PrototypeCapacityPolicy` 是已验签声明到实际容量的同步纯函数，无数据库/文件/远程副作用；缺少扩展时固定使用免费5/5。实际快照包含统一上限及有界的逐项目上限，现有资源COUNT、创建回执和事务仍是占用事实，不新增累计扣额表。凭证替换与新增/恢复采用同一安装锁，再取得项目/版本锁；已有逻辑版本的新修订不消耗新数量。读取状态不缓存凭证，每次按当前信任配置重验。无效凭证或移除扩展保留资源和文件，超限只限制新增占用。

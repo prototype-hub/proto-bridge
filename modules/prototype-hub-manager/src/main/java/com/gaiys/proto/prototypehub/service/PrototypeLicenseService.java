@@ -1,9 +1,9 @@
 package com.gaiys.proto.prototypehub.service;
 
-import com.gaiys.proto.prototypehub.configuration.properties.PrototypeCapacityProperties;
 import com.gaiys.proto.prototypehub.configuration.properties.PrototypeLicenseProperties;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.license.PrototypeCapacityPolicy;
 import com.gaiys.proto.prototypehub.service.license.PrototypeEntitlementProvider;
 import com.gaiys.proto.prototypehub.service.license.PrototypeLicenseVerifier;
 import com.gaiys.proto.prototypehub.service.license.PrototypeLicenseVerifier.Verified;
@@ -15,11 +15,12 @@ import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
 import java.util.List;
 import lombok.RequiredArgsConstructor;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
-/** 安装级全量凭证接收与只读声明；安装行锁协调多副本序列，不更改已有容量准入。 */
+/** 安装级全量凭证接收与只读声明；安装行锁协调多副本序列，将已验声明交给可选纯容量策略。 */
 @Service
 @RequiredArgsConstructor
 public class PrototypeLicenseService implements PrototypeEntitlementProvider {
@@ -27,7 +28,7 @@ public class PrototypeLicenseService implements PrototypeEntitlementProvider {
     private final PrototypeProjectAccessService access;
     private final PrototypeLicenseVerifier verifier;
     private final PrototypeLicenseProperties trust;
-    private final PrototypeCapacityProperties capacity;
+    private final ObjectProvider<PrototypeCapacityPolicy> capacityPolicies;
     private final TransactionalOperator transactions;
     private final ObservationRegistry observations;
 
@@ -132,8 +133,16 @@ public class PrototypeLicenseService implements PrototypeEntitlementProvider {
                 accepted,
                 claims,
                 new FreeEntitlements(5, 5, List.of()),
-                new EnforcedCapacity(
-                        capacity.getProjectLimit(), capacity.getVersionLimit(), "deployment"));
+                resolveCapacity(claims));
+    }
+
+    private EnforcedCapacity resolveCapacity(PrototypeLicenseStatus.VerifiedEntitlements claims) {
+        // 缺商业模块仍独立提供免费容量；多个策略直接配置失败，不任意选择或回退。
+        PrototypeCapacityPolicy policy = capacityPolicies.getIfAvailable();
+        return policy == null
+                ? new EnforcedCapacity(5, 5, "free")
+                : java.util.Objects.requireNonNull(
+                        policy.resolve(claims), "Capacity policy must return a snapshot");
     }
 
     /** 同一规范封套重复导入返回unchanged，状态摘要用于未知结果核对。 */

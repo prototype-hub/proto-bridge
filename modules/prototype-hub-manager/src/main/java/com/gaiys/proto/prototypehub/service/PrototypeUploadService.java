@@ -34,6 +34,7 @@ import reactor.core.publisher.Sinks;
 @AllArgsConstructor
 public class PrototypeUploadService {
     private final PrototypeProjectService projects;
+    private final PrototypeInstallationService installations;
     private final PrototypeVersionService versions;
     private final PrototypeStorageService storage;
     private final SecureZipExtractor extractor;
@@ -245,9 +246,11 @@ public class PrototypeUploadService {
         version.setCurrentRevisionId(PrototypeShareService.random());
         PrototypeRevisionEntity revision =
                 revisions.candidate(version, version.getCurrentRevisionId(), manifest);
-        // 只在解压完成后持项目行锁，回执、实际计数和 INSERT 共用一个短事务及 Spring 连接。
+        // 解压完成后按安装→项目持锁，与换证串行；回执、计数和INSERT共用短事务，不在锁内做文件I/O。
         Mono<PrototypeVersionEntity> creation =
-                access.tryLockProject(project)
+                installations
+                        .lock()
+                        .then(access.tryLockProject(project))
                         .then(projects.findActiveById(project).hasElement())
                         .flatMap(
                                 active ->

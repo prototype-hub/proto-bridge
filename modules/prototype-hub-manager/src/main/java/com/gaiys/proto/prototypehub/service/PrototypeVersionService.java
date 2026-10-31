@@ -1,9 +1,9 @@
 package com.gaiys.proto.prototypehub.service;
 
-import com.gaiys.proto.prototypehub.configuration.properties.PrototypeCapacityProperties;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
+import com.gaiys.proto.prototypehub.service.license.PrototypeEntitlementProvider;
 import com.gaiys.proto.prototypehub.web.response.CapacityUsage;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
@@ -31,7 +31,7 @@ import reactor.core.publisher.Mono;
 public class PrototypeVersionService
         extends GenericReactiveCrudService<PrototypeVersionEntity, String> {
     private final PrototypeProjectService projects;
-    private final PrototypeCapacityProperties capacity;
+    private final PrototypeEntitlementProvider entitlements;
     private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
 
     /** 仅业务可见版本计入额度；清理与备份必须继续使用完整仓储引用。 */
@@ -91,31 +91,48 @@ public class PrototypeVersionService
 
     public Mono<VersionUsageResponse> usage(String project) {
         return projects.requireById(project)
-                .then(activeQuery().where(PrototypeVersionEntity::getProjectId, project).count())
-                .map(
-                        used ->
-                                new VersionUsageResponse(
-                                        project,
-                                        CapacityUsage.from(
-                                                used.longValue(), capacity.getVersionLimit())));
+                .then(entitlements.current())
+                .flatMap(
+                        status ->
+                                activeQuery()
+                                        .where(PrototypeVersionEntity::getProjectId, project)
+                                        .count()
+                                        .map(
+                                                used ->
+                                                        new VersionUsageResponse(
+                                                                project,
+                                                                CapacityUsage.from(
+                                                                        used.longValue(),
+                                                                        status.enforcedCapacity()
+                                                                                .versionLimitFor(
+                                                                                        project)))));
     }
 
-    /** 调用方在项目行锁内检查版本行数；替换已有逻辑版本不经过此创建额度校验。 */
+    /** 调用方按安装→项目锁序持锁后检查版本行数；替换已有逻辑版本不经过此创建额度校验。 */
     public Mono<Void> requireCapacity(String project) {
-        return activeQuery()
-                .where(PrototypeVersionEntity::getProjectId, project)
-                .count()
+        return entitlements
+                .current()
                 .flatMap(
-                        used ->
-                                CapacityUsage.from(used.longValue(), capacity.getVersionLimit())
-                                                .canCreate()
-                                        ? Mono.empty()
-                                        : Mono.error(
-                                                new PrototypeHubException(
-                                                        "error.prototype-hub.version_limit_reached",
-                                                        "PROTOTYPE_HUB_VERSION_LIMIT_REACHED",
-                                                        409,
-                                                        capacity.getVersionLimit())));
+                        status ->
+                                activeQuery()
+                                        .where(PrototypeVersionEntity::getProjectId, project)
+                                        .count()
+                                        .flatMap(
+                                                used -> {
+                                                    int limit =
+                                                            status.enforcedCapacity()
+                                                                    .versionLimitFor(project);
+                                                    return CapacityUsage.from(
+                                                                            used.longValue(), limit)
+                                                                    .canCreate()
+                                                            ? Mono.empty()
+                                                            : Mono.error(
+                                                                    new PrototypeHubException(
+                                                                            "error.prototype-hub.version_limit_reached",
+                                                                            "PROTOTYPE_HUB_VERSION_LIMIT_REACHED",
+                                                                            409,
+                                                                            limit));
+                                                }));
     }
 
     public Flux<PrototypeVersionEntity> findAll(String project) {

@@ -141,6 +141,7 @@ public class PrototypeDeletionService {
                                         .flatMap(
                                                 found ->
                                                         access.lockActiveUsers(actor.userId())
+                                                                .then(installations.lock())
                                                                 .then(
                                                                         access.lockProject(
                                                                                 found

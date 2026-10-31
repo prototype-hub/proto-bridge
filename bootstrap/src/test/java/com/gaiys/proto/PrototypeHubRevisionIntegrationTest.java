@@ -1482,6 +1482,7 @@ class PrototypeHubRevisionIntegrationTest {
         var service =
                 new PrototypeUploadService(
                         projects,
+                        installations,
                         versions,
                         observedStorage,
                         gatedExtractor,
@@ -1574,6 +1575,7 @@ class PrototypeHubRevisionIntegrationTest {
         var service =
                 new PrototypeUploadService(
                         projects,
+                        installations,
                         versions,
                         observedStorage,
                         extractor,
@@ -1643,6 +1645,7 @@ class PrototypeHubRevisionIntegrationTest {
         var service =
                 new PrototypeUploadService(
                         projects,
+                        installations,
                         versions,
                         observedStorage,
                         extractor,
@@ -1771,6 +1774,7 @@ class PrototypeHubRevisionIntegrationTest {
         var service =
                 new PrototypeUploadService(
                         projects,
+                        installations,
                         versions,
                         failingStorage,
                         extractor,
