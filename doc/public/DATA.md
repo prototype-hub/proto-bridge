@@ -274,3 +274,11 @@ EasyORM加法创建 `p_review_association`，不回填或改写原访客、线�
 授权和撤销在项目→版本锁下复验当前账号、项目范围、代次与CAS，关联操作回执与审计同事务。公开写入/附图最终落库和撤销使用相同锁顺序；撤销先提交后不能再提交新的关联回复或重放。历史作者、已提交回复及图片不因撤销改写或删除，回复作者保留实际目标邮箱访客。
 
 整库备份必须包含新表及相关 `p_creation_receipt`，与原评审数据和文件保持同窗口；新增表不改变v3文件引用格式。软删阻断访问并保留审计，只有授权的项目/版本永久清理才有界删除该范围的关联与创建/撤销回执，不误删其他项目。此保留期不随八小时访客或30天事件清理缩短。
+
+## 固定页文案清单数据
+
+EasyORM增量创建 `p_copy_snapshot` 与 `p_copy_entry`，不回填旧版本、不存HTML、不修改原型文件或revision。快照唯一绑定project/version/revision/page，保存规范相对路径、manifest及页面文件摘要、提取规则版本、READY/EMPTY/LIMIT_EXCEEDED与原因、完整静态计数、整页configVersion和提取时间。首次提取（包括空及预算失败）后不可重建或覆盖；新规则不自动迁移已有快照。
+
+条目保存完整同scope及snapshotId、kind（0静态/1人工）、sourceOrder、text、businessTerm、note、requirementUrl、完整occurrencesJson/次数、条目CAS版本及创建/更新时间。text和occurrencesJson映射PostgreSQL TEXT（LONGVARCHAR），不经JSON codec重复编码或截断；全部静态去重文字UTF16总量限2Mi，保留完整出现处。索引沿snapshot/kind/sourceOrder/createdAt/id稳定排序，另有version清理索引。静态id由固定快照及规范化文字摘要确定，人工id由持久请求身份确定；不保存原始请求键。
+
+条目修改、整页版本递增及 `p_creation_receipt` 同事务，账号→项目→版本锁序重验当前权限。预算失败快照与回执先提交再返回422；没有部分静态条目。软删保留文案并阻断读取，永久版本/项目清理按范围先删除条目、再快照及版本回执，不能随普通会话过期清理。联合备份需包括这两表、原revision/文件与回执；应用回滚保留新表和人工数据，不自动删表。
