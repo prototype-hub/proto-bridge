@@ -9,6 +9,7 @@ environments and private temporary files; reports contain only bounded evidence.
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from http.cookies import SimpleCookie
 import hashlib
 import json
@@ -39,8 +40,11 @@ FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
 REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
-TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session', 'p_version', 'p_revision', 'p_work_item', 'p_share',
-          *REVIEW_TABLES, 'p_creation_receipt', 'p_file_cleanup', 's_user', 's_dimension', 's_dimension_user',
+BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
+                   'p_version', 'p_revision', 'p_work_item', 'p_share', *REVIEW_TABLES,
+                   'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
+                   'p_creation_receipt', 'p_file_cleanup')
+TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
           's_autz_setting_info', 's_permission', 's_menu', 's_role_menu_grant',
           's_user_detail', 's_system_config')
 FRONTEND_GLOBAL_TIMEOUT_MS = 300000
@@ -69,9 +73,17 @@ def review_manifest(manifest):
     return result
 
 
-def compare_review_rows(before, after, now):
-    """Only an already-expired row may disappear after startup; no row may be rewritten."""
+def registered_review_expiry(rows, now):
+    """Register exact disposable row identities before starting a cleanup process."""
+    return {table: {identity for identity, row in values.items()
+                    if type(row['deadline']) is int and row['deadline'] <= now}
+            for table, values in rows.items()}
+
+
+def compare_review_rows(before, after, now, allowed_removed=None):
+    """Only registered, already-expired rows may disappear; nothing may be rewritten."""
     removed = {}
+    allowed_removed = allowed_removed or {}
     require(set(before) == set(after) == set(REVIEW_TABLES), 'Review row snapshot omitted a table')
     for table in REVIEW_TABLES:
         require(not (after[table].keys() - before[table].keys()),
@@ -79,12 +91,30 @@ def compare_review_rows(before, after, now):
         for identity, row in before[table].items():
             current = after[table].get(identity)
             if current is None:
-                require(type(row['deadline']) is int and row['deadline'] <= now,
-                        'An unexpired review row disappeared: ' + table)
+                require(identity in allowed_removed.get(table, set()) and
+                        type(row['deadline']) is int and row['deadline'] <= now,
+                        'An unregistered or unexpired review row disappeared: ' + table)
             else:
                 require(current == row, 'A read or startup changed a review row: ' + table)
         removed[table] = len(before[table]) - len(after[table])
     return removed
+
+
+def current_manifest(manifest):
+    require({table for table in manifest if table.startswith('p_')} == set(BUSINESS_TABLES),
+            'Current business table coverage differs from the required 23 tables')
+    for table in BUSINESS_TABLES:
+        row = manifest[table]
+        require(type(row.get('count')) is int and row['count'] > 0 and
+                re.fullmatch('[0-9a-f]{32}', row.get('contentMd5', '')) is not None,
+                'Current backup fixture is empty or has no checksum: ' + table)
+    return manifest
+
+
+def compare_database_rows(before, after):
+    require(set(before) == set(after) == set(TABLES), 'Restored row snapshot omitted a required table')
+    for table in TABLES:
+        require(before[table] == after[table], 'Restored row identities or full content differ: ' + table)
 
 
 def free_port():
@@ -216,7 +246,8 @@ class Api:
             for key, item in value.items():
                 if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken',
                            'invitationToken', 'email', 'displayName', 'company', 'text', 'summary',
-                           'authorName', 'authorCompany') and item:
+                           'authorName', 'authorCompany', 'visitTicket', 'clientRequestId',
+                           'businessTerm', 'note', 'requirementUrl', 'evidenceReference') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
         elif isinstance(value, list):
@@ -324,6 +355,9 @@ class RuntimeCheck:
                             input_data=sql.encode()).decode().strip()
 
     def database_manifest(self, database):
+        actual = set(self.sql(database, "select tablename from pg_tables where schemaname=current_schema() "
+                              "and left(tablename,2)='p_' order by tablename;").splitlines())
+        require(actual == set(BUSINESS_TABLES), 'Current database business tables are missing or unreviewed')
         result = {}
         for table in TABLES:
             result[table] = json.loads(self.sql(database,
@@ -331,6 +365,11 @@ class RuntimeCheck:
                 "md5(coalesce(jsonb_agg(to_jsonb(row_data) order by id)::text, '[]'))) "
                 'from ' + table + ' row_data;'))
         return result
+
+    def database_rows(self, database):
+        return {table: json.loads(self.sql(database,
+                "select coalesce(jsonb_object_agg(id, md5(to_jsonb(r)::text)), '{}'::jsonb) from " +
+                table + ' r;')) for table in TABLES}
 
     def review_rows(self, database):
         result = {}
@@ -858,8 +897,13 @@ class RuntimeCheck:
             operations.append({'public': public, 'method': method, 'path': path,
                                'payload': value, 'id': result['id'], 'image': image})
             return result
+        anchor = {'space': 'root-document-css-px-v1', 'shape': 'rect', 'x': 10, 'y': 20,
+                  'width': 40, 'height': 30, 'documentWidth': 1200, 'documentHeight': 1600,
+                  'viewportWidth': 1000, 'viewportHeight': 800}
         thread = write(True, 'POST', 'threads',
-                       {'pageId': page['pageId'], 'text': 'Original runtime visitor discussion'})
+                       {'pageId': page['pageId'], 'text': 'Original runtime visitor discussion',
+                        'anchor': anchor})
+        require(thread.get('anchor') == anchor, 'Review fixture lost its nonempty anchor')
         require(thread['pageId'] == page['pageId'] and thread['pagePath'] == page['path'] and
                 thread['revisionId'] == grant['revisionId'], 'Thread did not bind its immutable page')
         identifier = thread['id']
@@ -909,7 +953,9 @@ class RuntimeCheck:
         messages_path = 'threads/' + identifier + '/messages/_query'
         threads, _ = self.review_call(api, fixture['grant'], 'threads/_query', public_base,
             cookie=visitor['cookie'], csrf=context['csrfToken'])
-        require(threads['total'] == 1 and threads['data'] == [discussion['thread']],
+        expected_thread = dict(discussion['thread'], canReopen=discussion['thread'].get('state') == 'resolved',
+                               accessMode='own')
+        require(threads['total'] == 1 and threads['data'] == [expected_thread],
                 'Restored visitor page threads differ')
         public, _ = self.review_call(api, fixture['grant'], messages_path, public_base,
             cookie=visitor['cookie'], csrf=context['csrfToken'])
@@ -967,8 +1013,11 @@ class RuntimeCheck:
         if discussion.get('images'):
             events += ['message.created', 'note.created']
             self.verify_review_images(api, fixture, database, context)
+        if discussion.get('assignment'):
+            events += ['thread.assigned']
         require(actual == {'messages': len(discussion['messages']), 'events': sorted(events),
-                'receipts': len(discussion['messages']) + 1, 'receiptHash': receipt_hash, 'bound': True},
+                'receipts': len(discussion['messages']) + 1 + bool(discussion.get('assignment')),
+                'receiptHash': receipt_hash, 'bound': True},
                 'Review messages, atomic events or receipts differ')
         return actual
 
@@ -1667,6 +1716,336 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             hashes[label] = hashlib.sha256(content).hexdigest()
         return hashes
 
+    def create_current_graph(self, api, project, version, current, member, review):
+        """Establish durable current-version rows through the existing product APIs."""
+        fixture = {'project': project, 'version': version, 'current': current,
+                   'member': member, 'review': review}
+        discussion = review['discussion']
+        base = discussion['base']
+        path = '/api/prototype-hub/versions/' + version['id'] + '/work-items'
+        payload = dict(base, url='https://example.invalid/restore-work-item',
+                       note='Original private work item', clientRequestId=uuid.uuid4().hex)
+        fixture['workItem'] = {'path': path, 'payload': payload,
+                               'row': api.request('POST', path, payload)}
+        owner = self.sql('runtime_source', "select owner_id from p_project where id=:'project';",
+                         variables={'project': project['id']})
+        path = discussion['memberPath'] + '/' + discussion['thread']['id'] + '/assignment'
+        payload = dict(base, assigneeId=owner, expectedVersion=0, clientRequestId=uuid.uuid4().hex)
+        fixture['assignment'] = {'path': path, 'payload': payload,
+                                 'row': api.request('PUT', path, payload)}
+        require(fixture['assignment']['row']['assignee']['userId'] == owner,
+                'Current fixture has no actual assignment')
+        discussion['assignment'] = fixture['assignment']
+        discussion.pop('receiptHash', None)
+
+        path = '/api/prototype-hub/projects/' + project['id'] + '/review-associations'
+        target = review['invitations']['consumed']['identity']
+        context, cookie = self.review_call(api, review['grant'], 'context', {})
+        context, cookie = self.review_call(api, review['grant'], 'unverified',
+            {'displayName': 'Expiring association source'}, cookie=cookie, csrf=context['csrfToken'])
+        source_guest = context['session']['guestId']
+        source, _ = self.review_call(api, review['grant'], 'threads',
+            {'pageId': base['pageId'], 'text': 'Original revoked association source',
+             'clientRequestId': uuid.uuid4().hex}, cookie=cookie, csrf=context['csrfToken'])
+        operations = []
+        def associate(thread):
+            context = api.request('POST', path + '/_detail', {'sourceThreadId': thread['id']})
+            payload = {'sourceThreadId': thread['id'], 'targetGuestId': target['guestId'],
+                       'expectedShareVersion': context['shareConfigVersion'],
+                       'expectedTargetVersion': 0, 'evidenceReference': 'Original local verification record',
+                       'clientRequestId': uuid.uuid4().hex}
+            row = api.request('POST', path, payload)
+            operations.append(('POST', path, payload, row['id']))
+            return row
+        revoked = associate(source)
+        payload = {'expectedVersion': revoked['configVersion'], 'reason': 'Original explicit revocation',
+                   'clientRequestId': uuid.uuid4().hex}
+        revoked = api.request('PUT', path + '/' + revoked['id'] + '/revoke', payload)
+        operations.append(('PUT', path + '/' + revoked['id'] + '/revoke', payload, revoked['id']))
+        active = associate(discussion['thread'])
+        require(active['status'] == 'active' and revoked['status'] == 'revoked',
+                'Current fixture did not establish both association states')
+        fixture['associations'] = {'path': path, 'target': target, 'active': active, 'revoked': revoked,
+                                   'operations': operations, 'expiredSourceGuestId': source_guest,
+                                   'expiredSourceThread': source}
+
+        copy_project = api.project('Runtime copy restore project')
+        archive = self.workspace / 'current-copy.zip'
+        with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as package:
+            package.writestr('index.html', '<!doctype html><html><body><p>Original copy fixture</p></body></html>')
+            package.writestr('empty.html', '<!doctype html><html><body><script>dynamicOnly()</script></body></html>')
+            package.writestr('limit.html', '<!doctype html><html><body>' +
+                             ''.join('<p>Budget text ' + str(i) + '</p>' for i in range(2001)) + '</body></html>')
+        copy_version = api.upload(copy_project['id'], archive, uuid.uuid4().hex)
+        fixture.update(copyProject=copy_project, copyVersion=copy_version)
+        self.report['sample']['copyZipSha256'] = digest_file(archive)
+        fixture['copy'] = []
+        for item, page_path, state in ((version, 'index.html', 'READY'),
+                                       (copy_version, 'empty.html', 'EMPTY'),
+                                       (copy_version, 'limit.html', 'LIMIT_EXCEEDED')):
+            page_id = hashlib.sha256(page_path.encode()).hexdigest()
+            path = ('/api/prototype-hub/versions/' + item['id'] + '/revisions/' + item['revisionId'] +
+                    '/pages/' + page_id + '/copy-inventory')
+            extract = {'clientRequestId': uuid.uuid4().hex}
+            api.request('POST', path + '/_extract', extract, expected=422 if state == 'LIMIT_EXCEEDED' else 200)
+            context = api.request('GET', path)
+            require(context['extractionState'] == state, 'Current copy extraction state differs')
+            payload = {'text': '=Original manual copy\nSecond line', 'businessTerm': 'Original business term',
+                       'note': 'Original manual note', 'requirementUrl': 'https://example.invalid/requirement',
+                       'clientRequestId': uuid.uuid4().hex}
+            saved = api.request('POST', path + '/entries', payload)
+            operations = [('POST', path + '/entries', payload, saved['entry']['id'])]
+            page = api.request('POST', path + '/entries/_query', {'pageSize': 100})
+            static = next((row for row in page['data'] if row['kind'] == 'STATIC'), None)
+            if state == 'READY':
+                require(static is not None, 'Current copy fixture has no static text')
+                update = {'businessTerm': 'Literal %_ term', 'note': 'Original static annotation',
+                          'expectedVersion': static['configVersion'], 'clientRequestId': uuid.uuid4().hex}
+                saved = api.request('PUT', path + '/entries/' + static['id'], update)
+                operations.append(('PUT', path + '/entries/' + static['id'], update, saved['entry']['id']))
+            else:
+                require(static is None and context['staticCount'] == 0,
+                        'Empty or limited extraction persisted a partial static set')
+            fixture['copy'].append({'path': path, 'extract': extract, 'state': state,
+                                     'context': api.request('GET', path),
+                                     'entries': api.request('POST', path + '/entries/_query', {'pageSize': 100}),
+                                     'operations': operations})
+
+        grant = review['grant']
+        tickets = []
+        for _ in range(3):
+            fresh = Api(api.origin, self.secrets_seen).request(
+                'GET', '/api/prototype-hub/public/shares/' + grant['token'])
+            tickets.append(fresh['visitTicket'])
+        visit_path = ('/api/prototype-hub/public/shares/' + grant['token'] + '/' + grant['accessKey'] +
+                      '/revisions/' + grant['revisionId'] + '/visits')
+        headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
+        anonymous = Api(api.origin, self.secrets_seen)
+        for ticket in tickets:
+            anonymous.request('POST', visit_path, {'ticket': ticket}, headers=headers)
+        rows = self.sql('runtime_source', 'select id from p_share_visit order by received_at,id;').splitlines()
+        require(len(rows) == 3, 'Current fixture did not record exactly three initial visits')
+        fixture['visits'] = {'path': visit_path, 'grant': grant, 'recentTicket': tickets[2],
+                              'oldId': rows[0], 'oldRestoreId': rows[1], 'recentId': rows[2]}
+        self.current_restore_fixture = fixture
+        return fixture
+
+    def verify_current_graph(self, api, fixture, database):
+        """Recheck the same persisted fixture on source, restart, replica and restored roots."""
+        work = fixture['workItem']
+        require(api.request('POST', work['path'], work['payload']) == work['row'],
+                'Work item receipt replay changed identity or metadata')
+        require(api.request('POST', work['path'] + '/_query', fixture['review']['discussion']['base'])['data'] ==
+                [work['row']], 'Restored work item lost its fixed page scope')
+        assigned = fixture['assignment']
+        require(api.request('PUT', assigned['path'], assigned['payload']) == assigned['row'],
+                'Assignment receipt replay changed its independent version or owner')
+        association = fixture['associations']
+        for method, path, payload, identity in association['operations']:
+            row = api.request(method, path, payload)
+            original = association['active'] if identity == association['active']['id'] else association['revoked']
+            require(row == original, 'Association receipt replay rewrote an active or revoked audit')
+        target = association['target']
+        context = self.verify_review_identity(api, target)
+        base = {'pageId': fixture['review']['discussion']['base']['pageId']}
+        visible, _ = self.review_call(api, target['grant'], 'threads/_query', base,
+                                     cookie=target['cookie'], csrf=context['csrfToken'])
+        ids = {row['id'] for row in visible['data']}
+        require(association['active']['sourceThreadId'] in ids and
+                association['revoked']['sourceThreadId'] not in ids,
+                'Restored association granted a revoked source or hid the active source')
+        self.review_call(api, target['grant'], 'threads/' + association['revoked']['sourceThreadId'] +
+                         '/messages/_query', base, cookie=target['cookie'], csrf=context['csrfToken'], expected=404)
+        for item in fixture['copy']:
+            path = item['path']
+            require(api.request('GET', path) == item['context'] and
+                    api.request('POST', path + '/entries/_query', {'pageSize': 100}) == item['entries'],
+                    'Restored copy snapshot, manual data, occurrence set or CAS differs')
+            api.request('POST', path + '/_extract', item['extract'],
+                        expected=422 if item['state'] == 'LIMIT_EXCEEDED' else 200)
+            for method, endpoint, payload, identity in item['operations']:
+                saved = api.request(method, endpoint, payload)
+                require(saved['entry']['id'] == identity, 'Copy receipt replay created a new entry')
+            require(api.request('GET', path) == item['context'], 'Copy replay advanced its inventory version')
+            exported, _ = api.request('POST', path + '/_export',
+                {'format': 'json', 'expectedVersion': item['context']['configVersion']}, raw=True)
+            require(json.loads(exported)['entries'] == item['entries']['data'],
+                    'Restored full copy export changed its stored text or source set')
+        viewer = Api(api.origin, self.secrets_seen)
+        viewer.login(fixture['member']['username'], self.member_password)
+        copy = fixture['copy'][0]
+        require(viewer.request('GET', copy['path']) == copy['context'], 'Restored READ member cannot read copy')
+        viewer.request('POST', copy['path'] + '/_extract', copy['extract'], expected=403)
+        Api(api.origin, self.secrets_seen).request('GET', copy['path'], expected=401)
+        # A valid but foreign revision must never fall back to the logical current revision.
+        foreign = copy['path'].replace('/revisions/' + fixture['version']['revisionId'] + '/',
+                                       '/revisions/' + fixture['copyVersion']['revisionId'] + '/')
+        api.request('GET', foreign, expected=404)
+        visits = fixture['visits']
+        before = self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) "
+                          'from p_share_visit v;')
+        anonymous = Api(api.origin, self.secrets_seen)
+        headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
+        anonymous.request('POST', visits['path'], {'ticket': visits['recentTicket']}, headers=headers)
+        require(self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) "
+                         'from p_share_visit v;') == before, 'A restored visit ticket was counted twice')
+        stats = api.request('GET', '/api/prototype-hub/statistics?days=30')
+        expected = int(self.sql(database, "select count(*) from p_share_visit v join p_project p on p.id=v.project_id "
+                                "join p_version n on n.id=v.version_id where p.deleted_time is null "
+                                "and n.deleted_time is null and v.visit_day between :'first' and :'last';",
+                                variables={'first': stats['fromDate'], 'last': stats['toDate']}))
+        require(stats['visits'] == expected and sum(row['visits'] or 0 for row in stats['trend']) == expected,
+                'Restored statistics differ from current database events')
+        self.report['currentGraph'] = {'businessTables': len(BUSINESS_TABLES),
+            'nonemptyWorkItemAnchorAssignment': True, 'activeAndRevokedAssociationsPreserved': True,
+            'fixedCopyStates': [item['state'] for item in fixture['copy']],
+            'staticManualOccurrencesAndReceiptsPreserved': True, 'readWriteAndForeignScopeChecked': True,
+            'recentVisitReplayDoesNotInsert': True, 'statisticsMatchDatabase': True}
+
+    def expire_current_rows(self, database, fixture, *, restoring=False):
+        require(not self.processes, 'Cannot age current fixture while an owned writer is running')
+        cutoff = int(time.time() * 1000) - 60000
+        old_day = (datetime.now(timezone(timedelta(hours=8))).date() - timedelta(days=35)).isoformat()
+        retained_old_day = (datetime.now(timezone(timedelta(hours=8))).date() - timedelta(days=31)).isoformat()
+        self.sql(database, """
+UPDATE p_share_visit SET visit_day=:'old_day' WHERE id=:'visit';
+UPDATE p_review_unverified_guest SET expires_at=:'cutoff'::bigint WHERE id=:'guest';
+UPDATE p_review_session SET expires_at=:'cutoff'::bigint WHERE guest_id=:'guest';
+UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'thread';
+""", variables={'old_day': old_day, 'visit': fixture['visits']['oldRestoreId' if restoring else 'oldId'],
+                    'cutoff': str(cutoff), 'guest': fixture['associations']['expiredSourceGuestId'],
+                    'thread': fixture['associations']['revoked']['sourceThreadId'],
+                    'event_time': str(cutoff - RETENTION_MILLISECONDS)})
+        if not restoring:
+            self.sql(database, "UPDATE p_share_visit SET visit_day=:'day' WHERE id=:'visit';",
+                     variables={'day': retained_old_day, 'visit': fixture['visits']['oldRestoreId']})
+
+    def sql_script(self, database, name, mutation='', variables=None):
+        require(name in ('preflight-db.sql', 'snapshot-db.sql', 'export-storage-manifest.sql'),
+                'Unknown verification SQL script')
+        tools = Path(__file__).resolve().parent
+        source = (tools / name).read_text().replace('\\ir prototype-hub-table-names.sql',
+                                                   (tools / 'prototype-hub-table-names.sql').read_text())
+        return self.sql(database, 'BEGIN;\n' + mutation + '\n' + source + '\nROLLBACK;', variables=variables)
+
+    def verify_sql_diagnostics(self, database, fixture):
+        require(not self.processes, 'SQL mutation checks require stopped owned writers')
+        clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
+        require(clean['integrityErrors'] == 0 and clean['referencesComplete'],
+                'Valid current receipt or resource scope was rejected by storage diagnostics')
+        require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
+                'Valid thread, message or association receipt was rejected by preflight')
+        before = self.sql_script(database, 'snapshot-db.sql')
+        require(any(line.startswith('business_table_coverage|23|') for line in before.splitlines()),
+                'Operational snapshot omitted current business tables')
+        variables = {'association': fixture['associations']['active']['id'],
+                     'foreign_project': fixture['copyProject']['id'],
+                     'foreign_revision': fixture['copyVersion']['revisionId'],
+                     'snapshot': fixture['copy'][0]['context']['snapshotId'],
+                     'empty_snapshot': fixture['copy'][1]['context']['snapshotId'],
+                     'entry': fixture['copy'][0]['entries']['data'][0]['id'],
+                     'recent': fixture['visits']['recentId'],
+                     'target': fixture['associations']['active']['targetGuestId'],
+                     'thread': fixture['review']['discussion']['thread']['id'],
+                     'message': next(operation['id'] for operation in fixture['review']['discussion']['operations']
+                                     if operation['method'] == 'POST' and operation['path'].endswith('/messages'))}
+        valid_invalidation = "UPDATE p_review_guest SET enabled=false,config_version=coalesce(config_version,0)+1 WHERE id=:'target';"
+        require(json.loads(self.sql_script(database, 'export-storage-manifest.sql', valid_invalidation, variables))[
+                'integrityErrors'] == 0 and 'current_scope_errors|0' in self.sql_script(
+                    database, 'preflight-db.sql', valid_invalidation, variables).splitlines(),
+                'Diagnostics confused legitimate audit invalidation with broken ownership')
+        mutations = (
+            "UPDATE p_review_association SET target_guest_id='missing-fixture-guest' WHERE id=:'association';",
+            "UPDATE p_review_guest SET project_id=:'foreign_project' WHERE id=:'target';",
+            "UPDATE p_creation_receipt SET revision_id=:'foreign_revision' WHERE resource_id=:'thread';",
+            "UPDATE p_creation_receipt SET revision_id=:'foreign_revision' WHERE resource_id=:'message';",
+            "UPDATE p_review_association SET project_id=:'foreign_project' WHERE id=:'association';",
+            "UPDATE p_review_association SET revision_id=:'foreign_revision' WHERE id=:'association';",
+            "UPDATE p_creation_receipt SET revision_id=:'foreign_revision' WHERE resource_id=:'association';",
+            "UPDATE p_share_visit SET project_id=:'foreign_project' WHERE id=:'recent';",
+            "UPDATE p_share_visit SET revision_id=:'foreign_revision' WHERE id=:'recent';",
+            "UPDATE p_copy_snapshot SET file_sha256=repeat('f',64) WHERE id=:'snapshot';",
+            "UPDATE p_copy_snapshot SET page_path='missing.html',page_id=encode(sha256(convert_to('missing.html','UTF8')),'hex') WHERE id=:'empty_snapshot'; UPDATE p_copy_entry SET page_id=encode(sha256(convert_to('missing.html','UTF8')),'hex') WHERE snapshot_id=:'empty_snapshot';",
+            "UPDATE p_copy_snapshot SET revision_id=:'foreign_revision' WHERE id=:'snapshot';",
+            "UPDATE p_copy_entry SET page_id=repeat('f',64) WHERE id=:'entry';",
+            "UPDATE p_copy_entry SET project_id=:'foreign_project' WHERE id=:'entry';")
+        for index, mutation in enumerate(mutations, 1):
+            case = 'SQL negative case ' + str(index)
+            require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
+                    case + ' did not change a persisted fixture row')
+            require(json.loads(self.sql_script(database, 'export-storage-manifest.sql', mutation, variables))[
+                    'integrityErrors'] > 0, case + ': storage diagnostics accepted a cross-scope mutation')
+            lines = self.sql_script(database, 'preflight-db.sql', mutation, variables).splitlines()
+            require(any(line.startswith('current_scope_errors|') and line != 'current_scope_errors|0'
+                        for line in lines), case + ': preflight accepted a cross-scope mutation')
+        changed = self.sql_script(database, 'snapshot-db.sql',
+            "UPDATE p_creation_receipt SET fingerprint=repeat('0',64) WHERE resource_id=:'association';", variables)
+        require(changed != before, 'Operational snapshot omitted complete receipt content')
+        require(self.sql_script(database, 'snapshot-db.sql') == before,
+                'Diagnostic mutation escaped its rollback transaction')
+        self.report['operationalSql'] = {'positiveCurrentGraph': True,
+            'crossScopeNegativeCases': len(mutations), 'fullReceiptChangeDetected': True,
+            'invalidatedAuditStillValidGraph': True, 'rolledBackWithoutChangingSource': True}
+
+    def verify_restored_current_writes(self, api, fixture, database):
+        """Exercise new associated writes only after the source/restored UI comparison."""
+        association, discussion = fixture['associations'], fixture['review']['discussion']
+        target = association['target']
+        context = self.verify_review_identity(api, target)
+        thread = discussion['thread']
+        path = 'threads/' + thread['id'] + '/messages'
+        payload = {'pageId': discussion['base']['pageId'], 'text': 'Original restored associated reply',
+                   'clientRequestId': uuid.uuid4().hex}
+        saved, _ = self.review_call(api, target['grant'], path, payload,
+                                   cookie=target['cookie'], csrf=context['csrfToken'])
+        require(saved['threadId'] == thread['id'] and saved['authorType'] == 'guest' and
+                saved['verificationLevel'] == 'email' and saved['visibility'] == 'public' and
+                saved['authorName'] == target['identity']['displayName'],
+                'Restored associated reply lost its actual target author or public scope')
+        replay, _ = self.review_call(api, target['grant'], path, payload,
+                                    cookie=target['cookie'], csrf=context['csrfToken'])
+        require(replay == saved, 'Restored associated reply replay created a second message')
+        for grant, identity, status in ((target['grant'], association['revoked']['sourceThreadId'], 404),
+                (dict(target['grant'], revisionId=fixture['copyVersion']['revisionId']), thread['id'], 403)):
+            self.review_call(api, grant, 'threads/' + identity + '/messages',
+                             dict(payload, clientRequestId=uuid.uuid4().hex), cookie=target['cookie'],
+                             csrf=context['csrfToken'], expected=status)
+        public, _ = self.review_call(api, target['grant'], path + '/_query',
+            {'pageId': discussion['base']['pageId']}, cookie=target['cookie'], csrf=context['csrfToken'])
+        expected = [row for row in discussion['messages'] if row['visibility'] == 'public'] + [saved]
+        require(public['total'] == len(expected) and public['data'] == expected and
+                all(row['visibility'] == 'public' for row in public['data']),
+                'Associated reply disclosed an internal message or changed the original public history')
+        rows = api.request('POST', discussion['memberPath'] + '/_query', discussion['base'])['data']
+        current = next(row for row in rows if row['id'] == thread['id'])
+        require({key: value for key, value in current.items() if key != 'updatedAt'} ==
+                {key: value for key, value in thread.items() if key != 'updatedAt'},
+                'Associated reply rewrote the original author, anchor or fixed thread identity')
+        require(self.sql(database, "select count(*) from p_review_message where thread_id=:'thread';",
+                         variables={'thread': thread['id']}) == str(len(discussion['messages']) + 1),
+                'Associated write, denied scope or receipt replay inserted unexpected messages')
+        self.report['restoredAssociatedWrite'] = {'targetAuthorPreserved': True,
+            'originalAuthorAndAnchorPreserved': True, 'replayCreatedOneMessage': True,
+            'revokedAndForeignRevisionDenied': True, 'internalMessagesRemainHidden': True}
+
+    def verify_current_retention(self, database, fixture, before, allowed):
+        deadline = time.monotonic() + 30
+        while True:
+            remaining = int(self.sql(database,
+                "select (select count(*) from p_share_visit where id in (:'old',:'restore') "
+                "and visit_day < :'cutoff') + (select count(*) from p_review_unverified_guest where id=:'guest');",
+                variables={'old': fixture['visits']['oldId'], 'restore': fixture['visits']['oldRestoreId'],
+                           'cutoff': (datetime.now(timezone(timedelta(hours=8))).date() - timedelta(days=34)).isoformat(),
+                           'guest': fixture['associations']['expiredSourceGuestId']}))
+            if remaining == 0:
+                break
+            require(time.monotonic() < deadline, 'Registered current expiry fixtures did not drain')
+            time.sleep(0.25)
+        compare_review_rows(before, self.review_rows(database), int(time.time() * 1000), allowed)
+        require(self.sql(database, "select count(*) from p_share_visit where id=:'recent';",
+                         variables={'recent': fixture['visits']['recentId']}) == '1',
+                'Retention removed the current recent visit')
+
     def execute(self):
         self.ui_port = free_port() if self.args.frontend_dir else None
         self.mailbox = LocalMailbox(self.workspace / 'review-mailbox.json', self.secrets_seen)
@@ -1714,6 +2093,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             following_share = api.request('POST', '/api/prototype-hub/versions/' + version['id'] +
                                           '/shares', {'revisionMode': 'latest'})
             review = self.create_review_identity(api, version)
+            current_graph = self.create_current_graph(api, project, version, current, member, review)
+            self.verify_current_graph(api, current_graph, 'runtime_source')
             deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
             self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
             recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
@@ -1724,6 +2105,9 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         with self.phase('full-process-restart'):
             self.stop(process)
             self.expire_fixture('runtime_source', expired)
+            self.expire_current_rows('runtime_source', current_graph)
+            review_state = self.review_rows('runtime_source')
+            allowed_expiry = registered_review_expiry(review_state, int(time.time() * 1000))
             pending_restart = self.seed_pending_cleanup('runtime_source', storage, expired)
             restart_files = storage_manifest(storage)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
@@ -1753,8 +2137,9 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share_policy(api, following_share, expected_preview=current_hashes)
             self.verify_review_fixtures(api, review, 'runtime_source')
             current_review = self.review_rows('runtime_source')
-            compare_review_rows(review_state, current_review, int(time.time() * 1000))
-            review_state = current_review
+            self.verify_current_retention('runtime_source', current_graph, review_state, allowed_expiry)
+            self.verify_current_graph(api, current_graph, 'runtime_source')
+            review_state = self.review_rows('runtime_source')
             require(self.verify_revisions(api, project, version, current, zip_path, version_key,
                                           preview_hashes, current_hashes) == manifest_hashes,
                     'Revision manifests changed on process restart')
@@ -1796,6 +2181,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                                                'used': 5, 'limit': 5}
             usage = api.usage()['projects']
             require(usage['used'] == 5 and not usage['canCreate'], 'Final project capacity differs')
+        with self.phase('source-current-graph-before-backup'):
+            self.verify_current_graph(api, current_graph, 'runtime_source')
             # A genuinely new OTP immediately before quiescence keeps a representative
             # short-lived row in the dump; its original deadline is never renewed.
             pending_invitation = review['invitations']['pending']
@@ -1804,8 +2191,12 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.stop(process)
         with self.phase('quiescent-database-and-files-backup'):
             require(not self.processes, 'Backup attempted while an owned writer is still registered')
+            self.expire_current_rows('runtime_source', current_graph, restoring=True)
             pending_restore = self.seed_pending_cleanup('runtime_source', storage, expired)
-            before_database = self.database_manifest('runtime_source')
+            before_database = current_manifest(self.database_manifest('runtime_source'))
+            self.verify_sql_diagnostics('runtime_source', current_graph)
+            before_sql_snapshot = self.sql_script('runtime_source', 'snapshot-db.sql')
+            before_rows = self.database_rows('runtime_source')
             self.report['reviewTablesInBackup'] = review_manifest(before_database)
             before_review_rows = self.review_rows('runtime_source')
             before_files = storage_manifest(storage)
@@ -1838,6 +2229,9 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             review_manifest(restored_database)
             require(restored_database == before_database,
                     'Restored database rows or relationships differ')
+            compare_database_rows(before_rows, self.database_rows('runtime_restored'))
+            require(self.sql_script('runtime_restored', 'snapshot-db.sql') == before_sql_snapshot,
+                    'Restored operational SQL row/relationship snapshot differs before startup')
             require(self.review_rows('runtime_restored') == before_review_rows,
                     'Restored review row identities or checksums differ before startup')
             require(storage_manifest(restored_storage) == before_files, 'Restored file hashes differ')
@@ -1846,6 +2240,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             # Remove only this run's retired roots so a successful read cannot fall back to them.
             shutil.rmtree(storage)
             shutil.rmtree(system_storage)
+            allowed_expiry = registered_review_expiry(before_review_rows, int(time.time() * 1000))
             restored, restored_process = self.start('runtime_restored', restored_storage,
                                                     restored_system_storage, 'restored')
             expected_restored_files = self.verify_cleanup('runtime_restored', restored_storage,
@@ -1871,7 +2266,17 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             self.verify_share_policy(restored, following_share, expected_preview=current_hashes)
             self.verify_review_fixtures(restored, review, 'runtime_restored')
             self.report['reviewStartupExpiredRowsRemoved'] = compare_review_rows(
-                before_review_rows, self.review_rows('runtime_restored'), int(time.time() * 1000))
+                before_review_rows, self.review_rows('runtime_restored'), int(time.time() * 1000), allowed_expiry)
+            self.verify_current_retention('runtime_restored', current_graph, before_review_rows, allowed_expiry)
+            after_rows = self.database_rows('runtime_restored')
+            expected_visits = dict(before_rows['p_share_visit'])
+            require(expected_visits.pop(current_graph['visits']['oldRestoreId'], None) is not None,
+                    'Restored backup omitted the registered expired visit')
+            require(after_rows['p_share_visit'] == expected_visits,
+                    'Visit retention changed an unregistered row or rewrote a surviving event')
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item',
+                          'p_creation_receipt', 'p_review_thread', 'p_review_message'):
+                require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True
             self.verify_project_member(restored, member, project, version, preview_hashes)
             require(self.verify_revisions(restored, project, version, current, zip_path, version_key,
@@ -1915,6 +2320,10 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'fileCount': len(before_system_files), 'downloadSha256': system_hashes,
                 'databaseReferencesVerified': True, 'anonymousReadVerified': True,
                 'retiredSourceRootsRemoved': True}
+        with self.phase('restored-current-graph'):
+            self.verify_current_graph(restored, current_graph, 'runtime_restored')
+        with self.phase('restored-associated-write'):
+            self.verify_restored_current_writes(restored, current_graph, 'runtime_restored')
         if self.args.frontend_dir:
             with self.phase('live-browser-on-restored-jar'):
                 self.clear_business_data(restored)
