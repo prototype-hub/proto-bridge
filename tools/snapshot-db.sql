@@ -100,3 +100,14 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_share_visit_t
 SELECT 'share_visits',count(*),md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_share_visit_table" v;
 \endif
+
+-- Complete current business rows, including full receipt fingerprints/timestamps and durable audits.
+-- Missing old-schema tables remain visible in the coverage list; this is not a current-release pass.
+SELECT 'business_table_coverage',count(*),string_agg(table_name,',' ORDER BY table_name)
+ FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+SELECT format('SELECT %L,count(*),md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,''[]'')) FROM %I.%I r;',
+ 'business_rows_'||table_name,current_schema(),table_name)
+ FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table') ORDER BY table_name
+\gexec

@@ -29,6 +29,10 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_member_table'
 SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_schema=current_schema()
  AND table_name=:'prototype_hub_preview_session_table' AND column_name='revision_id')
  AS prototype_hub_has_session_revision \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_review_association_table')) IS NOT NULL AS prototype_hub_has_review_association \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_share_visit_table')) IS NOT NULL AS prototype_hub_has_share_visit \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_copy_snapshot_table')) IS NOT NULL AS prototype_hub_has_copy_snapshot \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_copy_entry_table')) IS NOT NULL AS prototype_hub_has_copy_entry \gset
 \if :prototype_hub_has_revision_structure
 WITH storage_references AS (
  SELECT id AS version_id,project_id,current_revision_id AS revision_id,storage_path
@@ -78,6 +82,10 @@ WITH storage_references AS (
    WHERE m.id=c.resource_id AND m.revision_id=r.id AND m.version_id=r.version_id AND m.project_id=r.project_id
     AND t.revision_id=m.revision_id AND t.version_id=m.version_id AND t.project_id=m.project_id)
 \endif
+\if :prototype_hub_has_review_association
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_review_association_table" a
+   WHERE a.id=c.resource_id AND a.revision_id=r.id AND a.version_id=r.version_id AND a.project_id=r.project_id)
+\endif
  ))
 \endif
 \if :prototype_hub_has_review_threads
@@ -93,6 +101,61 @@ WITH storage_references AS (
  LEFT JOIN :"prototype_hub_review_thread_table" t ON t.id=m.thread_id
  WHERE t.id IS NULL OR m.project_id IS DISTINCT FROM t.project_id
   OR m.version_id IS DISTINCT FROM t.version_id OR m.revision_id IS DISTINCT FROM t.revision_id
+\endif
+\if :prototype_hub_has_review_association
+ UNION ALL
+ SELECT a.id FROM :"prototype_hub_review_association_table" a
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=a.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=a.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=a.revision_id
+ LEFT JOIN :"prototype_hub_share_table" s ON s.id=a.share_id
+ LEFT JOIN :"prototype_hub_review_thread_table" t ON t.id=a.source_thread_id
+ LEFT JOIN :"prototype_hub_review_guest_table" g ON g.id=a.target_guest_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL OR s.id IS NULL OR t.id IS NULL OR g.id IS NULL
+  OR g.project_id IS DISTINCT FROM a.project_id
+  OR v.project_id IS DISTINCT FROM a.project_id OR r.project_id IS DISTINCT FROM a.project_id
+  OR r.version_id IS DISTINCT FROM a.version_id OR s.project_id IS DISTINCT FROM a.project_id
+  OR s.version_id IS DISTINCT FROM a.version_id OR t.project_id IS DISTINCT FROM a.project_id
+  OR t.version_id IS DISTINCT FROM a.version_id OR t.revision_id IS DISTINCT FROM a.revision_id
+  OR t.share_id IS DISTINCT FROM a.share_id OR t.guest_id IS DISTINCT FROM a.source_guest_id
+  OR a.source_verification_level IS DISTINCT FROM 'unverified'
+  OR a.target_verification_level IS DISTINCT FROM 'email'
+\endif
+\if :prototype_hub_has_share_visit
+ UNION ALL
+ SELECT a.id FROM :"prototype_hub_share_visit_table" a
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=a.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=a.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=a.revision_id
+ LEFT JOIN :"prototype_hub_share_table" s ON s.id=a.share_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL OR s.id IS NULL
+  OR v.project_id IS DISTINCT FROM a.project_id OR r.project_id IS DISTINCT FROM a.project_id
+  OR r.version_id IS DISTINCT FROM a.version_id OR s.project_id IS DISTINCT FROM a.project_id
+  OR s.version_id IS DISTINCT FROM a.version_id
+\endif
+\if :prototype_hub_has_copy_snapshot
+ UNION ALL
+ SELECT a.id FROM :"prototype_hub_copy_snapshot_table" a
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=a.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=a.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=a.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM a.project_id OR r.project_id IS DISTINCT FROM a.project_id
+  OR r.version_id IS DISTINCT FROM a.version_id OR a.manifest_sha256 IS DISTINCT FROM r.manifest_sha256
+  OR a.page_id IS DISTINCT FROM encode(sha256(convert_to(a.page_path,'UTF8')),'hex')
+  OR (SELECT count(*) FROM jsonb_array_elements(r.manifest_json::jsonb->'files') f
+   WHERE f->>'path'=a.page_path AND f->>'sha256'=a.file_sha256)<>1
+  OR NOT jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.path == $path)',
+   jsonb_build_object('page',a.page_id,'path',a.page_path))
+\endif
+\if :prototype_hub_has_copy_entry
+ UNION ALL
+ SELECT a.id FROM :"prototype_hub_copy_entry_table" a
+ LEFT JOIN :"prototype_hub_copy_snapshot_table" s ON s.id=a.snapshot_id
+ WHERE s.id IS NULL OR s.project_id IS DISTINCT FROM a.project_id
+  OR s.version_id IS DISTINCT FROM a.version_id OR s.revision_id IS DISTINCT FROM a.revision_id
+  OR s.page_id IS DISTINCT FROM a.page_id
 \endif
 \if :prototype_hub_has_work_items
  UNION ALL

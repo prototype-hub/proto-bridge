@@ -30,6 +30,150 @@ runtime = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime)
 
 
+class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
+        manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
+        self.assertEqual(23, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(manifest, runtime.current_manifest(manifest))
+        for table in runtime.BUSINESS_TABLES:
+            for mutation in ('omit', 'empty', 'hash'):
+                broken = copy.deepcopy(manifest)
+                if mutation == 'omit':
+                    del broken[table]
+                elif mutation == 'empty':
+                    broken[table]['count'] = 0
+                else:
+                    broken[table]['contentMd5'] = 'invalid'
+                with self.subTest(table=table, mutation=mutation), self.assertRaises(runtime.VerificationFailure):
+                    runtime.current_manifest(broken)
+        with self.assertRaises(runtime.VerificationFailure):
+            runtime.current_manifest(dict(manifest, p_unreviewed={'count': 1, 'contentMd5': 'a' * 32}))
+
+    def test_prestart_row_comparison_rejects_changed_receipt_content_and_every_omitted_table(self):
+        before = {table: {'original-id': 'original-full-row-hash'} for table in runtime.TABLES}
+        runtime.compare_database_rows(before, copy.deepcopy(before))
+        for table in runtime.TABLES:
+            for mutation in ('omit', 'id', 'content'):
+                after = copy.deepcopy(before)
+                if mutation == 'omit':
+                    del after[table]
+                elif mutation == 'id':
+                    after[table] = {'replacement-id': 'original-full-row-hash'}
+                else:
+                    after[table]['original-id'] = 'changed-fingerprint-or-content'
+                with self.subTest(table=table, mutation=mutation), self.assertRaises(runtime.VerificationFailure):
+                    runtime.compare_database_rows(before, after)
+
+    def test_expiry_requires_exact_registration_before_start_and_never_allows_durable_audit_loss(self):
+        before = {table: {} for table in runtime.REVIEW_TABLES}
+        before['p_review_session'] = {'registered': {'hash': 'a', 'deadline': 99},
+                                      'other': {'hash': 'b', 'deadline': 99}}
+        after = copy.deepcopy(before)
+        del after['p_review_session']['registered']
+        with self.assertRaises(runtime.VerificationFailure):
+            runtime.compare_review_rows(before, after, 100)
+        allowed = {'p_review_session': {'registered'}}
+        runtime.compare_review_rows(before, after, 100, allowed)
+        del after['p_review_session']['other']
+        with self.assertRaises(runtime.VerificationFailure):
+            runtime.compare_review_rows(before, after, 100, allowed)
+        self.assertNotIn('p_review_association', runtime.REVIEW_TABLES)
+        self.assertIn('p_review_association', runtime.BUSINESS_TABLES)
+
+    def test_current_database_table_discovery_fails_closed_before_reading_partial_manifest(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            with patch.object(check, 'sql', return_value='p_project') as sql:
+                with self.assertRaises(runtime.VerificationFailure):
+                    check.database_manifest('owned')
+                self.assertEqual(1, sql.call_count)
+            check.processes.append(object())
+            with self.assertRaises(runtime.VerificationFailure):
+                check.expire_current_rows('owned', {})
+            with self.assertRaises(runtime.VerificationFailure):
+                check.verify_sql_diagnostics('owned', {})
+
+    def test_sql_negative_uses_reply_receipt_and_rejects_zero_row_mutation_with_case_number(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            fixture = {'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
+                       'copyProject': {'id': 'foreign-project'}, 'copyVersion': {'revisionId': 'foreign-revision'},
+                       'copy': [{'context': {'snapshotId': 'snapshot'}, 'entries': {'data': [{'id': 'entry'}]}},
+                                {'context': {'snapshotId': 'empty'}}], 'visits': {'recentId': 'visit'},
+                       'review': {'discussion': {'thread': {'id': 'thread'},
+                           'messages': [{'id': 'initial-without-receipt'}], 'operations': [
+                               {'method': 'POST', 'path': 'threads', 'id': 'thread'},
+                               {'method': 'POST', 'path': '/thread/messages', 'id': 'actual-reply'}]}}}
+            baseline = 'business_table_coverage|23|current'
+            def script(database, name, mutation='', variables=None, zero_reply=False):
+                if variables:
+                    self.assertEqual('actual-reply', variables['message'])
+                invalidation = 'enabled=false' in mutation
+                if name == 'snapshot-db.sql':
+                    no_change = zero_reply and "resource_id=:'message'" in mutation
+                    return baseline if not mutation or no_change else baseline + '-changed'
+                if name == 'export-storage-manifest.sql':
+                    return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
+                                       'referencesComplete': True})
+                return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
+            with patch.object(check, 'sql_script', side_effect=script):
+                check.verify_sql_diagnostics('owned', fixture)
+            self.assertEqual(14, check.report['operationalSql']['crossScopeNegativeCases'])
+            with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 4 did not change'):
+                    check.verify_sql_diagnostics('owned', fixture)
+
+    def test_restored_associated_write_preserves_authorship_history_replay_and_denial_scopes(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            target = {'grant': {'revisionId': 'original-revision'}, 'cookie': 'original-cookie',
+                      'identity': {'displayName': 'Actual target'}}
+            thread = {'id': 'thread', 'authorName': 'Original author', 'state': 'open',
+                      'anchor': {'x': 1}, 'updatedAt': 1}
+            old = {'id': 'original', 'visibility': 'public'}
+            internal = {'id': 'private-note', 'visibility': 'internal'}
+            fixture = {'associations': {'target': target, 'revoked': {'sourceThreadId': 'revoked'}},
+                       'copyVersion': {'revisionId': 'foreign-revision'}, 'review': {'discussion': {
+                           'thread': thread, 'base': {'pageId': 'page'}, 'memberPath': '/member',
+                           'messages': [old, internal]}}}
+            saved = {'id': 'new-reply', 'threadId': 'thread', 'authorType': 'guest',
+                     'verificationLevel': 'email', 'authorName': 'Actual target', 'visibility': 'public'}
+            api = unittest.mock.Mock()
+            api.request.return_value = {'data': [dict(thread, updatedAt=2)]}
+            def run(changes=None, leak=False, changed_author=False):
+                current_saved = dict(saved, **(changes or {}))
+                responses = [(current_saved, None), (current_saved, None), ({}, None), ({}, None),
+                             ({'total': 2 + leak, 'data': [old, saved] + ([internal] if leak else [])}, None)]
+                api.request.return_value = {'data': [dict(thread, updatedAt=2,
+                    authorName='Changed author' if changed_author else thread['authorName'])]}
+                with patch.object(check, 'verify_review_identity', return_value={'csrfToken': 'proof'}), \
+                        patch.object(check, 'review_call', side_effect=responses) as request, \
+                        patch.object(check, 'sql', return_value='3'):
+                    check.verify_restored_current_writes(api, fixture, 'restored')
+                    self.assertEqual(5, request.call_count)
+                    self.assertEqual([404, 403], [call.kwargs['expected'] for call in request.call_args_list[2:4]])
+                    self.assertEqual('foreign-revision', request.call_args_list[3].args[1]['revisionId'])
+            run()
+            for options in ({'changes': {'authorName': 'Wrong target'}},
+                            {'changes': {'verificationLevel': 'unverified'}},
+                            {'changes': {'visibility': 'internal'}}, {'leak': True}, {'changed_author': True}):
+                with self.subTest(options=options), self.assertRaises(runtime.VerificationFailure):
+                    run(**options)
+
+    def test_new_business_payloads_and_visit_tickets_are_registered_for_redaction(self):
+        values = {key: 'private-' + key for key in ('visitTicket', 'clientRequestId', 'businessTerm',
+                  'note', 'requirementUrl', 'evidenceReference')}
+        seen = set()
+        runtime.Api('http://127.0.0.1:1', seen).remember_secrets(values)
+        self.assertEqual(set(values.values()), seen)
+
+
 class ReviewIdentityRuntimeTest(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix='runtime-review-test-')
@@ -114,9 +258,10 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
                 with self.subTest(table=table, missing=missing):
                     with self.assertRaises(runtime.VerificationFailure):
                         runtime.review_manifest(broken)
-        with patch.object(self.check, 'sql', return_value=json.dumps({'count': 1, 'contentMd5': 'a' * 32})) as sql:
+        with patch.object(self.check, 'sql', side_effect=['\n'.join(runtime.BUSINESS_TABLES)] +
+                [json.dumps({'count': 1, 'contentMd5': 'a' * 32})] * len(runtime.TABLES)) as sql:
             self.check.database_manifest('restored')
-        self.assertEqual(len(runtime.TABLES), sql.call_count)
+        self.assertEqual(len(runtime.TABLES) + 1, sql.call_count)
         self.assertTrue(all(call.args[0] == 'restored' for call in sql.call_args_list))
 
     def test_startup_only_allows_expired_deletions_not_rewrites_new_rows_or_omitted_tables(self):
@@ -140,7 +285,8 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
         before['p_review_challenge']['id']['deadline'] = 99
         after = copy.deepcopy(before)
         after['p_review_challenge'].clear()
-        self.assertEqual(1, runtime.compare_review_rows(before, after, 100)['p_review_challenge'])
+        self.assertEqual(1, runtime.compare_review_rows(before, after, 100,
+            runtime.registered_review_expiry(before, 100))['p_review_challenge'])
         with self.assertRaises(runtime.VerificationFailure):
             runtime.compare_review_rows(before, after, 98)
 
@@ -199,14 +345,16 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
         summary = {'messages': 4, 'receipts': 5, 'receiptHash': 'a' * 32, 'bound': True, 'events': sorted([
             'thread.created', 'message.created', 'note.created', 'thread.resolved',
             'message.created', 'thread.reopened'])}
-        def run(leak=False, receipts=5, foreign=False, receipt_hash='a' * 32):
+        def run(leak=False, receipts=5, foreign=False, receipt_hash='a' * 32,
+                access_mode='own', can_reopen=False):
             def review(api, grant, operation, payload, **kwargs):
                 if operation == 'context':
                     return {'csrfToken': 'csrf'}, 'anonymous'
                 if kwargs.get('expected') in (403, 404):
                     return {'success': False}, None
                 if operation == 'threads/_query':
-                    rows = [] if kwargs['cookie'] == 'wrong' and not foreign else [{'id': 'thread'}]
+                    rows = [] if kwargs['cookie'] == 'wrong' and not foreign else [
+                        {'id': 'thread', 'accessMode': access_mode, 'canReopen': can_reopen}]
                 else:
                     rows = public + ([note] if leak else [])
                 return {'total': len(rows), 'data': rows}, None
@@ -216,7 +364,8 @@ class ReviewIdentityRuntimeTest(unittest.TestCase):
                     patch.object(self.check, 'sql', return_value=json.dumps(dict(summary, receipts=receipts, receiptHash=receipt_hash))):
                 return self.check.verify_review_discussion(self.api, fixture, 'restored')
         self.assertEqual(summary, run())
-        for options in ({'leak': True}, {'receipts': 4}, {'foreign': True}, {'receipt_hash': 'b' * 32}):
+        for options in ({'leak': True}, {'receipts': 4}, {'foreign': True}, {'receipt_hash': 'b' * 32},
+                        {'access_mode': 'associated'}, {'can_reopen': True}):
             with self.subTest(options=options), self.assertRaises(runtime.VerificationFailure):
                 run(**options)
 
