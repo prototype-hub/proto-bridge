@@ -1,5 +1,7 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
@@ -49,6 +51,8 @@ public class PrototypeRetentionService {
     private final PrototypeStatisticsService statistics;
     private final PrototypeReviewThreadService reviewThreads;
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
+    private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
+    private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
 
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
@@ -405,6 +409,16 @@ public class PrototypeRetentionService {
     private Mono<Void> deleteVersionGraph(String id) {
         return statistics
                 .purgeVersion(id)
+                .then(
+                        copyEntries
+                                .createDelete()
+                                .where(PrototypeCopyEntryEntity::getVersionId, id)
+                                .execute())
+                .then(
+                        copySnapshots
+                                .createDelete()
+                                .where(PrototypeCopySnapshotEntity::getVersionId, id)
+                                .execute())
                 .then(reviewThreads.purgeVersion(id))
                 .then(review.purgeVersion(id))
                 .then(
@@ -450,6 +464,22 @@ public class PrototypeRetentionService {
                         ignored ->
                                 statistics
                                         .purgeProject(id)
+                                        .then(
+                                                copyEntries
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeCopyEntryEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                copySnapshots
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeCopySnapshotEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 sessions.createDelete()
                                                         .where(

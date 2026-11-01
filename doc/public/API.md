@@ -468,3 +468,31 @@ ZIP 保留原始相对路径，并附 `META-INF/prototype-assets.json` 对账清
 | 401/403/404 | 沿既有身份、通用动作和项目/版本/修订范围语义，不返回部分附件 |
 
 参数格式错误沿既有400校验响应。读取保存清单后，每个所选源文件复制前再次读取当前授权，全部准备完成后再次检查当前账号、动作、项目范围和软删除状态，才发送附件。准备失败不会发送部分成功包；已经发送的字节无法远程收回。
+
+## 固定页面文案清单
+
+内部成员入口为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/pages/{pageId}/copy-inventory`。revisionId/pageId 必须共同匹配唯一清单页面，不回退current，不接受文件路径。query动作与当前项目READ取交集，save动作与EDIT取交集；不提供分享或guest入口。
+
+| 方法及后缀 | 输入与结果 |
+| --- | --- |
+| `GET` | 上下文，未提取为NOT_EXTRACTED，不写数据 |
+| `POST /_extract` | `{clientRequestId}`；首次提取后返回READY/EMPTY。重提仅返回原快照，不覆盖人工或刷新提取规则 |
+| `POST /entries/_query` | `{pageIndex:0,pageSize:20,keyword?,kind?,hasRequirement?}`；返回 `{snapshot,data,total,pageIndex,pageSize}` |
+| `POST /entries` | `{clientRequestId,text,businessTerm?,note?,requirementUrl?}`；新增MANUAL，返回 `{inventoryVersion,entry}` |
+| `PUT /entries/{entryId}` | 同维护字段加 `expectedVersion`；MANUAL必须有text，STATIC必须省略text，仅维护业务词、备注及链接 |
+| `POST /entries/{entryId}/_delete` | `{clientRequestId,expectedVersion}`；仅MANUAL可删，返回 `{inventoryVersion,deleted:true}` |
+| `POST /_export` | `{format:'csv'或'json',expectedVersion}`；导出本固定页**全部**静态和人工条目，忽略列表页码、关键词及筛选 |
+
+snapshot包含projectId/versionId/revisionId/pageId/pagePath、manifestSha256/fileSha256、snapshotId、extractorVersion、extractionState、limitReason、staticComplete、dynamicTextGap、staticCount/manualCount、configVersion、extractedAt。NOT_EXTRACTED的snapshotId/extractorVersion/configVersion/extractedAt为null，计数为零。staticComplete仅READY/EMPTY为true；dynamicTextGap始终为true，表示需要作者补充动态文案。
+
+entry包含id、kind（STATIC/MANUAL）、text、businessTerm、note、requirementUrl、occurrenceCount、occurrences、configVersion、createdAt、updatedAt。occurrences为完整 `{ordinal,sourceKind}` 数组，分类为DOCUMENT_TITLE/TEXT/ALT/TITLE/PLACEHOLDER/ARIA_LABEL/BUTTON_VALUE；MANUAL为空数组、次数为零。所有字段作为纯文本展示，不执行HTML。可选维护字段省略保存空串；人工text必填非空白，保留其原始文字与换行。NUL、不配对UTF16及超长输入显式400，不清洗后写入。
+
+静态提取沿BOM/meta charset，否则UTF8，解析源标题、body文本节点、alt/title/placeholder/aria-label及button/submit/reset input value。排除script/style/template/noscript/textarea子树和其他input value；不执行JS、不请求外部链接、iframe或资源，不推断CSS计算可见性。HTML实体解码后统一Unicode空白、去首尾空白，按规范化文字精确去重，保留所有出现序号；隐藏状态的源字面量可能包含在内。静态原文、出现处和固定身份不可修改或删除，同一文案的人工元数据作用于本页全部出现处。
+
+固定预算：HTML 2MiB、去重静态2000条、完整出现处10000个、全部去重静态原文UTF16长度总和2097152；人工最多200条、text 2000、业务词200、备注2000、链接2048个UTF16单位。任何提取预算越界均无部分静态条目，持久化LIMIT_EXCEEDED与原因SOURCE_BYTES/STATIC_ENTRIES/STATIC_OCCURRENCES/STATIC_TEXT及回执，**提交后**返回422 `PROTOTYPE_HUB_COPY_INVENTORY_LIMIT_EXCEEDED`。GET可读取失败原因，EMPTY/LIMIT_EXCEEDED均可直接新增人工；NOT_EXTRACTED新增返回409。超大源只验证清单身份与实际大小，不声称已完整读取或散列。
+
+分页pageIndex为0–10000、pageSize为1–100、默认0/20。kind可省略或为精确STATIC/MANUAL；hasRequirement为可选布尔。keyword最多100个UTF16单位，去首尾空白后对text/businessTerm/note执行数据库大小写不敏感字面包含（`%`、`_`、反斜杠不是通配符）。COUNT与分页使用完全相同固定scope及筛选，排序为STATIC在前、首次出现序号、createdAt、id升序；越界页为空，保留实际total及请求页码，不接受客户端total/排序/rePaging覆盖。
+
+人工链接仅允许有host、有效端口的HTTP(S)，禁止账号信息、控制字符或空白，不抓取、不自动关联外部需求。每次写及回执重放前重验当前账号、菜单动作和项目权限。条目expectedVersion陈旧返回409 `PROTOTYPE_HUB_COPY_INVENTORY_CONFLICT`；整页configVersion每次成功变更仅增一次。强制请求键为1–128个可打印非空白ASCII；未知结果保留原键、输入和固定scope重试，相同键改语义返回既有IDEMPOTENCY_CONFLICT；删除后的人工条目不因旧创建重放复活。草稿不得自动转移到其他修订或页面。
+
+导出锁内检查整页expectedVersion并取得一致全量DB数据，事务完成后才格式化，发送附件前重验READ。JSON为 `{formatVersion:1,snapshot,entries}`，保留保存的原文。CSV为UTF8 BOM、CRLF、RFC4180全单元格引用：固定列 `recordType,projectId,versionId,revisionId,pageId,snapshotId,inventoryVersion,pagePath,manifestSha256,fileSha256,extractorVersion,extractionState,limitReason,staticComplete,dynamicTextGap,id,kind,text,businessTerm,note,requirementUrl,occurrenceCount,occurrences,configVersion,createdAt,updatedAt`。首行为SNAPSHOT记录（空清单仍保留身份），后续ENTRY行重复固定身份；occurrences为一格JSON。首个非空白/控制字符为`= + - @`或原始首字符为TAB/CR/LF的字符串格加前导单引号防公式，双引号转义；此保护不改变JSON。输出最多64MiB，超限422且不发送部分正文；四个请求级导出槽满返回429。附件使用安全摘要文件名、private/no-store、nosniff、no-referrer，不返回存储路径、原始HTML或凭据。

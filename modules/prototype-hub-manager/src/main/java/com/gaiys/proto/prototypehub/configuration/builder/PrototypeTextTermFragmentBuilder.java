@@ -40,6 +40,17 @@ public final class PrototypeTextTermFragmentBuilder extends AbstractTermFragment
                     "原型名称包含字面文本",
                     (field, term) -> DSL.position(field, DSL.val((String) term.getValue())).gt(0));
 
+    /** 文案清单专用字面查询，不改变既有名称查询的大小写语义。 */
+    public static final PrototypeTextTermFragmentBuilder COPY_LITERAL_CONTAINS =
+            new PrototypeTextTermFragmentBuilder(
+                    "prototype-copy-literal-contains",
+                    "文案包含字面文本",
+                    (field, term) ->
+                            DSL.position(
+                                            DSL.lower(field),
+                                            DSL.lower(DSL.val((String) term.getValue())))
+                                    .gt(0));
+
     private final BiFunction<Field<String>, Term, Condition> condition;
 
     private PrototypeTextTermFragmentBuilder(

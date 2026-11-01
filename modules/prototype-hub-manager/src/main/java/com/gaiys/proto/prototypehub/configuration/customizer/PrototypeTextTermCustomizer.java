@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.configuration.customizer;
 
 import com.gaiys.proto.prototypehub.configuration.builder.PrototypeTextTermFragmentBuilder;
+import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import java.beans.PropertyDescriptor;
@@ -35,6 +36,12 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
     /** 表完成 schema 绑定后补充列条件，重复注册按 feature 标识替换；缺失映射直接中止启动。 */
     @Override
     public void customTable(Class<?> entityType, RDBTableMetadata table) {
+        if (PrototypeCopyEntryEntity.class.isAssignableFrom(entityType)) {
+            for (String name : new String[] {"text", "businessTerm", "note"})
+                table.getColumn(name)
+                        .orElseThrow()
+                        .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
+        }
         if (PrototypeProjectEntity.class.isAssignableFrom(entityType)) {
             table.getColumn("ownerId")
                     .orElseThrow()
