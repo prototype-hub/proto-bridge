@@ -390,6 +390,463 @@
     addEventListener("popstate", () => {
       if (active && !located()) unavailable();
     });
+
+    // A separate parent-only channel keeps root snapshots out of recursive legacy Inspect.
+    const toolSurface = document.createElement("div");
+    toolSurface.dataset.inspectToolSurface = "true";
+    toolSurface.tabIndex = 0;
+    toolSurface.setAttribute("role", "application");
+    toolSurface.setAttribute(
+      "aria-label",
+      "Select root element / 选择根页面元素",
+    );
+    toolSurface.style.cssText =
+      "position:fixed;inset:0;z-index:2147483647;display:none;outline:2px solid #1677ff;cursor:crosshair;touch-action:none;transition:none!important;animation:none!important";
+    const toolMarker = document.createElement("div");
+    toolMarker.dataset.inspectToolMarker = "true";
+    toolMarker.style.cssText =
+      "position:absolute;pointer-events:none;border:2px solid #1677ff;background:#1677ff26;box-sizing:border-box;transition:none!important;animation:none!important";
+    toolSurface.appendChild(toolMarker);
+    document.documentElement.appendChild(toolSurface);
+    let toolCommand,
+      picking = false,
+      candidate,
+      candidates = [],
+      toolSelections = new Map(),
+      summaryAccepted = false,
+      toolMonitor;
+    const owned = (node) =>
+      node === marker || surface.contains(node) || toolSurface.contains(node);
+    const excluded = (element) =>
+      owned(element) ||
+      element.closest(
+        "head,script,style,link,meta,title,base,iframe,frame,noscript,template",
+      );
+    const toolLocated = () =>
+      toolCommand &&
+      !location.search &&
+      !location.hash &&
+      location.pathname.slice(toolCommand.prefixLength) ===
+        toolCommand.resourcePath;
+    const toolSend = (status, payload) => {
+      if (toolCommand)
+        parent.postMessage(
+          {
+            type: "PROTOTYPE_INSPECT_TOOL_EVENT",
+            channel: toolCommand.channel,
+            generation: toolCommand.generation,
+            status,
+            ...payload,
+          },
+          platformOrigin,
+        );
+    };
+    const hidePicker = () => {
+      picking = false;
+      candidate = undefined;
+      candidates = [];
+      toolSurface.style.display = "none";
+      if (!toolSelections.size && !summaryAccepted) clearInterval(toolMonitor);
+    };
+    const resetTools = () => {
+      hidePicker();
+      toolSelections.clear();
+      summaryAccepted = false;
+      clearInterval(toolMonitor);
+    };
+    const invalidateTools = () => {
+      if (!picking && !toolSelections.size && !summaryAccepted) return;
+      const status = picking ? "unavailable" : "stale";
+      resetTools();
+      toolSend(status);
+    };
+    const rendered = (element) => {
+      if (!element?.isConnected || excluded(element)) return;
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      if (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse"
+      )
+        return { rect, style };
+    };
+    const rootRect = (element) => {
+      const renderedElement = rendered(element);
+      if (!renderedElement) return;
+      const rect = renderedElement.rect;
+      const result = {
+        x: Math.round((rect.x + scrollX) * 100) / 100,
+        y: Math.round((rect.y + scrollY) * 100) / 100,
+        width: Math.round(rect.width * 100) / 100,
+        height: Math.round(rect.height * 100) / 100,
+      };
+      if (
+        Object.values(result).every(Number.isFinite) &&
+        Math.abs(result.x) <= 1000000 &&
+        Math.abs(result.y) <= 1000000 &&
+        result.width > 0 &&
+        result.height > 0 &&
+        result.width <= 1000000 &&
+        result.height <= 1000000
+      )
+        return result;
+    };
+    const paintCandidate = (element, scroll = false) => {
+      candidate = rootRect(element) ? element : undefined;
+      if (!candidate) {
+        toolMarker.style.display = "none";
+        return;
+      }
+      if (scroll)
+        candidate.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "instant",
+        });
+      const rect = candidate.getBoundingClientRect();
+      Object.assign(toolMarker.style, {
+        display: "block",
+        left: rect.x + "px",
+        top: rect.y + "px",
+        width: rect.width + "px",
+        height: rect.height + "px",
+      });
+    };
+    // Hidden nodes consume the budget too; neither scan enters frames or shadow roots.
+    const walkRoot = (visit) => {
+      const deadline = performance.now() + 100;
+      const walker = document.createTreeWalker(
+        document.documentElement,
+        NodeFilter.SHOW_ELEMENT,
+      );
+      let element = walker.currentNode,
+        visited = 0,
+        truncated = false;
+      while (element) {
+        if (!owned(element)) {
+          if (visited >= 2000 || performance.now() >= deadline) {
+            truncated = true;
+            break;
+          }
+          visited++;
+          const data = rendered(element);
+          if (data && visit(element, data, deadline) === false) {
+            truncated = true;
+            break;
+          }
+        }
+        element = walker.nextNode();
+      }
+      return {
+        visited,
+        truncated:
+          truncated || visited >= 2000 || performance.now() >= deadline,
+      };
+    };
+    const styleSnapshot = () => {
+      const colors = new Map(),
+        fonts = new Map();
+      let capped = false;
+      const bounded = (value) => {
+        if (value.length > 256) capped = true;
+        return value.slice(0, 256);
+      };
+      const add = (map, key, value) => {
+        if (map.has(key)) map.get(key).count++;
+        else if (map.size < 100) map.set(key, { ...value, count: 1 });
+        else capped = true;
+      };
+      const color = (value) => {
+        if (
+          value === "transparent" ||
+          /^rgba\([^)]*,\s*0(?:\.0+)?\s*\)$/.test(value) ||
+          /\/\s*0(?:\.0+)?%?\s*\)$/.test(value)
+        )
+          return;
+        value = bounded(value);
+        add(colors, value, { value });
+      };
+      const scan = walkRoot((element, { style }, deadline) => {
+        let directText = false;
+        for (
+          let node = element.firstChild;
+          node && !directText;
+          node = node.nextSibling
+        ) {
+          if (performance.now() >= deadline) return false;
+          if (node.nodeType !== Node.TEXT_NODE) continue;
+          const text = node.textContent;
+          for (let offset = 0; offset < text.length; offset += 1024) {
+            if (performance.now() >= deadline) return false;
+            if (/\S/.test(text.slice(offset, offset + 1024))) {
+              directText = true;
+              break;
+            }
+          }
+        }
+        if (directText) {
+          color(style.color);
+          const font = {
+            family: bounded(style.fontFamily),
+            size: bounded(style.fontSize),
+            weight: bounded(style.fontWeight),
+            lineHeight: bounded(style.lineHeight),
+          };
+          add(fonts, JSON.stringify(font), font);
+        }
+        color(style.backgroundColor);
+        for (const side of ["Top", "Right", "Bottom", "Left"])
+          if (
+            parseFloat(style["border" + side + "Width"]) > 0 &&
+            !["none", "hidden"].includes(style["border" + side + "Style"])
+          )
+            color(style["border" + side + "Color"]);
+      });
+      const ordered = (map) =>
+        [...map.entries()]
+          .sort(
+            ([a, x], [b, y]) =>
+              y.count - x.count || (a < b ? -1 : a > b ? 1 : 0),
+          )
+          .map(([, value]) => value);
+      return {
+        visited: scan.visited,
+        truncated: scan.truncated || capped,
+        colors: ordered(colors),
+        fonts: ordered(fonts),
+      };
+    };
+    const monitorTools = () => {
+      clearInterval(toolMonitor);
+      // Only selected rectangles are polled; snapshots never trigger repeated whole-DOM scans.
+      toolMonitor = setInterval(() => {
+        if (!enabled) {
+          resetTools();
+          return;
+        }
+        if (
+          !toolLocated() ||
+          [...toolSelections.values()].some(
+            ({ element, rect }) =>
+              JSON.stringify(rootRect(element)) !== JSON.stringify(rect),
+          )
+        ) {
+          invalidateTools();
+          return;
+        }
+        if (picking) paintCandidate(candidate);
+      }, 200);
+    };
+    const selectCandidate = () => {
+      if (!picking) return;
+      const element = candidate,
+        rect = rootRect(element);
+      hidePicker();
+      if (!rect || !toolLocated() || !enabled) {
+        toolSend("unavailable");
+        return;
+      }
+      toolSelections.set(toolCommand.slot, { element, rect });
+      toolSend("selected", {
+        selection: {
+          slot: toolCommand.slot,
+          tagName: element.tagName.slice(0, 64),
+          id: (element.id || "").slice(0, 256),
+          rect,
+        },
+      });
+      monitorTools();
+    };
+    const pointCandidate = (event) => {
+      toolSurface.style.pointerEvents = "none";
+      const element = document.elementFromPoint(event.clientX, event.clientY);
+      toolSurface.style.pointerEvents = "auto";
+      paintCandidate(element);
+      return element;
+    };
+    addEventListener("message", (event) => {
+      if (
+        event.source === parent &&
+        event.origin === platformOrigin &&
+        event.data?.type === "AXURE_INSPECT_MODE" &&
+        !event.data.enabled
+      )
+        resetTools();
+      const c = event.data;
+      if (
+        event.source !== parent ||
+        event.origin !== platformOrigin ||
+        !c ||
+        typeof c !== "object" ||
+        Array.isArray(c) ||
+        c.type !== "PROTOTYPE_INSPECT_TOOL_COMMAND"
+      )
+        return;
+      if (
+        Object.keys(c).length !== (c.action === "pick" ? 7 : 6) ||
+        Object.keys(c).some(
+          (key) =>
+            ![
+              "type",
+              "channel",
+              "generation",
+              "action",
+              "resourcePath",
+              "prefixLength",
+              "slot",
+            ].includes(key),
+        ) ||
+        typeof c.channel !== "string" ||
+        !/^[A-Za-z0-9_-]{16,128}$/.test(c.channel) ||
+        !Number.isInteger(c.generation) ||
+        c.generation < 1 ||
+        c.generation > 2147483647 ||
+        !Number.isInteger(c.prefixLength) ||
+        c.prefixLength < 1 ||
+        c.prefixLength > 8192 ||
+        typeof c.resourcePath !== "string" ||
+        c.resourcePath.length < 1 ||
+        c.resourcePath.length > 4096 ||
+        c.resourcePath.startsWith("/") ||
+        /[?#\\\x00-\x20\x7f]/.test(c.resourcePath) ||
+        !["ready", "pick", "summary", "clear"].includes(c.action) ||
+        (c.action === "pick" ? !["A", "B"].includes(c.slot) : "slot" in c)
+      )
+        return;
+      if (
+        toolCommand &&
+        toolCommand.channel === c.channel &&
+        c.generation <= toolCommand.generation
+      )
+        return;
+      hidePicker();
+      toolCommand = c;
+      if (c.action === "clear") {
+        resetTools();
+        toolSend("ready");
+        return;
+      }
+      if (!toolLocated() || (c.action !== "ready" && !enabled)) {
+        resetTools();
+        toolSend("unavailable");
+        return;
+      }
+      if (c.action === "ready") {
+        toolSend("ready");
+        return;
+      }
+      if (c.action === "summary") {
+        const summary = styleSnapshot();
+        summaryAccepted = true;
+        toolSend("summary", { summary });
+        monitorTools();
+        return;
+      }
+      candidates = [];
+      walkRoot((element) => {
+        if (rootRect(element)) candidates.push(element);
+      });
+      if (!candidates.length) {
+        toolSend("unavailable");
+        return;
+      }
+      picking = true;
+      draw(null);
+      toolSurface.style.display = "block";
+      toolSurface.style.pointerEvents = "auto";
+      paintCandidate(candidates[0]);
+      toolSurface.focus({ preventScroll: true });
+      toolSend("ready");
+      monitorTools();
+    });
+    document.addEventListener(
+      "pointermove",
+      (event) => {
+        if (!picking) return;
+        event.stopImmediatePropagation();
+        pointCandidate(event);
+      },
+      true,
+    );
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!picking) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        pointCandidate(event);
+        selectCandidate();
+      },
+      true,
+    );
+    toolSurface.addEventListener("keydown", (event) => {
+      if (!picking) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        hidePicker();
+        toolSend("cancelled");
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        selectCandidate();
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+      } else if (
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+      ) {
+        event.preventDefault();
+        const step = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1;
+        const index = candidates.indexOf(candidate);
+        paintCandidate(
+          candidates[(index + step + candidates.length) % candidates.length],
+          true,
+        );
+      }
+    });
+    new MutationObserver((records) => {
+      if (records.some((record) => !owned(record.target))) invalidateTools();
+    }).observe(document.documentElement, {
+      subtree: true,
+      attributes: true,
+      childList: true,
+      characterData: true,
+    });
+    addEventListener(
+      "scroll",
+      () => {
+        if (picking) paintCandidate(candidate);
+      },
+      true,
+    );
+    for (const name of ["resize", "hashchange", "popstate"])
+      addEventListener(name, invalidateTools, true);
+    for (const name of [
+      "transitionrun",
+      "transitionend",
+      "transitioncancel",
+      "animationstart",
+      "animationiteration",
+      "animationend",
+      "animationcancel",
+    ])
+      addEventListener(
+        name,
+        (event) => {
+          if (!owned(event.target)) invalidateTools();
+        },
+        true,
+      );
+    document.fonts?.addEventListener("loadingdone", invalidateTools);
+    document.addEventListener(
+      "load",
+      (event) => {
+        if (event.target.matches?.('link[rel~="stylesheet"]'))
+          invalidateTools();
+      },
+      true,
+    );
   }
 
   const fields = (style, keys) =>
