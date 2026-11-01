@@ -152,7 +152,8 @@ class PrototypeHubApiContractIntegrationTest {
     }
 
     @Test
-    void newConfigurationMessagesAndInspectorRouteWorkWithoutLegacyManagementRoutes() {
+    void newConfigurationMessagesAndInspectorRouteWorkWithoutLegacyManagementRoutes()
+            throws IOException {
         assertEquals(
                 FILES.toAbsolutePath().normalize(),
                 storageProperties.getRoot().toAbsolutePath().normalize());
@@ -185,6 +186,9 @@ class PrototypeHubApiContractIntegrationTest {
                             .returnResult()
                             .getResponseBody();
             assertNotNull(actual);
+            assertArrayEquals(
+                    new ClassPathResource("prototypehub/inspector.js").getContentAsByteArray(),
+                    actual);
             if (script != null) assertTrue(java.util.Arrays.equals(script, actual));
             script = actual;
         }

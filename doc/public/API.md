@@ -70,6 +70,22 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 持久化旧 `previewKey` **立即停止授权**。旧的内部嵌入 URL 需从管理平台重新打开换取短期凭证；前后端须配套部署，不能混跑仍接受长期 key 的旧后端节点。公开分享使用自身的 token/accessKey 与有效期，仍沿独立公开入口访问。所有原型运行文件维持 `no-store`、`no-referrer` 与 opaque sandbox，不注入平台令牌、不开放 `allow-same-origin`。
 
+## 根文档 Inspect 测距与样式快照
+
+现有成员预览和授权分享可在 Inspect 模式显式选择根文档元素 A/B，读取文档坐标系中的外接矩形（CSS px，保留两位小数）。每轴区间之间有正间隔时显示间距，否则显示重叠量；零表示相接。它不代表设计源标注、两个点的直线距离或跨 iframe 坐标。HTML/SVG 渲染元素可选，脚本、样式、检查浮层和 frame 元素排除；选择子 iframe 区域返回不可用。支持鼠标选择及根页面选择层中的方向键、Enter 和 Escape。旧递归单元素 Inspect 与根页面反馈位置协议保持独立。
+
+新只读通道使用 `PROTOTYPE_INSPECT_TOOL_COMMAND` / `PROTOTYPE_INSPECT_TOOL_EVENT`。命令严格包含 `type/channel/generation/action/resourcePath/prefixLength`；`action` 为 `ready/pick/summary/clear`，仅 `pick` 另含必填 `slot:A|B`。`channel` 为 16–128 位字母、数字、下划线或连字符，`generation` 为 1–2147483647 整数且同通道递增；路径与根页面反馈位置一致，要求当前 encoded 相对路径精确匹配、无 query/hash。根脚本只接受直属父窗口与脚本地址推导的平台来源，不接受其他 frame 或来源发起的新通道请求。`ready` 可独立握手，`pick/summary` 只在 Inspect 已启用时执行。
+
+事件只包含 `type/channel/generation/status`，`selected` 时另含 `selection:{slot,tagName,id,rect:{x,y,width,height}}`，`summary` 时另含 `summary:{visited,truncated,colors:[{value,count}],fonts:[{family,size,weight,lineHeight,count}]}`。其余状态为 `ready/stale/cancelled/unavailable`，不附其他载荷。元素标签最长 64 字符、ID 最长 256 字符；坐标为有限数且绝对值不超过 1000000，宽高为正且不超过 1000000。新通道不传 HTML、表单值、平台或分享凭据、身份和反馈正文。
+
+样式快照只在显式读取/刷新时扫描当前根文档：最多访问 2000 元素、100ms 扫描预算，最多各 100 种颜色和字体组合，每字符串最多 256 字符；隐藏节点也消耗访问预算。任何访问、时间、种类或字符串上限触发均标记 `truncated`，不能视为完整枚举。只统计外接矩形非零、display/visibility 可见的元素，包含根文档屏幕外元素，不进入子 frame 或 shadow DOM，也不统计检查浮层、head 资源、script/style。
+
+颜色计数为满足条件的计算样式属性出现次数：有直接非空白 Text 子节点的元素计文字色；计背景色；四边框各按非零宽度且样式不是 none/hidden 时单独计色。所有完全透明色均排除，四边同色计四次。字体对有直接文字的元素按计算出的 `family/size/weight/lineHeight` 精确组合计数，每元素一次。列表按次数降序、相同次数按稳定字符串键排序。字体族字符串不证明实际加载字形或设计 token；颜色计数不代表像素、元素总数或最终合成颜色，不重建祖先 opacity、遮挡、伪元素、图片或 Canvas 内容。
+
+外壳逐次校验当前根 `contentWindow`、opaque `null` 来源、当前通道/代次和页面运行上下文。握手与快照请求有 3 秒期限；选择请求先回 `ready`，其后的人工选择不受该期限限制。迟到、非法、越界或不匹配状态的事件丢弃；重试用新代次。切页、修订/运行地址/授权替换或退出 Inspect 清除工具状态；清空操作同时清除 A/B 和快照，不恢复旧缓存。旧脚本不支持新握手时显示不可用，仍可使用原单元素检查。
+
+DOM 子树变化、窗口尺寸、字体加载、样式表加载及 transition/animation 事件会使结果失效；已选择元素另以有限矩形检查识别移动、缩放、替换或断开。失效后须重新选择/读取，不静默沿用数值。仅通过 CSSOM 改动且没有对应事件的样式变化不保证连续跟踪，应显式刷新；这是当前运行时快照，既不证明任意原型脚本可信，也不扩大预览/分享授权。结果只留在当前外壳内存，无新 Java API、数据库或持久化设置。
+
 ## 不可变修订与更新冲突
 
 `versionId` 表示逻辑版本，`revisionId` 表示一次已校验发布的文件快照。版本响应包含 `currentRevisionId`、本响应所属 `revisionId`、历史数量 `revisionCount` 和 `migrationRequired`；通常两个 ID 相同，创建回执重放时可能不同。修订响应包含 `id/projectId/versionId/versionName/description/entryFile/manifestSha256/fileCount/totalBytes/createdBy/createdAt`，名称和说明保留上传时值，不返回内部存储路径或完整清单。
