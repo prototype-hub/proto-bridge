@@ -185,7 +185,26 @@ class EasyormSchemaIntegrationTest {
                         "SELECT character_maximum_length::text FROM information_schema.columns"
                                 + " WHERE table_schema='public' AND table_name='s_autz_setting_info'"
                                 + " AND column_name='dimension_target'"));
-        assertEquals("14", scalar("SELECT count(*)::text FROM s_menu"));
+        assertEquals(
+                Set.of(
+                        "prototype-hub",
+                        "prototype-hub/Project",
+                        "prototype-hub/Recycle",
+                        "prototype-hub/Statistics",
+                        "prototype-hub/License",
+                        "system",
+                        "system/Basis",
+                        "system/User",
+                        "system/Department",
+                        "system/Role",
+                        "system/Menu",
+                        "system/Permission",
+                        "system/Dictionary",
+                        "system/Positions",
+                        "system/Log",
+                        "system/Log/Access",
+                        "system/Log/System"),
+                strings("SELECT code FROM s_menu"));
         for (String table :
                 List.of(
                         "p_project",
@@ -658,6 +677,7 @@ class EasyormSchemaIntegrationTest {
                 strings(
                         "SELECT row_to_json(s)::text FROM s_autz_setting_info s WHERE"
                                 + " dimension_type='role' AND dimension_target='MEMBER'");
+        Set<String> menuRows = strings("SELECT row_to_json(m)::text FROM s_menu m");
         try {
             bootstrap.initialize().block(TIMEOUT);
             administrator.run(new DefaultApplicationArguments());
@@ -683,7 +703,7 @@ class EasyormSchemaIntegrationTest {
                             "SELECT count(*)::text FROM s_autz_setting_info WHERE"
                                     + " dimension_target='MEMBER' AND"
                                     + " permission='prototype-hub-share'"));
-            assertEquals("14", scalar("SELECT count(*)::text FROM s_menu"));
+            assertEquals(menuRows, strings("SELECT row_to_json(m)::text FROM s_menu m"));
             assertEquals(
                     "0",
                     scalar(

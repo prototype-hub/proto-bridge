@@ -3,6 +3,7 @@ package com.gaiys.proto;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.node.ObjectNode;
 import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
 import com.gaiys.proto.prototypehub.service.PrototypeReviewService;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
@@ -1957,7 +1958,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
             assertFalse(actual.has("messages"));
             assertFalse(actual.toString().contains(note));
             for (String token : List.of(admin, owner.token, editor.token))
-                assertEquals(
+                assertMemberThreadMatchesOwnPublicView(
                         expected, pmFeedback(f, detail, HttpMethod.POST, token, Map.of(), 200));
         }
         assertEquals(3, count("p_review_thread"));
@@ -2552,7 +2553,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
         assertTrue(beyond.path("data").isEmpty());
         assertEquals(1, overview(f, guest, Map.of("state", "resolved"), 200).path("total").asInt());
         assertEquals(21, overview(f, guest, Map.of("state", "open"), 200).path("total").asInt());
-        assertEquals(one, pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200));
+        assertMemberOverviewMatchesOwnPublicView(
+                one, pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of(), 200));
         Set<String> returnedPages = new HashSet<>();
         for (JsonNode row : one.path("data")) {
             returnedPages.add(row.path("pagePath").asText());
@@ -2606,7 +2608,8 @@ class PrototypeHubReviewIdentityIntegrationTest {
         long receipts = count("p_creation_receipt");
         assertEquals(one, overview(f, guest, Map.of(), 200));
         assertEquals(two, overview(f, guest, Map.of("pageIndex", 1), 200));
-        assertEquals(one, pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200));
+        assertMemberOverviewMatchesOwnPublicView(
+                one, pmFeedback(f, "_overview", HttpMethod.POST, editor.token, Map.of(), 200));
         assertFalse(one.toString().contains("仅内部可见的总览备注"));
         assertEquals(events, count("p_review_event"));
         assertEquals(receipts, count("p_creation_receipt"));
@@ -3135,7 +3138,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         editor.token,
                         Map.of("assignment", "mine"),
                         200);
-        assertEquals(own, memberResult);
+        assertMemberOverviewMatchesOwnPublicView(own, memberResult);
         for (String field :
                 List.of(
                         "assigneeId",
@@ -3266,12 +3269,40 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         admin,
                         Map.of("assignment", "unassigned"),
                         200));
-        assertEquals(overview(f, guest, Map.of(), 200), all);
+        assertMemberOverviewMatchesOwnPublicView(overview(f, guest, Map.of(), 200), all);
         sql("update p_version set deleted_time=1 where id=:id", f.version.path("id").asText());
         pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("assignment", "unassigned"), 404);
         sql("update p_version set deleted_time=null where id=:id", f.version.path("id").asText());
         sql("update p_project set deleted_time=1 where id=:id", f.project);
         pmFeedback(f, "_overview", HttpMethod.POST, admin, Map.of("assignment", "mine"), 404);
+    }
+
+    // 公开能力字段随当前访客投影，成员省略；其余业务字段和分页契约仍须完整相等。
+    private static void assertMemberThreadMatchesOwnPublicView(
+            JsonNode publicThread, JsonNode memberThread) {
+        assertEquals("own", publicThread.path("accessMode").asText());
+        assertTrue(publicThread.path("canReopen").isBoolean());
+        assertEquals(
+                "resolved".equals(publicThread.path("state").asText()),
+                publicThread.path("canReopen").asBoolean());
+        assertFalse(memberThread.has("accessMode"));
+        assertFalse(memberThread.has("canReopen"));
+        ObjectNode shared = publicThread.deepCopy();
+        shared.remove(List.of("accessMode", "canReopen"));
+        assertEquals(shared, memberThread);
+    }
+
+    private static void assertMemberOverviewMatchesOwnPublicView(
+            JsonNode publicOverview, JsonNode memberOverview) {
+        assertTrue(publicOverview.path("data").isArray());
+        assertTrue(memberOverview.path("data").isArray());
+        assertEquals(publicOverview.path("data").size(), memberOverview.path("data").size());
+        for (int index = 0; index < publicOverview.path("data").size(); index++)
+            assertMemberThreadMatchesOwnPublicView(
+                    publicOverview.path("data").get(index), memberOverview.path("data").get(index));
+        ObjectNode shared = publicOverview.deepCopy();
+        shared.set("data", memberOverview.path("data"));
+        assertEquals(shared, memberOverview);
     }
 
     private JsonNode overview(Fixture f, Browser guest, Map<String, Object> fields, int status) {
@@ -4440,7 +4471,7 @@ class PrototypeHubReviewIdentityIntegrationTest {
                         "threads/" + thread + "/_detail",
                         Map.of(),
                         200));
-        assertEquals(
+        assertMemberThreadMatchesOwnPublicView(
                 original,
                 pmFeedback(f, thread + "/_detail", HttpMethod.POST, admin, Map.of(), 200));
         assertEquals(1, count("p_review_message"));

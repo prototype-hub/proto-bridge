@@ -299,7 +299,7 @@ class PrototypeHubNamingMigrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getCode).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(16, actual.size());
+        assertEquals(17, actual.size());
         assertTrue(actual.containsKey("prototype-hub"));
         MenuEntity project = actual.get("prototype-hub/Project");
         assertNotNull(project);
@@ -308,8 +308,59 @@ class PrototypeHubNamingMigrationTest {
         assertEquals(actual.get("prototype-hub").getId(), project.getParentId());
         assertEquals("原型项目", project.getName());
         assertEquals("Prototype Projects", project.getI18nMessages().get("name").get("en_US"));
-        assertEquals(42, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
+        assertEquals(43, actual.values().stream().mapToInt(menu -> menu.getButtons().size()).sum());
         assertEquals("/prototype-hub/recycle-bin", actual.get("prototype-hub/Recycle").getUrl());
+        for (var entry :
+                Map.of(
+                                "Statistics",
+                                List.of(
+                                        "prototype-hub-statistics",
+                                        "统计概览",
+                                        "Overview",
+                                        "prototype-hub-project"),
+                                "License",
+                                List.of(
+                                        "prototype-hub-license",
+                                        "授权与安装",
+                                        "License & installation",
+                                        "prototype-hub-license"))
+                        .entrySet()) {
+            MenuEntity menu = actual.get("prototype-hub/" + entry.getKey());
+            assertNotNull(menu);
+            List<String> expected = entry.getValue();
+            assertEquals(expected.get(0), menu.getId());
+            assertEquals(actual.get("prototype-hub").getId(), menu.getParentId());
+            assertEquals("prototype-hub/" + entry.getKey(), menu.getComponentCode());
+            assertEquals(
+                    "/prototype-hub/" + entry.getKey().toLowerCase(java.util.Locale.ROOT),
+                    menu.getUrl());
+            assertEquals(expected.get(1), menu.getName());
+            assertEquals(expected.get(1), menu.getI18nMessages().get("name").get("zh_CN"));
+            assertEquals(expected.get(2), menu.getI18nMessages().get("name").get("en_US"));
+            assertEquals(expected.get(2), menu.getI18nMessages().get("name").get("en"));
+            assertEquals(
+                    List.of(Map.of("permission", expected.get(3), "actions", List.of("query"))),
+                    menu.getPermissions());
+        }
+        assertTrue(actual.get("prototype-hub/Statistics").getButtons().isEmpty());
+        var credentialButtons = actual.get("prototype-hub/License").getButtons();
+        assertEquals(1, credentialButtons.size());
+        JsonNode credentialButton = mapper.valueToTree(credentialButtons.getFirst());
+        assertEquals("import", credentialButton.path("id").asText());
+        assertEquals("导入凭证", credentialButton.path("name").asText());
+        assertEquals(
+                "Import credential", credentialButton.path("i18nMessages").path("en_US").asText());
+        assertEquals(
+                "Import credential", credentialButton.path("i18nMessages").path("en").asText());
+        assertEquals(
+                mapper.valueToTree(
+                        List.of(
+                                Map.of(
+                                        "permission",
+                                        "prototype-hub-license",
+                                        "actions",
+                                        List.of("save")))),
+                credentialButton.path("permissions"));
         assertEquals(3, project.getButtons().size());
         for (Map<String, Object> button : project.getButtons()) {
             JsonNode value = mapper.valueToTree(button);
@@ -323,7 +374,13 @@ class PrototypeHubNamingMigrationTest {
             assertEquals(PERMISSIONS, resources);
         }
         assertFalse(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(16, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(
+                mapper.valueToTree(actual),
+                mapper.valueToTree(
+                        menus.createQuery()
+                                .fetch()
+                                .collectMap(MenuEntity::getCode)
+                                .block(TIMEOUT)));
     }
 
     private void assertConflict(String conflictSql, String expectedMessage) throws Exception {

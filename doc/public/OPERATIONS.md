@@ -34,6 +34,8 @@ EasyORM以增量方式创建 `p_work_item` 及其索引，无配置项、外部�
 
 SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml`：`spring.mail.host` 默认为空，未配置时不启用发送，也不在启动时连接服务商。填写标准 `spring.mail.host/port/username/password`，默认SMTP端口587、认证及STARTTLS启用且要求升级TLS，服务端身份校验开启；按服务商要求覆盖真实属性并使用有效TLS信任链。SMTPS需明确设置protocol为smtps及端口465，使用同一properties中的mail.smtps配置。发件地址使用 `spring.mail.properties.mail.smtp.from`（便利变量 `SMTP_FROM`），非空配置优先，空值取非空username，仍为空才取本机身份prototype-hub@localhost；必须填写服务商许可的单一完整邮箱，例如 `sender@example.invalid`，不能只填产品名称，也不接受显示名称、地址列表或换行。显式错误值不会静默改用认证账号，而是在连接前拒绝发送；若认证账号就是许可发件邮箱，可将 `SMTP_FROM` 留空复用它。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
 
+默认单客户端没有主机、JNDI或原生Session主机配置时，邮件健康项返回 `UNKNOWN`（`configured=false`）且不连接SMTP；配置后的连接/认证失败仍返回 `DOWN`，自定义/多客户端和 `management.health.mail.enabled` 等标准健康配置保持有效，健康检查不发送邮件。
+
 会话的 `spring.mail.properties.mail.from` 缺省复用上述发件地址，让MIME Message-ID直接取得发件域，避免生成邮件标识时反查本机DNS；显式填写的值会保留。该属性与SMTP的EHLO主机名职责不同，真实邮件服务仍需正确的服务端DNS、TLS及认证配置。
 
 SMTP和SMTPS分别读取 `mail.smtp.from`、`mail.smtps.from` 作为envelope发件覆盖；没有协议专属覆盖时，客户端从邮件From头取得发件邮箱。直接配置这类原生属性时，应与许可发件身份保持一致，应用不会重写显式覆盖值。连接/认证成功只证明SMTP会话可用，不能证明MAIL FROM、收件人或DATA阶段会被服务商接受，也不能证明邮件已到达收件箱。

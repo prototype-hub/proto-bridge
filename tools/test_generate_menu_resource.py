@@ -106,8 +106,38 @@ class MenuResourceLanguageTest(unittest.TestCase):
         roots = json.loads(PACKAGED.read_text())
         rows = flatten(roots)
         self.assertEqual(2, len(roots))
-        self.assertEqual(15, len(rows))
-        self.assertEqual(42, sum(len(row["buttons"]) for row in rows.values()))
+        self.assertEqual(17, len(rows))
+        self.assertEqual({
+            "prototype-hub", "prototype-hub/Project", "prototype-hub/Recycle",
+            "prototype-hub/Statistics", "prototype-hub/License", "system", "system/Basis",
+            "system/User", "system/Department", "system/Role", "system/Menu", "system/Permission",
+            "system/Dictionary", "system/Positions", "system/Log", "system/Log/Access", "system/Log/System",
+        }, {row["code"] for row in rows.values()})
+        self.assertEqual(43, sum(len(row["buttons"]) for row in rows.values()))
+        parent = next(row for row in roots if row["code"] == "prototype-hub")
+        for identifier, code, path, chinese, english, permission in [
+                ("prototype-hub-statistics", "prototype-hub/Statistics", "/prototype-hub/statistics",
+                 "统计概览", "Overview", "prototype-hub-project"),
+                ("prototype-hub-license", "prototype-hub/License", "/prototype-hub/license",
+                 "授权与安装", "License & installation", "prototype-hub-license")]:
+            menu = rows[identifier]
+            self.assertEqual(parent["id"], menu["parentId"])
+            self.assertEqual(code, menu["code"])
+            self.assertEqual(code, menu["componentCode"])
+            self.assertEqual(path, menu["url"])
+            self.assertEqual(chinese, menu["name"])
+            self.assertEqual(english, menu["i18nMessages"]["name"]["en_US"])
+            self.assertEqual(english, menu["i18nMessages"]["name"]["en"])
+            self.assertEqual([{"permission": permission, "actions": ["query"]}], menu["permissions"])
+        self.assertEqual([], rows["prototype-hub-statistics"]["buttons"])
+        credential_buttons = rows["prototype-hub-license"]["buttons"]
+        self.assertEqual(1, len(credential_buttons))
+        self.assertEqual("import", credential_buttons[0]["id"])
+        self.assertEqual("导入凭证", credential_buttons[0]["name"])
+        self.assertEqual("Import credential", credential_buttons[0]["i18nMessages"]["en_US"])
+        self.assertEqual("Import credential", credential_buttons[0]["i18nMessages"]["en"])
+        self.assertEqual([{"permission": "prototype-hub-license", "actions": ["save"]}],
+                         credential_buttons[0]["permissions"])
         recycle = rows["prototype-hub-recycle"]
         self.assertEqual("prototype-hub/Recycle", recycle["componentCode"])
         self.assertEqual("/prototype-hub/recycle-bin", recycle["url"])
