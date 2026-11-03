@@ -117,7 +117,79 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(27, localTypes.size());
+        assertEquals(31, localTypes.size());
+        Map<String, Set<String>> addedColumns =
+                Map.of(
+                        "p_share_visit",
+                        Set.of(
+                                "id",
+                                "project_id",
+                                "version_id",
+                                "revision_id",
+                                "share_id",
+                                "visit_day",
+                                "received_at"),
+                        "p_copy_snapshot",
+                        Set.of(
+                                "id",
+                                "project_id",
+                                "version_id",
+                                "revision_id",
+                                "page_id",
+                                "page_path",
+                                "manifest_sha256",
+                                "file_sha256",
+                                "extractor_version",
+                                "extraction_state",
+                                "limit_reason",
+                                "static_count",
+                                "config_version",
+                                "extracted_at"),
+                        "p_copy_entry",
+                        Set.of(
+                                "id",
+                                "snapshot_id",
+                                "project_id",
+                                "version_id",
+                                "revision_id",
+                                "page_id",
+                                "kind",
+                                "source_order",
+                                "text",
+                                "business_term",
+                                "note",
+                                "requirement_url",
+                                "occurrence_count",
+                                "occurrences_json",
+                                "config_version",
+                                "created_at",
+                                "updated_at"),
+                        "p_review_association",
+                        Set.of(
+                                "id",
+                                "active_scope_key",
+                                "project_id",
+                                "version_id",
+                                "share_id",
+                                "revision_id",
+                                "source_thread_id",
+                                "source_guest_id",
+                                "source_verification_level",
+                                "target_guest_id",
+                                "target_verification_level",
+                                "share_config_version",
+                                "share_generation",
+                                "target_guest_config_version",
+                                "evidence_reference",
+                                "created_by",
+                                "created_by_name",
+                                "create_time",
+                                "revoked",
+                                "config_version",
+                                "revoked_by",
+                                "revoked_by_name",
+                                "revoked_at",
+                                "revoke_reason"));
         Set<String> tables = new HashSet<>();
         int describedColumns = 0;
         for (Class<?> type : localTypes) {
@@ -128,6 +200,15 @@ class DatabaseDescriptionIntegrationTest {
                     type.getAnnotation(Schema.class).description(),
                     comment(mapping.getName(), null),
                     type.getSimpleName());
+            if (addedColumns.containsKey(mapping.getName())) {
+                Set<String> mapped = new HashSet<>();
+                mapping.getColumns().forEach(column -> mapped.add(column.getName()));
+                assertEquals(addedColumns.get(mapping.getName()), mapped, mapping.getName());
+                assertEquals(
+                        addedColumns.get(mapping.getName()),
+                        columnNames(mapping.getName()),
+                        mapping.getName());
+            }
             for (var column : mapping.getColumns()) {
                 assertNotNull(column.getComment(), type.getSimpleName() + "." + column.getName());
                 assertFalse(column.getComment().isBlank());
@@ -166,17 +247,29 @@ class DatabaseDescriptionIntegrationTest {
                         "p_review_invitation",
                         "p_review_thread",
                         "p_review_message",
-                        "p_review_event"),
+                        "p_review_event",
+                        "p_share_visit",
+                        "p_copy_snapshot",
+                        "p_copy_entry",
+                        "p_review_association"),
                 tables);
-        // 包含两类访客、邀请、反馈及固定页面工作项引用；历史评审开关仍默认关闭。
-        assertEquals(280, describedColumns);
+        // 新增四表62列及安装表8列；逐字段校验真实注释，不能用总数替代持久化契约。
+        assertEquals(350, describedColumns);
         assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
                         "retention_deleted_time",
                         "retention_version_id",
                         "retention_project_time",
-                        "retention_project_id")) {
+                        "retention_project_id",
+                        "statistics_signing_key",
+                        "statistics_started_at",
+                        "license_document",
+                        "license_id",
+                        "license_sequence",
+                        "license_fingerprint",
+                        "license_accepted_at",
+                        "license_key_id")) {
             assertTrue(columnNames("p_installation").contains(name), name);
             assertFalse(comment("p_installation", name).isBlank(), name);
         }

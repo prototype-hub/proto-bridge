@@ -1698,7 +1698,12 @@ class PrototypeHubRevisionIntegrationTest {
         JsonNode exported = storageExport(null);
         assertTrue(exported.path("referencesComplete").asBoolean());
         assertTrue(exported.path("receiptReferencesChecked").asBoolean());
-        assertEquals("immutable-revisions-v1", exported.path("sourceSchema").asText());
+        assertEquals(3, exported.path("formatVersion").asInt());
+        assertEquals(
+                "immutable-revisions-review-images-v1", exported.path("sourceSchema").asText());
+        assertTrue(exported.path("imageReferencesChecked").asBoolean());
+        assertTrue(exported.path("imageEntries").isArray());
+        assertTrue(exported.path("imageEntries").isEmpty());
         assertEquals(0, exported.path("integrityErrors").asInt());
         assertEquals(3, exported.path("entries").size());
         var paths = new java.util.HashSet<String>();

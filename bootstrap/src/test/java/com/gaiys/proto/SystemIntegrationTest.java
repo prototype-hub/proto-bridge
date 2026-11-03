@@ -56,6 +56,10 @@ class SystemIntegrationTest {
                                 + DATABASE.getDatabaseName());
         registry.add("spring.r2dbc.username", DATABASE::getUsername);
         registry.add("spring.r2dbc.password", DATABASE::getPassword);
+        // 通用系统契约不依赖操作者SMTP配置；配置后的真实UP/DOWN另由邮件健康测试覆盖。
+        registry.add("spring.mail.host", () -> "");
+        registry.add("spring.mail.username", () -> "");
+        registry.add("spring.mail.password", () -> "");
         registry.add("proto.admin.password", () -> ADMIN_PASSWORD);
         registry.add("FRONT_TITLE", () -> "Configured Proto Bridge");
         registry.add("FRONT_LOGO", () -> "/branding/logo.svg");

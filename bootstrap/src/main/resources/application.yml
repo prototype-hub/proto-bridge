@@ -14,33 +14,33 @@ spring: # Spring 配置
   jackson:
     time-zone: ${APP_TIME_ZONE} # 日期时区
   mail: # 可选：公开分享邮箱身份的验证码客户端，host 为空时不启用
-    host: ${SMTP_HOST:}
-    port: ${SMTP_PORT:587}
-    username: ${SMTP_USERNAME:}
+    host: ${SMTP_HOST:} # 邮箱服务主机
+    port: ${SMTP_PORT:587} # 邮箱服务端口
+    username: ${SMTP_USERNAME:} # 邮箱服务用户名
     password: ${SMTP_PASSWORD:} # 仅从环境变量或本地私密配置读取
     protocol: ${SMTP_PROTOCOL:smtp} # SMTPS 通常配合端口 465
-    default-encoding: ${SMTP_DEFAULT_ENCODING:UTF-8}
+    default-encoding: ${SMTP_DEFAULT_ENCODING:UTF-8} # 邮箱服务默认编码
     test-connection: false # 不在启动时连接邮件服务
     properties:
       mail.smtp.from: ${SMTP_FROM:} # 留空时使用 username，均为空则使用本地发送身份
-      mail.smtp.auth: ${SMTP_AUTH:true}
-      mail.smtp.starttls.enable: ${SMTP_STARTTLS_ENABLE:true}
-      mail.smtp.starttls.required: ${SMTP_STARTTLS_REQUIRED:true}
-      mail.smtp.ssl.enable: ${SMTP_SSL_ENABLE:false}
-      mail.smtp.ssl.checkserveridentity: ${SMTP_CHECK_SERVER_IDENTITY:true}
-      mail.smtp.connectiontimeout: ${SMTP_CONNECTION_TIMEOUT:5000} # 毫秒，必须为正整数
-      mail.smtp.timeout: ${SMTP_READ_TIMEOUT:5000}
-      mail.smtp.writetimeout: ${SMTP_WRITE_TIMEOUT:5000}
+      mail.smtp.auth: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.starttls.enable: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.starttls.required: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.ssl.enable: false # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.ssl.checkserveridentity: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtp.connectiontimeout: 5000 # 毫秒，必须为正整数
+      mail.smtp.timeout: 5000 # 毫秒，必须为正整数
+      mail.smtp.writetimeout: 5000 # 毫秒，必须为正整数
       mail.smtp.localhost: ${SMTP_LOCALHOST:localhost} # EHLO 身份，避免默认本机反向 DNS
-      mail.smtps.auth: ${SMTP_AUTH:true}
-      mail.smtps.starttls.enable: ${SMTPS_STARTTLS_ENABLE:false}
-      mail.smtps.starttls.required: ${SMTPS_STARTTLS_REQUIRED:false}
-      mail.smtps.ssl.enable: ${SMTPS_SSL_ENABLE:true}
-      mail.smtps.ssl.checkserveridentity: ${SMTP_CHECK_SERVER_IDENTITY:true}
-      mail.smtps.connectiontimeout: ${SMTP_CONNECTION_TIMEOUT:5000}
-      mail.smtps.timeout: ${SMTP_READ_TIMEOUT:5000}
-      mail.smtps.writetimeout: ${SMTP_WRITE_TIMEOUT:5000}
-      mail.smtps.localhost: ${SMTP_LOCALHOST:localhost}
+      mail.smtps.auth: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtps.starttls.enable: false # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtps.starttls.required: false # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtps.ssl.enable: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtps.ssl.checkserveridentity: true # 留空时使用 username，均为空则使用本地发送身份
+      mail.smtps.connectiontimeout: 5000 # 毫秒，必须为正整数
+      mail.smtps.timeout: 5000 # 毫秒，必须为正整数
+      mail.smtps.writetimeout: 5000 # 毫秒，必须为正整数
+      mail.smtps.localhost: ${SMTP_LOCALHOST:localhost} # EHLO 身份，避免默认本机反向 DNS
   r2dbc: # R2DBC 配置
     url: ${DATABASE_R2DBC_URL} # pg数据库连接地址
     username: ${DATABASE_USER} # 数据库用户名
