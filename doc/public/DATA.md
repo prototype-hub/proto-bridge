@@ -107,6 +107,12 @@ EasyORM增补 `p_work_item`，保存 `project_id/version_id/revision_id/page_id`
 
 写入沿当前账号→项目→版本锁序，与 `p_creation_receipt` 原子提交。回执resource_id归逻辑版本、revision_id归实际修订，原始请求键和备注不写入回执；引用行删除后保留回执，防止未知结果重试复活旧引用。软删保留行和回执，30天永久清理版本时在同一事务清除。备份应保留完整表、固定修订及回执；URL和备注属于项目私有业务资料，不放入公开日志或运行证据。此表不引入文件引用，存储清单仍为v3。
 
+## 固定页面人工视口自测
+
+EasyORM纯新增 `p_viewport_check`，包含 `id`、固定范围 `project_id/version_id/revision_id/page_id`、`viewport_width/viewport_height/viewport_scale`、人工 `category/title/steps/expected/observed/result/evidence`、`config_version/created_at/updated_at` 共18列；同步表、字段中文描述，不回填或重写旧记录。索引 `(revision_id,page_id,created_at,id)` 服务固定页分页，version_id和project_id索引用于永久清理。
+
+记录只属于原固定修订，替换当前修订不迁移。人工结论及证据是项目私有纯文本，不是自动测试、设备认证或文件附件。写入复用账号→项目→版本锁序与持久回执，CAS和回执同事务；回执resource_id指向逻辑版本、revision_id明确指向修订。软删保留，恢复后重验当前授权，永久清理版本及到期无子项目时清除关联行。整库与文件同窗口备份应包含该表完整行及回执；诊断只输出数量与摘要，不导出场景正文。此表没有新增文件引用，存储清单仍为v3。
+
 ## 不可变修订与旧内容迁移
 
 `p_version` 继续保存逻辑版本和 `current_revision_id`；`storage_path/entry_file` 是当前修订的兼容投影。`p_revision` 保存不可变文件路径、入口、上传时名称/说明、规范化清单 JSON/SHA-256、实际文件数/总字节和创建信息。`p_share`、`p_preview_session`、`p_creation_receipt` 增加 `revision_id`：固定分享和内部预览固定快照，创建回执重放原成功快照。数据库和原型文件必须联合保存全部历史；只备份当前 `p_version.storage_path` 会丢失历史和分享内容。

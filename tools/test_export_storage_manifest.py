@@ -84,6 +84,25 @@ class StorageExportPostgresTest(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.assertGreater(self.export(mutation)['integrityErrors'], 0)
 
+    def test_optional_viewport_checks_preserve_fixed_scope_without_exporting_manual_text(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_revision ADD COLUMN manifest_json text;
+          UPDATE p_revision SET manifest_json='{"pages":[{"pageId":"page","path":"index.html","folder":false,"children":[]}]}';
+          CREATE TABLE p_viewport_check(id text primary key,project_id text,version_id text,
+            revision_id text,page_id text,title text,observed text);
+          INSERT INTO p_viewport_check VALUES('viewport','project','version','r1','page',
+            'Private manual title','Private manual observation');
+          """)
+        manifest = self.export()
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertTrue(manifest['referencesComplete'])
+        self.assertNotIn('Private manual', json.dumps(manifest))
+        for mutation in ("UPDATE p_viewport_check SET revision_id='missing';",
+                         "UPDATE p_viewport_check SET page_id='other-page';",
+                         "UPDATE p_viewport_check SET project_id='missing';"):
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+
     def test_optional_work_items_check_fixed_associations_without_exporting_private_content(self):
         create = """
           CREATE TABLE p_work_item(id text primary key,project_id text,version_id text,
