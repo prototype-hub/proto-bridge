@@ -10,6 +10,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeViewportCheckEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeWorkItemEntity;
 import io.micrometer.observation.Observation;
 import io.micrometer.observation.ObservationRegistry;
@@ -53,6 +54,7 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
     private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
+    private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
 
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
@@ -410,6 +412,11 @@ public class PrototypeRetentionService {
         return statistics
                 .purgeVersion(id)
                 .then(
+                        viewportChecks
+                                .createDelete()
+                                .where(PrototypeViewportCheckEntity::getVersionId, id)
+                                .execute())
+                .then(
                         copyEntries
                                 .createDelete()
                                 .where(PrototypeCopyEntryEntity::getVersionId, id)
@@ -464,6 +471,14 @@ public class PrototypeRetentionService {
                         ignored ->
                                 statistics
                                         .purgeProject(id)
+                                        .then(
+                                                viewportChecks
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeViewportCheckEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 copyEntries
                                                         .createDelete()

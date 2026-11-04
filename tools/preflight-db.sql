@@ -3,10 +3,10 @@
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
+ AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -127,6 +127,7 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_copy_entry_ta
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_review_thread_table')) IS NOT NULL
  AND to_regclass(format('%I.%I',current_schema(),:'prototype_hub_review_message_table')) IS NOT NULL
  AS prototype_hub_has_review_threads \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_viewport_check_table')) IS NOT NULL AS prototype_hub_has_viewport_checks \gset
 \if :prototype_hub_has_revisions
 WITH current_scope_errors AS (
  SELECT null::varchar AS id WHERE false
@@ -204,6 +205,19 @@ WITH current_scope_errors AS (
  WHERE s.id IS NULL OR s.project_id IS DISTINCT FROM a.project_id
   OR s.version_id IS DISTINCT FROM a.version_id OR s.revision_id IS DISTINCT FROM a.revision_id
   OR s.page_id IS DISTINCT FROM a.page_id
+\endif
+\if :prototype_hub_has_viewport_checks
+ UNION ALL
+ SELECT w.id FROM :"prototype_hub_viewport_check_table" w
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=w.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=w.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=w.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM w.project_id OR r.project_id IS DISTINCT FROM w.project_id
+  OR r.version_id IS DISTINCT FROM w.version_id
+  OR NOT jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',
+   jsonb_build_object('page',w.page_id))
 \endif
 )
 SELECT 'current_scope_errors',count(*) FROM current_scope_errors;

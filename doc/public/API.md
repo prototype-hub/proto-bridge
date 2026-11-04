@@ -162,6 +162,27 @@ DOM 子树变化、窗口尺寸、字体加载、样式表加载及 transition/a
 
 非法输入返回400，未登录401，缺动作或当前项目角色不足403，未绑定项目、目标不存在、跨范围、已软删或页面不在固定清单中404。引用随版本软删保留，恢复后重新按当前权限读取；30天永久清理时与修订及其回执同事务删除。手工删除引用即时删除该行，不删除任何外部工作项。
 
+## 固定页面人工视口自测
+
+内部成员可在固定修订的真实叶子页面记录人工场景、CSS视口及观察结论。接口不执行原型、不抓取DOM、不截图或上传附件，也不推断测试结果；分享和guest没有该入口。
+
+以下集合路径为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/pages/{pageId}/viewport-checks`：
+
+| 请求 | 输入与结果 |
+| --- | --- |
+| `POST /_query` | `pageIndex` 默认0、范围0–10000，`pageSize` 默认20、范围1–100；可选 `category/result`；返回标准 `PagerResult` |
+| `POST` 集合 | 下列场景字段与 `clientRequestId`；返回完整记录 |
+| `PUT /{checkId}` | 场景字段、`clientRequestId` 与必填 `expectedVersion`；CAS替换记录 |
+| `POST /{checkId}/_delete` | `clientRequestId/expectedVersion`，成功返回true |
+
+场景字段：必填整数 `viewportWidth/viewportHeight` 各240–3840；整数 `viewportScale` 默认100、范围25–200，只改变舞台显示大小，不改变CSS视口或DPR。必填 `category` 为 `normal/empty/loading/permission/boundary/error`，必填 `title` 1–120、`expected` 1–2000字符。`steps/observed/evidence` 为0–2000字符的可选纯文本，省略/null保存为空串。`result` 默认 `untested`，可选 `passed/failed`；后两者必须填写非空白 `observed`。同标题和视口可以重复。
+
+响应包含 `id/projectId/versionId/revisionId/pageId`、全部场景字段与 `configVersion/createdAt/updatedAt`。输入及数据库中的 `category/result` 为稳定小写字符串，响应为 `{value,text}` 枚举对象，`text` 按请求语言显示，例如 `{"value":"untested","text":"未测"}`；不是自动验收状态。列表在数据库按 `createdAt DESC,id ASC` 分页并筛选，越界页为空；外层沿用标准 `result` 包装。
+
+查询要求 `prototype-hub-version.query` 与当前项目READ；增改删要求 `prototype-hub-version.save` 与当前项目EDIT，viewer只读。每次请求和回执重放均重新检查当前账号与授权、活动项目/版本、明确修订及其真实页面，不回退当前修订。上传新修订不会迁移旧记录；软删除保留，恢复后重验权限，永久清理时同事务移除记录与回执。
+
+`clientRequestId` 为1–128个非空白可打印ASCII字符；未知提交结果保留原键和完整输入。创建版本为0，CAS更新递增；过期版本返回409 / `PROTOTYPE_HUB_VIEWPORT_CHECK_CONFLICT`，同键异内容返回既有409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。重放读取当前记录；已删除记录的旧创建/更新键不能复活它，原删除键可重放true。不存在返回404 / `PROTOTYPE_HUB_VIEWPORT_CHECK_NOT_FOUND`，普通字段与组合校验返回400 / `BAD_REQUEST`，非整数JSON类型沿WebFlux返回400 / `HTTP_400`；其他身份、范围和授权错误沿既有接口规则。
+
 ## 项目与版本软删除
 
 `DELETE /prototype-hub/versions/{id}` 保留逻辑版本、当前指针、全部修订、创建回执与文件，在原事务锁边界内写入 `deletedTime`（Unix 毫秒）。`DELETE /prototype-hub/projects/{id}` 同样保留项目与成员谱系；有活动版本时仍返回 409，只有已删除版本不阻止删除项目。重复访问已删除对象按不存在处理，不能用 ADMIN 例外读取已删除业务对象。

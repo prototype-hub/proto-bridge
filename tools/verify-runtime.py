@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_work_item', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_work_item', 'p_viewport_check', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -102,7 +102,7 @@ def compare_review_rows(before, after, now, allowed_removed=None):
 
 def current_manifest(manifest):
     require({table for table in manifest if table.startswith('p_')} == set(BUSINESS_TABLES),
-            'Current business table coverage differs from the required 23 tables')
+            'Current business table coverage differs from the required table set')
     for table in BUSINESS_TABLES:
         row = manifest[table]
         require(type(row.get('count')) is int and row['count'] > 0 and
@@ -1727,6 +1727,16 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                        note='Original private work item', clientRequestId=uuid.uuid4().hex)
         fixture['workItem'] = {'path': path, 'payload': payload,
                                'row': api.request('POST', path, payload)}
+        path = ('/api/prototype-hub/versions/' + version['id'] + '/revisions/' +
+                base['revisionId'] + '/pages/' + base['pageId'] + '/viewport-checks')
+        payload = {'viewportWidth': 390, 'viewportHeight': 844, 'viewportScale': 100,
+                   'category': 'normal', 'title': 'Original manual viewport observation',
+                   'steps': 'Open the page at the recorded viewport',
+                   'expected': 'The page remains usable', 'observed': 'Recorded by a member',
+                   'result': 'passed', 'evidence': 'Manual fixture; not an automatic test',
+                   'clientRequestId': uuid.uuid4().hex}
+        fixture['viewportCheck'] = {'path': path, 'payload': payload,
+                                    'row': api.request('POST', path, payload)}
         owner = self.sql('runtime_source', "select owner_id from p_project where id=:'project';",
                          variables={'project': project['id']})
         path = discussion['memberPath'] + '/' + discussion['thread']['id'] + '/assignment'
@@ -1837,6 +1847,11 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'Work item receipt replay changed identity or metadata')
         require(api.request('POST', work['path'] + '/_query', fixture['review']['discussion']['base'])['data'] ==
                 [work['row']], 'Restored work item lost its fixed page scope')
+        viewport = fixture['viewportCheck']
+        require(api.request('POST', viewport['path'], viewport['payload']) == viewport['row'],
+                'Viewport check receipt replay changed identity or metadata')
+        require(api.request('POST', viewport['path'] + '/_query', {})['data'] == [viewport['row']],
+                'Restored viewport check lost its fixed page scope')
         assigned = fixture['assignment']
         require(api.request('PUT', assigned['path'], assigned['payload']) == assigned['row'],
                 'Assignment receipt replay changed its independent version or owner')
@@ -1897,7 +1912,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         require(stats['visits'] == expected and sum(row['visits'] or 0 for row in stats['trend']) == expected,
                 'Restored statistics differ from current database events')
         self.report['currentGraph'] = {'businessTables': len(BUSINESS_TABLES),
-            'nonemptyWorkItemAnchorAssignment': True, 'activeAndRevokedAssociationsPreserved': True,
+            'nonemptyWorkItemAnchorAssignment': True, 'manualViewportCheckPreserved': True, 'activeAndRevokedAssociationsPreserved': True,
             'fixedCopyStates': [item['state'] for item in fixture['copy']],
             'staticManualOccurrencesAndReceiptsPreserved': True, 'readWriteAndForeignScopeChecked': True,
             'recentVisitReplayDoesNotInsert': True, 'statisticsMatchDatabase': True}
@@ -1936,7 +1951,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
         before = self.sql_script(database, 'snapshot-db.sql')
-        require(any(line.startswith('business_table_coverage|23|') for line in before.splitlines()),
+        require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
         variables = {'association': fixture['associations']['active']['id'],
                      'foreign_project': fixture['copyProject']['id'],
@@ -2274,7 +2289,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item',
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_viewport_check',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

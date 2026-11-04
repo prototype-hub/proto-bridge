@@ -117,9 +117,29 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(31, localTypes.size());
+        assertEquals(32, localTypes.size());
         Map<String, Set<String>> addedColumns =
                 Map.of(
+                        "p_viewport_check",
+                        Set.of(
+                                "id",
+                                "project_id",
+                                "version_id",
+                                "revision_id",
+                                "page_id",
+                                "viewport_width",
+                                "viewport_height",
+                                "viewport_scale",
+                                "category",
+                                "title",
+                                "steps",
+                                "expected",
+                                "observed",
+                                "result",
+                                "evidence",
+                                "config_version",
+                                "created_at",
+                                "updated_at"),
                         "p_share_visit",
                         Set.of(
                                 "id",
@@ -233,6 +253,7 @@ class DatabaseDescriptionIntegrationTest {
                         "p_version",
                         "p_revision",
                         "p_work_item",
+                        "p_viewport_check",
                         "p_share",
                         "p_installation",
                         "p_creation_receipt",
@@ -253,8 +274,8 @@ class DatabaseDescriptionIntegrationTest {
                         "p_copy_entry",
                         "p_review_association"),
                 tables);
-        // 新增四表62列及安装表8列；逐字段校验真实注释，不能用总数替代持久化契约。
-        assertEquals(350, describedColumns);
+        // 新表逐字段校验真实注释，不能用总数替代持久化契约。
+        assertEquals(368, describedColumns);
         assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
