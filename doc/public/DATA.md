@@ -105,13 +105,13 @@ EasyORM 自动同步 `p_installation` 和 `p_creation_receipt`。应用在结构
 
 EasyORM增补 `p_work_item`，保存 `project_id/version_id/revision_id/page_id`、手工 `url/note`、独立 `config_version` 和创建/更新时间；旧表与业务数据不改写。索引 `(revision_id,page_id,created_at,id)` 支持固定页面数据库分页，另有version_id索引用于版本永久清理。引用固定于原修订，不随current指针更新复制或迁移，也不成为访问外部系统或项目的权限。
 
-写入沿当前账号→项目→版本锁序，与 `p_creation_receipt` 原子提交。回执resource_id归逻辑版本、revision_id归实际修订，原始请求键和备注不写入回执；引用行删除后保留回执，防止未知结果重试复活旧引用。软删保留行和回执，30天永久清理版本时在同一事务清除。备份应保留完整表、固定修订及回执；URL和备注属于项目私有业务资料，不放入公开日志或运行证据。此表不引入文件引用，存储清单仍为v3。
+写入沿当前账号→项目→版本锁序，与 `p_creation_receipt` 原子提交。回执resource_id归逻辑版本、revision_id归实际修订，原始请求键和备注不写入回执；引用行删除后保留回执，防止未知结果重试复活旧引用。软删保留行和回执，30天永久清理版本时在同一事务清除。备份应保留完整表、固定修订及回执；URL和备注属于项目私有业务资料，不放入公开日志或运行证据。此表不引入文件引用，存储清单采用当前完整引用格式。
 
 ## 固定页面人工视口自测
 
 EasyORM纯新增 `p_viewport_check`，包含 `id`、固定范围 `project_id/version_id/revision_id/page_id`、`viewport_width/viewport_height/viewport_scale`、人工 `category/title/steps/expected/observed/result/evidence`、`config_version/created_at/updated_at` 共18列；同步表、字段中文描述，不回填或重写旧记录。索引 `(revision_id,page_id,created_at,id)` 服务固定页分页，version_id和project_id索引用于永久清理。
 
-记录只属于原固定修订，替换当前修订不迁移。人工结论及证据是项目私有纯文本，不是自动测试、设备认证或文件附件。写入复用账号→项目→版本锁序与持久回执，CAS和回执同事务；回执resource_id指向逻辑版本、revision_id明确指向修订。软删保留，恢复后重验当前授权，永久清理版本及到期无子项目时清除关联行。整库与文件同窗口备份应包含该表完整行及回执；诊断只输出数量与摘要，不导出场景正文。此表没有新增文件引用，存储清单仍为v3。
+记录只属于原固定修订，替换当前修订不迁移。人工结论及证据是项目私有纯文本，不是自动测试、设备认证或文件附件。写入复用账号→项目→版本锁序与持久回执，CAS和回执同事务；回执resource_id指向逻辑版本、revision_id明确指向修订。软删保留，恢复后重验当前授权，永久清理版本及到期无子项目时清除关联行。整库与文件同窗口备份应包含该表完整行及回执；诊断只输出数量与摘要，不导出场景正文。此表没有新增文件引用，存储清单采用当前完整引用格式。
 
 ## 不可变修订与旧内容迁移
 
@@ -150,7 +150,17 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 存储核验先停写后导出完整引用：`psql -X -qAt -v ON_ERROR_STOP=1 -f tools/export-storage-manifest.sql > references.json`，再运行 `python3 tools/audit-storage.py --root /path/to/snapshot --manifest references.json`。导出包括活动与已删除版本、全部历史修订及未迁移旧投影，校验项目/版本/修订/分享、成员的父项目、内部会话的项目/版本及显式修订、非空创建回执修订的实际资源关联（version、thread或message→thread），以及所有public/internal消息图片的完整元数据和父线程/项目/版本/修订关联；创建回执没有修订的旧请求与项目请求不按猜测类型修复。导出不按 30 天期限过滤，仍持久化的到期引用也必须保护，只有数据库事务真正删掉引用后目录才可能回收。`preflight-db.sql` 另输出活动/软删计数，`snapshot-db.sql` 输出删除状态和完整文件清理队列的摘要，恢复时必须核对，不能只比较 ID 或行数。
 
-完整清单使用format=prototype-hub-storage-references、formatVersion=3、sourceSchema=immutable-revisions-review-images-v1，同时具有 `referencesComplete=true`、`receiptReferencesChecked=true`、`imageReferencesChecked=true` 和 `integrityErrors=0`。原修订entries保持不变，imageEntries为 `{projectId,versionId,messageId,storagePath,size,sha256}`，包含全部保留图片，不导出正文或凭据。旧数组、v2、缺结构的current-only及尚未核验回执或图片关联的清单仅供检查，不授权 `--delete-unreferenced`，不能声称完整图片引用已验。审计先检查全部版本及图片引用，逐图核对真实字节数与SHA-256；缺失、损坏、非法边界、重复引用或符号链接阻止所有删除，不会先删看似孤儿再报告失败。完整v3显式修复仅删除没有任何持久引用的版本或图片候选目录；图片以外文件仍需全量文件路径/内容hash核对。离线修复还必须显式提供 `--offline --confirm /path/to/snapshot`，仅在联合备份的隔离副本审查后使用；不要手改清单完整性标志绕过检查，软删目录仍属于被引用数据。
+完整清单使用format=prototype-hub-storage-references、formatVersion=4、sourceSchema=immutable-revisions-materials-v1，同时具有 `referencesComplete=true`、`receiptReferencesChecked=true`、`imageReferencesChecked=true`、`materialReferencesChecked=true` 和 `integrityErrors=0`。原修订entries、评审imageEntries保持原形，新增materialEntries `{projectId,versionId,revisionId,materialId,materialType,storagePath,size,sha256}`，不导出来源、正文或凭据。旧数组、v2、current-only及缺关联检查的清单仅供检查；v3仅适用于尚无私有资料目录的旧快照，有materials目录时拒绝旧清单修复。审计先验证全部数据库关联、规范边界、字节数和SHA-256，缺失、损坏、重复引用或符号链接阻止所有删除。完整v4显式修复仅删除无任何持久引用的版本、评审图片或私有资料候选目录。离线修复必须提供 `--offline --confirm /path/to/snapshot` 并先在联合备份的隔离副本审核；不要手改完整性标志，软删目录仍属于被引用数据。
+
+## 固定修订私有资料数据
+
+EasyORM增量创建 `p_revision_material`，包含主键、`project_id/version_id/revision_id`、`material_type/file_name/media_type/file_size/sha256/storage_path`、`source_tool/source_name/source_url/source_notes`、`config_version/created_by/updated_by/created_at/updated_at`，同步表和字段描述。索引 `(revision_id,created_at,id)` 用于固定范围分页，project_id/version_id用于永久清理。不回填旧来源，不更改 `p_revision` 的不可变manifest或原ZIP。
+
+原型来源声明引用原 `versions/{storage}/original.zip`，声明自身有不可复用ID；项目→版本锁内保证一个固定修订最多一条当前原型声明。图片/文档采用独占随机目录 `projects/{project}/materials/{storage}/content`，原文件名称不参与路径。写入沿账号→项目→版本锁序，重验当前权限、修订、资源预算和CAS，与完整创建回执原子提交。回执resource_id归版本、revision_id归固定修订；删除后保留回执，旧请求不能复活资料，重新声明使用新ID。
+
+软删保留元数据、来源、私有文件和回执，恢复后重新验证当前授权。版本或无子项目永久清理在同一事务移除资料并登记 `material` 文件任务；队列仅删除没有任何保留资料引用的规范目录，不回收原型声明引用的ZIP，后者沿既有快照生命周期处理。事务结果未知的候选文件保留，不能把客户端取消当作数据库回滚。整库备份与完整私有存储必须同窗口保存；来源正文属于项目私有信息，诊断清单只导出文件边界、字节数、摘要和作用域。
+
+这是新增表和私有目录的兼容升级，无破坏迁移。回退旧应用前停止写入并验证联合备份；保留新增表和文件，旧应用不会提供资料入口，旧版不含资料引用的工具不得清理这些目录。
 
 ## 分享邮箱身份数据
 

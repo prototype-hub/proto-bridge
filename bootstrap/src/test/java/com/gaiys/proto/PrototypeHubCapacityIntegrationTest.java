@@ -25,6 +25,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionMaterialService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionMigrationService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
@@ -134,6 +135,7 @@ class PrototypeHubCapacityIntegrationTest {
         registry.add("prototype-hub.storage.root", () -> FILES.toString());
     }
 
+    @Autowired PrototypeRevisionMaterialService materials;
     @Autowired TestCapacityPolicy capacity;
     @Autowired PrototypeProjectService projects;
     @Autowired PrototypeProjectAccessService access;
@@ -903,7 +905,8 @@ class PrototypeHubCapacityIntegrationTest {
                         receipts,
                         access,
                         revisions,
-                        manifests);
+                        manifests,
+                        materials);
         Mono<PrototypeVersionEntity> operation =
                 replace
                         ? asAdmin(

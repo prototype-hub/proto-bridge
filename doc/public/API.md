@@ -38,6 +38,25 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 分页响应保留原有项目角色、能力及版本修订信息；版本 `revisionCount` 仅对本页最多 100 个版本作一次分组统计，不读取修订文件清单。发布过的 `GET /prototype-hub/projects`、`GET /prototype-hub/versions?projectId=…` 继续返回数组，供既有调用方兼容；需要有界查询的新调用方应使用分页入口。
 
+## 固定修订资料与人工来源
+
+内部成员可在 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/materials` 管理固定修订资料。查询和下载要求版本 `query` 动作与当前项目 READ；新增、维护、删除要求版本 `save` 与项目 EDIT。分享凭据和 guest 身份不能访问该入口，替换当前修订也不会移动旧资料。
+
+| 请求 | 输入与行为 |
+| --- | --- |
+| `POST /_query` | JSON `{pageIndex:0,pageSize:20,materialType?:"prototype"\|"image"\|"document"}`；页号0–10000、页大小1–100，数据库按创建时间倒序、ID升序稳定分页 |
+| `POST` | multipart `file`，可选 `sourceTool/sourceName/sourceUrl/sourceNotes`，推荐发送 `Idempotency-Key`；创建私有图片或文档 |
+| `POST /prototype-source` | JSON来源字段及 `clientRequestId`，为旧修订补录人工来源；至少一个来源字段非空，原ZIP必须实际存在；每修订最多一条当前原型来源 |
+| `PUT /{materialId}` | JSON完整来源字段、`expectedVersion`、`clientRequestId`，CAS替换来源，省略字段表示清空，不改变载荷 |
+| `POST /{materialId}/_delete` | JSON `{expectedVersion,clientRequestId}`；删除图片/文档后持久排队回收文件；原型类别只删除声明，保留修订和原ZIP |
+| `GET /{materialId}/content` | 当前READ授权后交付原字节，强制attachment、nosniff、sandbox和private no-store，不使用公共静态地址 |
+
+资料响应包含 `id/projectId/versionId/revisionId/materialType/fileName/mediaType/fileSize/sha256`、四个来源字段、`configVersion/createdBy/updatedBy/createdAt/updatedAt`，不返回存储路径。来源声明ID与修订ID不同；删除后重新声明使用新ID，旧请求不能覆盖或指向新声明。未记录的旧修订没有原型来源行，不能推断历史工具。来源工具和名称分别最多80/200字符，备注最多2000；地址最多2048且仅接受无用户凭据的绝对HTTP/HTTPS，服务端不抓取。所有来源均由成员声明，不代表认证来源或官方集成。
+
+原有版本ZIP创建、替换接口增加上述四个可选multipart来源字段，绑定实际生成修订并与修订原子提交。全部省略保留旧行为；旧创建回执指纹保持兼容。重复创建键必须保留完整文件和来源，文件或来源变化返回409；未知结果重试保留原键，CAS冲突先重新读取，不能自动换键重复提交。
+
+接受PNG/JPEG图片（实际解码、最多5MiB、每边不超过16384且不超过1600万像素）以及PDF、UTF-8 txt/md、无宏DOCX/XLSX/PPTX文档（最多20MiB）。文件名、签名、UTF-8或Office容器不匹配返回400，不接受HTML/SVG/rp或通用归档；Office仅原字节下载，不执行、解压或渲染。每个固定修订最多100份图片/文档、总计200MiB，属于资源安全边界，独立于项目/逻辑版本授权额度。超单文件返回413，修订资料预算或CAS冲突返回409，缺失原文件返回404。
+
 ## 项目成员与授权
 
 项目数据按持久化归属隔离。项目、版本、页面树、上传/替换、分享管理及内部预览均先由 hsweb 检查通用资源动作，再与当前项目角色取交集；前端按钮显示不能代替后端授权。关联版本、分享 ID 由后端回溯其真实项目，不信任客户端额外传入的 projectId。非成员按不存在返回 404，项目内角色不足返回 403。

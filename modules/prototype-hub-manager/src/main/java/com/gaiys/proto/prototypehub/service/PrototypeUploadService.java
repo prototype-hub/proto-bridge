@@ -1,17 +1,21 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService.UploadPaths;
+import com.gaiys.proto.prototypehub.service.validation.RevisionMaterialSource;
 import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
+import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.security.DigestInputStream;
 import java.util.HexFormat;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.function.Predicate;
 import lombok.AllArgsConstructor;
@@ -46,6 +50,8 @@ public class PrototypeUploadService {
     private final PrototypeRevisionService revisions;
     private final PrototypeManifestBuilder manifests;
 
+    private final PrototypeRevisionMaterialService materials;
+
     public Mono<PrototypeVersionEntity> upload(
             String project, String name, String description, FilePart file, String actor) {
         return upload(project, name, description, file, actor, null);
@@ -59,17 +65,48 @@ public class PrototypeUploadService {
             FilePart file,
             String actor,
             String key) {
+        return upload(
+                project,
+                name,
+                description,
+                file,
+                actor,
+                key,
+                new RevisionMaterialRequests.Source());
+    }
+
+    public Mono<PrototypeVersionEntity> upload(
+            String project,
+            String name,
+            String description,
+            FilePart file,
+            String actor,
+            String key,
+            RevisionMaterialRequests.Source sourceInput) {
         return Mono.defer(
                 () -> {
                     validate(name, description, file);
+                    var source = RevisionMaterialSource.of(sourceInput);
                     var request =
-                            receipts.request(
-                                    actor,
-                                    "create-version",
-                                    project,
-                                    key,
-                                    name.trim(),
-                                    description);
+                            source.recorded()
+                                    ? receipts.request(
+                                            actor,
+                                            "create-version",
+                                            project,
+                                            key,
+                                            name.trim(),
+                                            description,
+                                            source.tool(),
+                                            source.name(),
+                                            source.url(),
+                                            source.notes())
+                                    : receipts.request(
+                                            actor,
+                                            "create-version",
+                                            project,
+                                            key,
+                                            name.trim(),
+                                            description);
                     String id = PrototypeShareService.random();
                     UploadAttempt attempt = new UploadAttempt();
                     // 带键请求的回执可能指向已删除资源，须在读取完整指纹后统一返回幂等冲突。
@@ -102,6 +139,7 @@ public class PrototypeUploadService {
                                                                             file,
                                                                             actor,
                                                                             request,
+                                                                            source,
                                                                             paths,
                                                                             acquired)),
                                     // 重放返回旧资源时本次目录不归任何版本所有，成功路径同样回收。
@@ -119,9 +157,26 @@ public class PrototypeUploadService {
     /** 可选客户端前置条件；缺省同样使用上传前快照比较，不能后到覆盖先提交的结果。 */
     public Mono<PrototypeVersionEntity> update(
             String id, String name, String description, FilePart file, String expectedRevisionId) {
+        return update(
+                id,
+                name,
+                description,
+                file,
+                expectedRevisionId,
+                new RevisionMaterialRequests.Source());
+    }
+
+    public Mono<PrototypeVersionEntity> update(
+            String id,
+            String name,
+            String description,
+            FilePart file,
+            String expectedRevisionId,
+            RevisionMaterialRequests.Source sourceInput) {
         return Mono.defer(
                 () -> {
                     validate(name, description, file);
+                    var source = RevisionMaterialSource.of(sourceInput);
                     return access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT)
                             .flatMap(old -> revisions.current(old).thenReturn(old))
                             .flatMap(
@@ -139,7 +194,8 @@ public class PrototypeUploadService {
                                                                         name,
                                                                         description,
                                                                         file,
-                                                                        actor.userId()));
+                                                                        actor.userId(),
+                                                                        source));
                                     });
                 });
     }
@@ -183,6 +239,7 @@ public class PrototypeUploadService {
             FilePart file,
             String actor,
             PrototypeCreationReceiptService.Request request,
+            RevisionMaterialSource source,
             UploadPaths paths,
             UploadAttempt attempt) {
         return receiveAndExtract(file, paths, attempt)
@@ -204,7 +261,8 @@ public class PrototypeUploadService {
                                                                         ? null
                                                                         : request.withPayload(
                                                                                 received.getT2()),
-                                                                received.getT1())));
+                                                                received.getT1(),
+                                                                source)));
     }
 
     private Mono<String> payloadDigest(
@@ -231,7 +289,8 @@ public class PrototypeUploadService {
             String actor,
             UploadAttempt attempt,
             PrototypeCreationReceiptService.Request request,
-            PrototypeManifestBuilder.Built manifest) {
+            PrototypeManifestBuilder.Built manifest,
+            RevisionMaterialSource source) {
         PrototypeVersionEntity version = new PrototypeVersionEntity();
         version.setId(id);
         version.setProjectId(project);
@@ -247,32 +306,45 @@ public class PrototypeUploadService {
         PrototypeRevisionEntity revision =
                 revisions.candidate(version, version.getCurrentRevisionId(), manifest);
         // 解压完成后按安装→项目持锁，与换证串行；回执、计数和INSERT共用短事务，不在锁内做文件I/O。
-        Mono<PrototypeVersionEntity> creation =
-                installations
-                        .lock()
-                        .then(access.tryLockProject(project))
-                        .then(projects.findActiveById(project).hasElement())
-                        .flatMap(
-                                active ->
-                                        active
-                                                ? access.requireProject(
-                                                                project,
-                                                                PrototypeProjectAccessService.Action
-                                                                        .EDIT)
-                                                        .then(
-                                                                replayOrCreateVersion(
-                                                                        true, version, revision,
-                                                                        request))
-                                                : replayOrCreateVersion(
-                                                        false, version, revision, request));
-        return inUploadTransaction(attempt, creation, result -> id.equals(result.getId()));
+        return materials
+                .preparePrototype(revision, source)
+                .flatMap(
+                        material -> {
+                            Mono<PrototypeVersionEntity> creation =
+                                    installations
+                                            .lock()
+                                            .then(access.tryLockProject(project))
+                                            .then(projects.findActiveById(project).hasElement())
+                                            .flatMap(
+                                                    active ->
+                                                            active
+                                                                    ? access.requireProject(
+                                                                                    project,
+                                                                                    PrototypeProjectAccessService
+                                                                                            .Action
+                                                                                            .EDIT)
+                                                                            .then(
+                                                                                    replayOrCreateVersion(
+                                                                                            true,
+                                                                                            version,
+                                                                                            revision,
+                                                                                            request,
+                                                                                            material))
+                                                                    : replayOrCreateVersion(
+                                                                            false, version,
+                                                                            revision, request,
+                                                                            material));
+                            return inUploadTransaction(
+                                    attempt, creation, result -> id.equals(result.getId()));
+                        });
     }
 
     private Mono<PrototypeVersionEntity> replayOrCreateVersion(
             boolean projectExists,
             PrototypeVersionEntity version,
             PrototypeRevisionEntity revision,
-            PrototypeCreationReceiptService.Request request) {
+            PrototypeCreationReceiptService.Request request,
+            Optional<PrototypeRevisionMaterialEntity> material) {
         return receipts.replayReceipt(
                         request,
                         receipt -> {
@@ -316,18 +388,24 @@ public class PrototypeUploadService {
                         Mono.defer(
                                 () ->
                                         insertWithinCapacity(
-                                                projectExists, version, revision, request)));
+                                                projectExists,
+                                                version,
+                                                revision,
+                                                request,
+                                                material)));
     }
 
     private Mono<PrototypeVersionEntity> insertWithinCapacity(
             boolean projectExists,
             PrototypeVersionEntity version,
             PrototypeRevisionEntity revision,
-            PrototypeCreationReceiptService.Request request) {
+            PrototypeCreationReceiptService.Request request,
+            Optional<PrototypeRevisionMaterialEntity> material) {
         if (!projectExists) return Mono.error(PrototypeHubException.missing("project"));
         return versions.requireCapacity(version.getProjectId())
                 .then(versions.insert(version))
                 .then(revisions.insert(revision))
+                .then(materials.insertPrototype(material))
                 .then(receipts.record(request, version.getId(), revision.getId()))
                 .thenReturn(version);
     }
@@ -338,7 +416,8 @@ public class PrototypeUploadService {
             String name,
             String description,
             FilePart file,
-            String actor) {
+            String actor,
+            RevisionMaterialSource source) {
         String revisionId = PrototypeShareService.random();
         String replacement = id + "-revision-" + revisionId;
         UploadAttempt attempt = new UploadAttempt();
@@ -369,7 +448,8 @@ public class PrototypeUploadService {
                                                                                                         revisionId,
                                                                                                         actor,
                                                                                                         manifest,
-                                                                                                        acquired)))),
+                                                                                                        acquired,
+                                                                                                        source)))),
                 paths -> cleanup(old.getProjectId(), replacement, attempt),
                 (paths, error) -> cleanup(old.getProjectId(), replacement, attempt),
                 paths -> cleanup(old.getProjectId(), replacement, attempt));
@@ -384,31 +464,49 @@ public class PrototypeUploadService {
             String revisionId,
             String actor,
             PrototypeManifestBuilder.Built manifest,
-            UploadAttempt attempt) {
-        // 项目→版本行锁；CAS 当前指针和路径防止并发覆盖。只发布 ready 快照，失败候选不进入历史。
-        // 新快照与当前投影同一短事务提交，旧目录持续被旧 revision 引用，替换不得登记清理。
-        Mono<PrototypeVersionEntity> result =
-                access.lockProject(old.getProjectId())
-                        .then(access.lockVersion(old.getId()))
-                        .then(
-                                access.requireVersion(
-                                        old.getId(), PrototypeProjectAccessService.Action.EDIT))
-                        .then(
-                                versions.replace(
-                                        old,
-                                        name,
-                                        description,
-                                        storage.relativeSitePath(old.getProjectId(), replacement),
-                                        entry,
-                                        revisionId))
-                        .flatMap(
-                                updated -> {
-                                    PrototypeRevisionEntity revision =
-                                            revisions.candidate(updated, revisionId, manifest);
-                                    revision.setCreatorId(actor);
-                                    return revisions.insert(revision).thenReturn(updated);
-                                });
-        return inUploadTransaction(attempt, result, updated -> true);
+            UploadAttempt attempt,
+            RevisionMaterialSource source) {
+        PrototypeRevisionEntity revision = revisions.candidate(old, revisionId, manifest);
+        revision.setVersionName(name.trim());
+        revision.setDescription(description);
+        revision.setStoragePath(storage.relativeSitePath(old.getProjectId(), replacement));
+        revision.setEntryFile(entry);
+        revision.setCreatorId(actor);
+        return materials
+                .preparePrototype(revision, source)
+                .flatMap(
+                        material -> {
+                            // 项目→版本行锁；CAS 当前指针和路径防止并发覆盖。只发布 ready 快照，失败候选不进入历史。
+                            // 新快照与当前投影同一短事务提交，旧目录持续被旧 revision 引用，替换不得登记清理。
+                            Mono<PrototypeVersionEntity> result =
+                                    access.lockProject(old.getProjectId())
+                                            .then(access.lockVersion(old.getId()))
+                                            .then(
+                                                    access.requireVersion(
+                                                            old.getId(),
+                                                            PrototypeProjectAccessService.Action
+                                                                    .EDIT))
+                                            .then(
+                                                    versions.replace(
+                                                            old,
+                                                            name,
+                                                            description,
+                                                            storage.relativeSitePath(
+                                                                    old.getProjectId(),
+                                                                    replacement),
+                                                            entry,
+                                                            revisionId))
+                                            .flatMap(
+                                                    updated -> {
+                                                        return revisions
+                                                                .insert(revision)
+                                                                .then(
+                                                                        materials.insertPrototype(
+                                                                                material))
+                                                                .thenReturn(updated);
+                                                    });
+                            return inUploadTransaction(attempt, result, updated -> true);
+                        });
     }
 
     private static PrototypeHubException versionConflict() {

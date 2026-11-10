@@ -28,3 +28,4 @@
 \set prototype_hub_copy_snapshot_table :prototype_hub_table_prefix 'copy_snapshot'
 \set prototype_hub_copy_entry_table :prototype_hub_table_prefix 'copy_entry'
 \set prototype_hub_viewport_check_table :prototype_hub_table_prefix 'viewport_check'
+\set prototype_hub_revision_material_table :prototype_hub_table_prefix 'revision_material'

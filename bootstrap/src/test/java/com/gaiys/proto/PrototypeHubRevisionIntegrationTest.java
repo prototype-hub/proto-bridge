@@ -22,6 +22,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
 import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
+import com.gaiys.proto.prototypehub.service.PrototypeRevisionMaterialService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
 import com.gaiys.proto.prototypehub.service.PrototypeStorageService;
 import com.gaiys.proto.prototypehub.service.PrototypeUploadService;
@@ -119,6 +120,7 @@ class PrototypeHubRevisionIntegrationTest {
         properties.add("prototype-hub.storage.root", FILES::toString);
     }
 
+    @Autowired PrototypeRevisionMaterialService materials;
     @Autowired WebTestClient client;
     @Autowired DatabaseClient database;
     @Autowired PrototypeUploadService uploads;
@@ -1381,7 +1383,7 @@ class PrototypeHubRevisionIntegrationTest {
 
     private FileCleanupService cleanupWorker(PrototypeStorageService supplied) {
         return new FileCleanupService(
-                supplied, revisions.getRepository(), versions.getRepository(), null) {
+                supplied, revisions.getRepository(), versions.getRepository(), null, null) {
             @Override
             public ReactiveRepository<FileCleanupEntity, String> getRepository() {
                 return cleanup.getRepository();
@@ -1492,7 +1494,8 @@ class PrototypeHubRevisionIntegrationTest {
                         receipts,
                         access,
                         revisions,
-                        manifests);
+                        manifests,
+                        materials);
         Sinks.One<Void> fileRelease = Sinks.one();
         fileRelease.tryEmitEmpty();
         var operation =
@@ -1585,7 +1588,8 @@ class PrototypeHubRevisionIntegrationTest {
                         receipts,
                         access,
                         revisions,
-                        manifests);
+                        manifests,
+                        materials);
         Sinks.One<Void> fileRelease = Sinks.one();
         fileRelease.tryEmitEmpty();
         var operation =
@@ -1655,7 +1659,8 @@ class PrototypeHubRevisionIntegrationTest {
                         receipts,
                         access,
                         revisions,
-                        manifests);
+                        manifests,
+                        materials);
         Sinks.One<Void> fileRelease = Sinks.one();
         fileRelease.tryEmitEmpty();
         assertThrows(
@@ -1698,10 +1703,12 @@ class PrototypeHubRevisionIntegrationTest {
         JsonNode exported = storageExport(null);
         assertTrue(exported.path("referencesComplete").asBoolean());
         assertTrue(exported.path("receiptReferencesChecked").asBoolean());
-        assertEquals(3, exported.path("formatVersion").asInt());
-        assertEquals(
-                "immutable-revisions-review-images-v1", exported.path("sourceSchema").asText());
+        assertEquals(4, exported.path("formatVersion").asInt());
+        assertEquals("immutable-revisions-materials-v1", exported.path("sourceSchema").asText());
         assertTrue(exported.path("imageReferencesChecked").asBoolean());
+        assertTrue(exported.path("materialReferencesChecked").asBoolean());
+        assertTrue(exported.path("materialEntries").isArray());
+        assertTrue(exported.path("materialEntries").isEmpty());
         assertTrue(exported.path("imageEntries").isArray());
         assertTrue(exported.path("imageEntries").isEmpty());
         assertEquals(0, exported.path("integrityErrors").asInt());
@@ -1789,7 +1796,8 @@ class PrototypeHubRevisionIntegrationTest {
                         receipts,
                         access,
                         revisions,
-                        manifests);
+                        manifests,
+                        materials);
         Sinks.One<Void> release = Sinks.one();
         release.tryEmitEmpty();
         assertThrows(
