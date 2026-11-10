@@ -1,11 +1,14 @@
 package com.gaiys.proto;
 
+import lombok.extern.slf4j.Slf4j;
 import org.hswebframework.web.authorization.basic.configuration.EnableAopAuthorize;
 import org.hswebframework.web.crud.annotation.EnableEasyormRepository;
+import org.hswebframework.web.logging.events.AccessLoggerAfterEvent;
 import org.springframework.boot.SpringApplication;
 import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.cache.annotation.EnableCaching;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
@@ -34,8 +37,16 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 @EnableCaching
 @EnableEasyormRepository("com.gaiys.proto.**.entity")
 @EnableAopAuthorize
+@Slf4j
 public class ProtoBridgeApplication {
     public static void main(String[] args) {
         SpringApplication.run(ProtoBridgeApplication.class, args);
+    }
+
+    @EventListener
+    public void completedAccess(AccessLoggerAfterEvent event) {
+        var access = event.getLogger();
+        // 分享等能力凭据可能位于 URL 路径中，访问摘要不记录原始地址。
+        log.info("{} => {} - {}", access.getIp(), access.getDescribe(), access.getAction());
     }
 }

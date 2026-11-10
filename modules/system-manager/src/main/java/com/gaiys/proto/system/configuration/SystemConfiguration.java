@@ -1,6 +1,7 @@
 package com.gaiys.proto.system.configuration;
 
 import com.gaiys.proto.system.security.encoder.StrongPasswordEncoder;
+import com.gaiys.proto.system.service.BuiltInAdministratorService;
 import com.gaiys.proto.system.service.SecureReactiveUserService;
 import org.hswebframework.web.crud.annotation.EnableEasyormRepository;
 import org.hswebframework.web.system.authorization.api.PasswordEncoder;
@@ -28,9 +29,10 @@ public class SystemConfiguration {
                             settings,
                     org.hswebframework.web.system.authorization.defaults.service
                                     .DefaultPermissionService
-                            permissions) {
+                            permissions,
+                    BuiltInAdministratorService administrators) {
         return new com.gaiys.proto.system.security.initializer.ManagementAuthenticationInitializer(
-                dimensions, settings, permissions);
+                dimensions, settings, permissions, administrators);
     }
 
     @Bean(name = "captchaRandom")
@@ -54,8 +56,9 @@ public class SystemConfiguration {
 
     @Bean(destroyMethod = "dispose")
     @Primary
-    public DefaultReactiveUserService secureUserService(PasswordEncoder encoder) {
-        return new SecureReactiveUserService(encoder);
+    public DefaultReactiveUserService secureUserService(
+            PasswordEncoder encoder, BuiltInAdministratorService administrators) {
+        return new SecureReactiveUserService(encoder, administrators);
     }
 
     @Bean

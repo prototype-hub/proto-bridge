@@ -7,17 +7,19 @@ import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
 import org.hswebframework.web.system.authorization.api.entity.DimensionUserEntity;
 import org.hswebframework.web.system.authorization.api.entity.UserEntity;
+import org.hswebframework.web.system.authorization.api.event.ClearUserAuthorizationCacheEvent;
 import org.hswebframework.web.system.authorization.api.service.reactive.ReactiveUserService;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
+import org.springframework.context.ApplicationEventPublisher;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.reactive.TransactionalOperator;
 import reactor.core.publisher.Mono;
 
-/** 仅在配置账号不存在时创建中文管理员并绑定内置角色，已有账号的密码和授权保持原值。 */
+/** 缺失时创建配置账号，并补齐其内置角色绑定；已有密码、状态及角色授权保持原值。 */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE + 200)
 public class AdministratorInitializer implements ApplicationRunner {
@@ -28,6 +30,7 @@ public class AdministratorInitializer implements ApplicationRunner {
     private final ReactiveRepository<DimensionEntity, String> dimensions;
     private final String username;
     private final String password;
+    private final ApplicationEventPublisher events;
 
     public AdministratorInitializer(
             ReactiveUserService users,
@@ -36,7 +39,8 @@ public class AdministratorInitializer implements ApplicationRunner {
             ReactiveRepository<DimensionEntity, String> dimensions,
             SystemInitializationLockService initializationLock,
             @Value("${proto.admin.username:admin}") String username,
-            @Value("${proto.admin.password:}") String password) {
+            @Value("${proto.admin.password:}") String password,
+            ApplicationEventPublisher events) {
         this.users = users;
         this.initializationLock = initializationLock;
         this.bindings = bindings;
@@ -44,6 +48,7 @@ public class AdministratorInitializer implements ApplicationRunner {
         this.dimensions = dimensions;
         this.username = username;
         this.password = password;
+        this.events = events;
     }
 
     @Override
@@ -65,9 +70,14 @@ public class AdministratorInitializer implements ApplicationRunner {
                                     user.setPassword(password);
                                     user.setStatus((byte) 1);
                                     user.setType(UserType.admin.getValue());
-                                    return users.addUser(user)
-                                            .flatMap(created -> bindAdministrator(created));
+                                    return users.addUser(user);
                                 }))
+                .flatMap(this::bindAdministrator)
+                .flatMap(
+                        user ->
+                                ClearUserAuthorizationCacheEvent.of(user.getId())
+                                        .publish(events)
+                                        .thenReturn(user))
                 .as(transactions::transactional)
                 .block(Duration.ofMinutes(2));
     }
@@ -75,7 +85,8 @@ public class AdministratorInitializer implements ApplicationRunner {
     public static final class InitialPasswordException extends IllegalStateException {
         public InitialPasswordException() {
             super(
-                    "Initial administrator password must not be blank and must contain 12 to 128 characters");
+                    "Initial administrator password must not be blank and must contain 12 to 128"
+                            + " characters");
         }
     }
 
@@ -87,16 +98,31 @@ public class AdministratorInitializer implements ApplicationRunner {
         binding.setUserName(user.getName());
         binding.setRelationTime(System.currentTimeMillis());
         binding.generateId();
-        return dimensions
-                .findById("ADMIN")
-                .switchIfEmpty(
-                        Mono.error(
-                                new IllegalStateException(
-                                        "Administrator role must be initialized before creating its account")))
+        return bindings.createQuery()
+                .where(DimensionUserEntity::getDimensionTypeId, "role")
+                .and(DimensionUserEntity::getDimensionId, "ADMIN")
+                .and(DimensionUserEntity::getUserId, user.getId())
+                .count()
                 .flatMap(
-                        role -> {
-                            binding.setDimensionName(role.getName());
-                            return bindings.insert(Mono.just(binding)).thenReturn(user);
-                        });
+                        count ->
+                                count > 0
+                                        ? Mono.just(user)
+                                        : dimensions
+                                                .findById("ADMIN")
+                                                .switchIfEmpty(
+                                                        Mono.error(
+                                                                new IllegalStateException(
+                                                                        "Administrator role must be"
+                                                                                + " initialized before"
+                                                                                + " creating its"
+                                                                                + " account")))
+                                                .flatMap(
+                                                        role -> {
+                                                            binding.setDimensionName(
+                                                                    role.getName());
+                                                            return bindings.insert(
+                                                                            Mono.just(binding))
+                                                                    .thenReturn(user);
+                                                        }));
     }
 }

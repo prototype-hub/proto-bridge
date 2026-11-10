@@ -46,6 +46,7 @@ public class MenuGrantService {
     private final DefaultDimensionService dimensions;
     private static final int MENU_GRANT_PRIORITY = 10;
     private final ApplicationEventPublisher events;
+    private final BuiltInAdministratorService administrators;
 
     public static Map<String, String> actions() {
         return Map.ofEntries(
@@ -396,6 +397,12 @@ public class MenuGrantService {
     }
 
     public Mono<List<MenuEntity>> own(Authentication auth) {
+        return administrators
+                .isEnabled(auth.getUser().getId())
+                .flatMap(builtIn -> builtIn ? own(auth, List.of(), true) : ownRoles(auth));
+    }
+
+    private Mono<List<MenuEntity>> ownRoles(Authentication auth) {
         List<String> roleIds = auth.getDimensions("role").stream().map(d -> d.getId()).toList();
         if (roleIds.isEmpty()) return Mono.just(List.of());
         // hsweb retains dimensions for disabled roles while excluding their settings. Apply
@@ -411,10 +418,10 @@ public class MenuGrantService {
                                         || !"disabled".equals(role.getProperties().get("state")))
                 .map(DimensionEntity::getId)
                 .collectList()
-                .flatMap(activeRoles -> own(auth, activeRoles));
+                .flatMap(activeRoles -> own(auth, activeRoles, false));
     }
 
-    private Mono<List<MenuEntity>> own(Authentication auth, List<String> roleIds) {
+    private Mono<List<MenuEntity>> own(Authentication auth, List<String> roleIds, boolean builtIn) {
         return (roleIds.isEmpty() ? Flux.<RoleMenuGrantEntity>empty() : grants.findById(roleIds))
                 .collectList()
                 .zipWith(menus.createQuery().fetch().collectList())
@@ -433,7 +440,10 @@ public class MenuGrantService {
                                                                             key -> new HashSet<>())
                                                                     .addAll(buttons));
                             }
-                            boolean legacy = roleIds.stream().anyMatch(id -> !managed.contains(id));
+                            boolean legacy =
+                                    builtIn
+                                            || roleIds.stream()
+                                                    .anyMatch(id -> !managed.contains(id));
                             Map<String, MenuEntity> all = new LinkedHashMap<>();
                             tuple.getT2().forEach(menu -> all.put(menu.getId(), menu));
                             Set<String> visible = new HashSet<>();

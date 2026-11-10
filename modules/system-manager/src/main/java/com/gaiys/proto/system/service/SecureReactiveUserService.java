@@ -12,10 +12,13 @@ import reactor.core.scheduler.Schedulers;
 /** Reuses hsweb user CRUD and events, isolating expensive hash computation. */
 public class SecureReactiveUserService extends DefaultReactiveUserService {
     private final PasswordEncoder encoder;
+    private final BuiltInAdministratorService administrators;
     private final Scheduler passwords = Schedulers.newBoundedElastic(4, 64, "password-hash");
 
-    public SecureReactiveUserService(PasswordEncoder encoder) {
+    public SecureReactiveUserService(
+            PasswordEncoder encoder, BuiltInAdministratorService administrators) {
         this.encoder = encoder;
+        this.administrators = administrators;
     }
 
     @Override
@@ -25,7 +28,23 @@ public class SecureReactiveUserService extends DefaultReactiveUserService {
 
     @Override
     protected Mono<UserEntity> doUpdate(UserEntity old, UserEntity newer) {
-        return Mono.defer(() -> super.doUpdate(old, newer)).subscribeOn(passwords);
+        return Mono.defer(
+                        () -> {
+                            administrators.validateUpdate(old, newer);
+                            return super.doUpdate(old, newer);
+                        })
+                .subscribeOn(passwords);
+    }
+
+    @Override
+    public Mono<Integer> updateById(String id, Mono<UserEntity> request) {
+        return findById(id)
+                .zipWith(request)
+                .flatMap(
+                        values -> {
+                            administrators.validateUpdate(values.getT1(), values.getT2());
+                            return super.updateById(id, Mono.just(values.getT2()));
+                        });
     }
 
     @Override
