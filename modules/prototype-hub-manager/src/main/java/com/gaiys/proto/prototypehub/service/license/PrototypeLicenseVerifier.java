@@ -23,11 +23,11 @@ import java.util.TreeMap;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
-/** 有界v1凭证解析与公钥验签。只验证声明，不签发凭证，也不执行容量或高级功能授权。 */
+/** 有界v2凭证解析与公钥验签。只验证声明，不签发凭证，也不执行容量或高级功能授权。 */
 @Component
 public class PrototypeLicenseVerifier {
     public static final int MAX_BYTES = 65536;
-    private static final Set<String> PAYLOAD =
+    private static final Set<String> PAYLOAD_V2 =
             Set.of(
                     "schemaVersion",
                     "licenseId",
@@ -38,8 +38,7 @@ public class PrototypeLicenseVerifier {
                     "edition",
                     "features",
                     "maxProjects",
-                    "baseVersionsPerProject",
-                    "projectVersionGrants",
+                    "maxVersionsPerProject",
                     "issuedAt",
                     "notBefore",
                     "trialEndsAt",
@@ -63,55 +62,12 @@ public class PrototypeLicenseVerifier {
     /** 规范化封套和摘要用于持久化/未知提交结果核对；不读取任何客户端公钥。 */
     public Verified verify(String document, String installationId, long now) {
         try {
-            if (document == null || document.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES)
-                throw failure("DOCUMENT_INVALID");
-            JsonNode envelope;
-            try (JsonParser parser = factory.createParser(document)) {
-                parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
-                for (JsonReadFeature feature : JsonReadFeature.values()) {
-                    parser.disable(feature.mappedFeature());
-                }
-                envelope =
-                        mapper.readerFor(JsonNode.class)
-                                .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
-                                .readValue(parser);
-            }
-            fields(envelope, Set.of("keyId", "payload", "signature"));
+            JsonNode envelope = readEnvelope(document);
             String keyId = identifier(envelope, "keyId");
-            JsonNode payload = envelope.get("payload");
-            fields(payload, PAYLOAD);
-            if (integer(payload, "schemaVersion", 1, 2147483647L) != 1)
-                throw failure("SCHEMA_UNSUPPORTED");
-            identifier(payload, "licenseId");
-            identifier(payload, "orderId");
-            identifier(payload, "edition");
-            integer(payload, "sequence", 1, 9007199254740991L);
-            String installation = text(payload, "installationId", 36);
-            if (!UUID.fromString(installation).toString().equals(installation))
-                throw failure("DOCUMENT_INVALID");
-            text(payload, "customer", 256);
-            integer(payload, "maxProjects", 5, Integer.MAX_VALUE);
-            integer(payload, "baseVersionsPerProject", 5, 5);
-            long issued = integer(payload, "issuedAt", 0, 8640000000000000L);
-            long notBefore = integer(payload, "notBefore", 0, 8640000000000000L);
-            nullableDate(payload, "trialEndsAt");
-            nullableDate(payload, "maintenanceUntil");
-            JsonNode features = payload.get("features");
-            if (!features.isArray() || features.size() > 64) throw failure("DOCUMENT_INVALID");
-            Set<String> unique = new HashSet<>();
-            for (JsonNode feature : features) {
-                if (!feature.isTextual()
-                        || !feature.textValue().matches("[A-Za-z0-9._-]{1,64}")
-                        || !unique.add(feature.textValue())) throw failure("DOCUMENT_INVALID");
-            }
-            JsonNode grants = payload.get("projectVersionGrants");
-            if (!grants.isArray() || grants.size() > 512) throw failure("DOCUMENT_INVALID");
-            unique.clear();
-            for (JsonNode grant : grants) {
-                fields(grant, Set.of("projectId", "extraVersionBlocks"));
-                if (!unique.add(identifier(grant, "projectId"))) throw failure("DOCUMENT_INVALID");
-                integer(grant, "extraVersionBlocks", 1, (Integer.MAX_VALUE - 5L) / 5);
-            }
+            JsonNode payload = validatePayload(envelope.get("payload"));
+            String installation = payload.path("installationId").asText();
+            long issued = payload.path("issuedAt").asLong();
+            long notBefore = payload.path("notBefore").asLong();
             var key = properties.key(keyId);
             if (key == null) throw failure("UNTRUSTED_KEY");
             String encodedSignature = text(envelope, "signature", 86);
@@ -146,7 +102,56 @@ public class PrototypeLicenseVerifier {
         }
     }
 
-    /** v1仅允许整数和固定层级；按UTF-16键序排序，数组顺序保留，签名不受外层空白或键顺序影响。 */
+    private JsonNode readEnvelope(String document) throws java.io.IOException {
+        if (document == null || document.getBytes(StandardCharsets.UTF_8).length > MAX_BYTES)
+            throw failure("DOCUMENT_INVALID");
+        JsonNode envelope;
+        try (JsonParser parser = factory.createParser(document)) {
+            parser.enable(JsonParser.Feature.STRICT_DUPLICATE_DETECTION);
+            for (JsonReadFeature feature : JsonReadFeature.values())
+                parser.disable(feature.mappedFeature());
+            envelope =
+                    mapper.readerFor(JsonNode.class)
+                            .with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS)
+                            .readValue(parser);
+        }
+        fields(envelope, Set.of("keyId", "payload", "signature"));
+        identifier(envelope, "keyId");
+        text(envelope, "signature", 86);
+        return envelope;
+    }
+
+    private JsonNode validatePayload(JsonNode payload) {
+        if (payload == null || !payload.isObject()) throw failure("DOCUMENT_INVALID");
+        long schema = integer(payload, "schemaVersion", 1, Integer.MAX_VALUE);
+        if (schema != 2) throw failure("SCHEMA_UNSUPPORTED");
+        fields(payload, PAYLOAD_V2);
+        identifier(payload, "licenseId");
+        identifier(payload, "orderId");
+        identifier(payload, "edition");
+        integer(payload, "sequence", 1, 9007199254740991L);
+        String installation = text(payload, "installationId", 36);
+        if (!UUID.fromString(installation).toString().equals(installation))
+            throw failure("DOCUMENT_INVALID");
+        text(payload, "customer", 256);
+        integer(payload, "maxProjects", 5, Integer.MAX_VALUE);
+        integer(payload, "issuedAt", 0, 8640000000000000L);
+        integer(payload, "notBefore", 0, 8640000000000000L);
+        nullableDate(payload, "trialEndsAt");
+        nullableDate(payload, "maintenanceUntil");
+        JsonNode features = payload.get("features");
+        if (!features.isArray() || features.size() > 64) throw failure("DOCUMENT_INVALID");
+        Set<String> unique = new HashSet<>();
+        for (JsonNode feature : features) {
+            if (!feature.isTextual()
+                    || !feature.textValue().matches("[A-Za-z0-9._-]{1,64}")
+                    || !unique.add(feature.textValue())) throw failure("DOCUMENT_INVALID");
+        }
+        integer(payload, "maxVersionsPerProject", 5, Integer.MAX_VALUE);
+        return payload;
+    }
+
+    /** 仅允许整数和固定层级；按UTF-16键序排序，数组顺序保留，签名不受外层空白或键顺序影响。 */
     public String canonical(JsonNode node) throws java.io.IOException {
         return mapper.writer()
                 .without(SerializationFeature.INDENT_OUTPUT)

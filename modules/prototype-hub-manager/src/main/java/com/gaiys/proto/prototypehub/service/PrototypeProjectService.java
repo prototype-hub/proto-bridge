@@ -82,20 +82,24 @@ public class PrototypeProjectService
                 });
     }
 
+    /** 项目根保留到自动清理完数据及文件；软删、待清理和清理失败均继续占额。 */
+    public Mono<Long> countForCapacity() {
+        return createQuery().count().map(Number::longValue);
+    }
+
     /** 用量只读真实数据；超过上限的既有库仍可启动、查看、修改和删除。 */
     public Mono<ProjectUsageResponse> usage() {
         return entitlements
                 .current()
                 .flatMap(
                         status ->
-                                activeQuery()
-                                        .count()
+                                countForCapacity()
                                         .map(
                                                 used ->
                                                         new ProjectUsageResponse(
                                                                 status.installationId(),
                                                                 CapacityUsage.from(
-                                                                        used.longValue(),
+                                                                        used,
                                                                         status.enforcedCapacity()
                                                                                 .projectLimit()))));
     }
@@ -119,21 +123,19 @@ public class PrototypeProjectService
                                 }));
     }
 
-    /** 创建与恢复共用安装行锁内的实际活动项目额度。 */
+    /** 新建在安装行锁内检查全部项目根；恢复已有根不增加用量。 */
     public Mono<Void> requireCapacity() {
         return entitlements
                 .current()
                 .flatMap(
                         status ->
-                                activeQuery()
-                                        .count()
+                                countForCapacity()
                                         .flatMap(
                                                 used -> {
                                                     int limit =
                                                             status.enforcedCapacity()
                                                                     .projectLimit();
-                                                    return CapacityUsage.from(
-                                                                            used.longValue(), limit)
+                                                    return CapacityUsage.from(used, limit)
                                                                     .canCreate()
                                                             ? Mono.empty()
                                                             : Mono.error(

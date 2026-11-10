@@ -131,7 +131,7 @@ Include the full `p_installation` row in quiescent database backup/restore. Comp
 
 ### Capacity extension compatibility
 
-Community builds run independently without capacity extensions and admit five projects with five logical versions per project. Compatible optional extensions consume only verified declarations through the public pure policy contract; invalid output fails instead of granting unbounded capacity. Remove an extension only after recording resource usage and accepted credential sequence/fingerprint. Existing resources are retained when usage exceeds the resulting limit; creation/restoration consumes capacity, existing logical-version revision updates do not. No new schema migration is required for this extension contract. Reverting to older binaries also reverts their admission semantics, so review and constrain that version's settings before reopening writes.
+Community builds run independently without capacity extensions and admit five projects with five logical versions per project. Compatible optional extensions consume only verified declarations through the public pure policy contract; invalid output fails instead of granting unbounded capacity. Remove an extension only after recording resource usage and accepted credential sequence/fingerprint. Existing resources are retained when usage exceeds the resulting limit; new creation consumes capacity; restoring an already counted project does not consume a second slot, existing logical-version revision updates do not. No new schema migration is required for this extension contract. Reverting to older binaries also reverts their admission semantics, so review and constrain that version's settings before reopening writes.
 
 
 ## Original image/SVG exports
@@ -163,3 +163,16 @@ Normal completion, preparation errors and client cancellation close the request'
 停写并取得同窗口数据库、原型存储及系统文件备份，先在隔离恢复副本启动EasyORM增补 `p_revision_material` 和表/字段描述。新增表保存人工来源与文件摘要，不改旧manifest、原ZIP或来源历史。新上传资料仅内部READ/EDIT开放，不发送外部通知、访问来源URL或渲染Office。
 
 备份包含完整资料表、创建回执和 `projects/*/materials/*/content`，同时保留原型来源所引用的original.zip。使用当前format4引用清单及配套audit-storage验证固定项目/版本/修订关联、原字节数及SHA-256；缺引用或损坏时禁止离线清理。旧format3不能证明新资料目录无引用。回收站恢复应保持同一资料ID/修订/摘要并重验授权；30天永久清理先事务登记material任务，再由现有持久队列删除无引用目录。回退必须保留新增表和文件，旧工具不能处理新目录。
+
+
+### Test-only switch to uniform P/V credentials
+
+This is a breaking change from the old project-specific test model, not a seamless rights migration. Back up the complete issuer ledger and stop its processes. Preserve its original directory and explicitly select a new empty directory for the v2 issuer; do not delete `ledger.json` or `initialized` to bypass an unsupported or damaged ledger. New request, payload and ledger formats are version2; the installation request remains version1. Use a new isolated test installation/database, obtain its request, approve P/V and issue a new order.
+
+An existing installation with an accepted old test certificate retains its installation ID and accepted lineage/sequence/fingerprint and shows `unsupported`. A new empty issuer ledger must not be assumed to overwrite that record. Reusing that test installation requires an administrator to stop all application processes, take a complete database/file backup, explicitly reset the test-only license acceptance record, and verify the installation identity and unchanged project/file data before restarting; alternatively use a new test installation. This release performs none of these destructive actions and adds no reset, chosen-lineage or initial-sequence API. Do not apply this test reset procedure to production entitlements. Rollback uses matching binaries and same-window backups; it is not accomplished by deleting license records or reverting a JAR alone.
+
+### Project quota and durable recycle cleanup
+
+Before upgrading, stop all old writers and retention nodes and back up the same-window database and prototype files. All retained projects now occupy the project quota, including the recycle bin and expired roots awaiting durable cleanup. Existing installations can therefore become at/over their project limit; keep those resources, allow current valid restores without an extra project slot, and block only new creations under the current admission result. Do not manually delete project roots or `p_file_cleanup` tasks to release slots. The automatic retention/cleanup passes release a project slot only after its dependent data and durable file cleanup finish; failed cleanup keeps occupation and retries after restart. Previously deleted roots cannot be recreated or recounted automatically. Logical-version recycle accounting is unchanged.
+
+Verify active/recycled/pending project totals, at-limit restore, rejected new creation, cleanup failure and retry, and the final file deletion before assuming a slot is free. Rollback to an old binary changes the accounting and cleanup semantics; quiesce all nodes and verify a matching database/file backup rather than mixing old/new retention nodes.

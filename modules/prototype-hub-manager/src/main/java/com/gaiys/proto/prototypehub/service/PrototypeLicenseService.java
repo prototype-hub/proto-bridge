@@ -121,6 +121,7 @@ public class PrototypeLicenseService implements PrototypeEntitlementProvider {
                         switch (error.getCode()) {
                             case "PROTOTYPE_HUB_LICENSE_UNTRUSTED_KEY" -> "untrusted";
                             case "PROTOTYPE_HUB_LICENSE_NOT_YET_VALID" -> "not_yet_valid";
+                            case "PROTOTYPE_HUB_LICENSE_SCHEMA_UNSUPPORTED" -> "unsupported";
                             default -> "invalid";
                         };
             }

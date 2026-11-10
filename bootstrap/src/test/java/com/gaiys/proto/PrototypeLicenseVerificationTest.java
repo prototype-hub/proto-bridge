@@ -40,7 +40,7 @@ class PrototypeLicenseVerificationTest {
 
     static ObjectNode payload(String installation, long sequence) {
         ObjectNode value = MAPPER.createObjectNode();
-        value.put("schemaVersion", 1);
+        value.put("schemaVersion", 2);
         value.put("licenseId", "test-lineage");
         value.put("sequence", sequence);
         value.put("orderId", "test-order");
@@ -49,8 +49,7 @@ class PrototypeLicenseVerificationTest {
         value.put("edition", "declaration");
         value.putArray("features").add("example-feature");
         value.put("maxProjects", 12);
-        value.put("baseVersionsPerProject", 5);
-        value.putArray("projectVersionGrants");
+        value.put("maxVersionsPerProject", 20);
         value.put("issuedAt", NOW - 1000);
         value.put("notBefore", NOW - 1000);
         value.putNull("trialEndsAt");
@@ -58,14 +57,26 @@ class PrototypeLicenseVerificationTest {
         return value;
     }
 
+    static ObjectNode uniformPayload(
+            String installation, long sequence, int projects, int versions) {
+        ObjectNode value = payload(installation, sequence);
+        value.put("maxProjects", projects);
+        value.put("maxVersionsPerProject", versions);
+        return value;
+    }
+
     static String sign(ObjectNode payload) {
+        return sign(payload, "test", KEY);
+    }
+
+    static String sign(ObjectNode payload, String keyId, KeyPair key) {
         try {
             var verifier = new PrototypeLicenseVerifier(MAPPER, trust());
             ObjectNode signed = MAPPER.createObjectNode();
-            signed.put("keyId", "test");
+            signed.put("keyId", keyId);
             signed.set("payload", payload);
             Signature signer = Signature.getInstance("Ed25519");
-            signer.initSign(KEY.getPrivate());
+            signer.initSign(key.getPrivate());
             signer.update(verifier.canonical(signed).getBytes(StandardCharsets.UTF_8));
             signed.put(
                     "signature",
@@ -102,6 +113,38 @@ class PrototypeLicenseVerificationTest {
     }
 
     @Test
+    void uniformModelHasOnlyAbsoluteTotalsAndRejectsMixedFields() {
+        var verified =
+                verifier().verify(sign(uniformPayload(INSTALLATION, 1, 12, 20)), INSTALLATION, NOW);
+        var claims =
+                com.gaiys.proto.prototypehub.web.response.PrototypeLicenseStatus
+                        .VerifiedEntitlements.from(verified.payload());
+        assertEquals(2, claims.schemaVersion());
+        assertEquals(20, claims.maxVersionsPerProject());
+        ObjectNode mixed = uniformPayload(INSTALLATION, 1, 12, 20);
+        mixed.putArray("projectVersionGrants");
+        rejects("DOCUMENT_INVALID", sign(mixed));
+        mixed = uniformPayload(INSTALLATION, 1, 12, 20);
+        mixed.put("maxVersionsPerProject", 20.0);
+        rejects("DOCUMENT_INVALID", sign(mixed));
+        mixed.put("maxVersionsPerProject", 4);
+        rejects("DOCUMENT_INVALID", sign(mixed));
+    }
+
+    @Test
+    void legacyCredentialIsRejectedWithoutInterpretingProjectBlocks() {
+        ObjectNode old = payload(INSTALLATION, 1);
+        old.put("schemaVersion", 1);
+        old.remove("maxVersionsPerProject");
+        old.put("baseVersionsPerProject", 5);
+        old.putArray("projectVersionGrants")
+                .addObject()
+                .put("projectId", "old-test-project")
+                .put("extraVersionBlocks", 2);
+        rejects("SCHEMA_UNSUPPORTED", sign(old));
+    }
+
+    @Test
     void tamperingAndNonCanonicalSignaturesFail() throws Exception {
         ObjectNode value = (ObjectNode) MAPPER.readTree(sign(payload(INSTALLATION, 1)));
         ((ObjectNode) value.get("payload")).put("maxProjects", 13);
@@ -114,7 +157,7 @@ class PrototypeLicenseVerificationTest {
     @Test
     void unsupportedWrongInstallationAndFutureCannotBeImported() {
         ObjectNode value = payload(INSTALLATION, 1);
-        value.put("schemaVersion", 2);
+        value.put("schemaVersion", 3);
         rejects("SCHEMA_UNSUPPORTED", sign(value));
         rejects("INSTALLATION_MISMATCH", sign(payload(UUID.randomUUID().toString(), 1)));
         value = payload(INSTALLATION, 1);
@@ -144,7 +187,7 @@ class PrototypeLicenseVerificationTest {
         value.put("sequence", 9007199254740992L);
         rejects("DOCUMENT_INVALID", sign(value));
         value = payload(INSTALLATION, 1);
-        value.put("baseVersionsPerProject", 6);
+        value.put("maxVersionsPerProject", 4);
         rejects("DOCUMENT_INVALID", sign(value));
         rejects(
                 "DOCUMENT_INVALID",
