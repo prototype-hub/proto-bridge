@@ -2,6 +2,7 @@
 -- unmigrated legacy projection; never audit history from current-version rows only.
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_material_table')) IS NOT NULL AS prototype_hub_has_revision_materials \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_viewport_check_table')) IS NOT NULL AS prototype_hub_has_viewport_checks \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL
  AS prototype_hub_has_work_items \gset
@@ -181,6 +182,22 @@ WITH storage_references AS (
    '$.pages.** ? (@.pageId == $page && @.folder == false)',
    jsonb_build_object('page',w.page_id))
 \endif
+\if :prototype_hub_has_revision_materials
+ UNION ALL
+ SELECT m.id FROM :"prototype_hub_revision_material_table" m
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=m.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=m.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=m.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM m.project_id OR r.project_id IS DISTINCT FROM m.project_id
+  OR r.version_id IS DISTINCT FROM m.version_id OR m.material_type IS NULL OR m.file_size IS NULL
+  OR m.sha256 IS NULL OR m.storage_path IS NULL OR m.material_type NOT IN ('prototype','image','document')
+  OR m.file_size<1 OR m.sha256 !~ '^[a-f0-9]{64}$'
+  OR (m.material_type='prototype' AND m.storage_path IS DISTINCT FROM regexp_replace(r.storage_path,'/site$','/original.zip'))
+  OR (m.material_type<>'prototype' AND (m.storage_path !~ ('^projects/' || m.project_id || '/materials/[A-Za-z0-9_-]{1,128}/content$') OR m.file_size>20971520))
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_revision_material_table" other WHERE other.id<>m.id
+   AND (other.storage_path=m.storage_path OR (m.material_type='prototype' AND other.material_type='prototype' AND other.revision_id=m.revision_id)))
+\endif
 \if :prototype_hub_has_review_images
  UNION ALL
  SELECT m.id FROM :"prototype_hub_review_message_table" m
@@ -217,10 +234,12 @@ WITH storage_references AS (
 \endif
 \endif
 )
-SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',3,
- 'sourceSchema','immutable-revisions-review-images-v1',
+SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',4,
+ 'sourceSchema','immutable-revisions-materials-v1',
  'referencesComplete',(:'prototype_hub_has_receipt_revision'::boolean
-  AND :'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
+  AND :'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean
+  AND :'prototype_hub_has_revision_materials'::boolean),
+ 'materialReferencesChecked',:'prototype_hub_has_revision_materials'::boolean,
  'receiptReferencesChecked',:'prototype_hub_has_receipt_revision'::boolean,
  'imageReferencesChecked',(:'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
@@ -236,6 +255,15 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
    OR image_sha256 IS NOT NULL OR image_width IS NOT NULL OR image_height IS NOT NULL)
 \else
  'imageEntries','[]'::json
+\endif
+ ,
+\if :prototype_hub_has_revision_materials
+ 'materialEntries',(SELECT coalesce(json_agg(json_build_object('projectId',project_id,'versionId',version_id,
+ 'revisionId',revision_id,'materialId',id,'materialType',material_type,'storagePath',storage_path,
+ 'size',file_size,'sha256',sha256) ORDER BY project_id,version_id,revision_id,id),'[]'::json)
+ FROM :"prototype_hub_revision_material_table")
+\else
+ 'materialEntries','[]'::json
 \endif
  ) FROM storage_references;
 \else

@@ -33,8 +33,9 @@ spec.loader.exec_module(runtime)
 class CurrentGraphVerificationTest(unittest.TestCase):
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(24, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(25, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_viewport_check', runtime.BUSINESS_TABLES)
+        self.assertIn('p_revision_material', runtime.BUSINESS_TABLES)
         self.assertEqual(manifest, runtime.current_manifest(manifest))
         for table in runtime.BUSINESS_TABLES:
             for mutation in ('omit', 'empty', 'hash'):
@@ -109,7 +110,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                            'messages': [{'id': 'initial-without-receipt'}], 'operations': [
                                {'method': 'POST', 'path': 'threads', 'id': 'thread'},
                                {'method': 'POST', 'path': '/thread/messages', 'id': 'actual-reply'}]}}}
-            baseline = 'business_table_coverage|24|current'
+            baseline = 'business_table_coverage|25|current'
             def script(database, name, mutation='', variables=None, zero_reply=False):
                 if variables:
                     self.assertEqual('actual-reply', variables['message'])

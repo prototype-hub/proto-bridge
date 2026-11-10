@@ -56,6 +56,8 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
 
+    private final PrototypeRevisionMaterialService materials;
+
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
         return deletedTime != null && deletedTime <= now - RETENTION_MILLIS;
@@ -411,6 +413,7 @@ public class PrototypeRetentionService {
     private Mono<Void> deleteVersionGraph(String id) {
         return statistics
                 .purgeVersion(id)
+                .then(materials.purgeVersion(id))
                 .then(
                         viewportChecks
                                 .createDelete()
@@ -471,6 +474,7 @@ public class PrototypeRetentionService {
                         ignored ->
                                 statistics
                                         .purgeProject(id)
+                                        .then(materials.purgeProject(id))
                                         .then(
                                                 viewportChecks
                                                         .createDelete()

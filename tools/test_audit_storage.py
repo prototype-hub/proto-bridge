@@ -44,6 +44,26 @@ class StorageAuditTest(unittest.TestCase):
                 'receiptReferencesChecked': True, 'imageReferencesChecked': True,
                 'integrityErrors': errors, 'entries': entries, 'imageEntries': []}
 
+    def test_new_private_materials_require_checked_export_and_preserve_exact_payload(self):
+        directory = self.root / 'projects/project/materials/material'
+        directory.mkdir(parents=True)
+        payload = b'private document'
+        (directory / 'content').write_bytes(payload)
+        old = self.complete(self.entries(('r1', 'r2')))
+        self.assertEqual(2, self.run_audit(old, repair=True).returncode)
+        self.assertTrue(directory.exists())
+        manifest = dict(old, formatVersion=4, sourceSchema='immutable-revisions-materials-v1',
+                        materialReferencesChecked=True, materialEntries=[{
+                            'projectId': 'project', 'versionId': 'logical-version', 'revisionId': 'r1',
+                            'materialId': 'material', 'materialType': 'document',
+                            'storagePath': 'projects/project/materials/material/content',
+                            'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}])
+        self.assertEqual(0, self.run_audit(manifest, repair=True).returncode)
+        self.assertEqual(payload, (directory / 'content').read_bytes())
+        (directory / 'content').write_bytes(b'wrong')
+        self.assertEqual(1, self.run_audit(manifest, repair=True).returncode)
+        self.assertTrue(directory.exists())
+
     def test_legacy_current_only_manifest_is_read_only(self):
         entries = self.entries(('r2',))
         self.assertEqual(0, self.run_audit(entries).returncode)

@@ -26,8 +26,9 @@ def main():
     manifest = json.loads(Path(args.manifest).read_text())
     complete = (isinstance(manifest, dict)
                 and manifest.get('format') == 'prototype-hub-storage-references'
-                and manifest.get('formatVersion') == 3
-                and manifest.get('sourceSchema') == 'immutable-revisions-review-images-v1'
+                and ((manifest.get('formatVersion') == 3 and manifest.get('sourceSchema') == 'immutable-revisions-review-images-v1')
+                     or (manifest.get('formatVersion') == 4 and manifest.get('sourceSchema') == 'immutable-revisions-materials-v1'
+                         and manifest.get('materialReferencesChecked') is True))
                 and manifest.get('imageReferencesChecked') is True
                 and manifest.get('referencesComplete') is True
                 and manifest.get('receiptReferencesChecked') is True
@@ -39,10 +40,19 @@ def main():
     image_rows = manifest.get('imageEntries', []) if isinstance(manifest, dict) else []
     if not isinstance(image_rows, list):
         parser.error('Image reference entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') == 3 and 'imageEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4) and 'imageEntries' not in manifest:
         parser.error('Version 3 requires image reference entries')
-    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 3
+    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4)
                       and manifest.get('imageReferencesChecked') is True)
+    material_rows = manifest.get('materialEntries', []) if isinstance(manifest, dict) else []
+    materials_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 4
+                         and manifest.get('materialReferencesChecked') is True)
+    if not isinstance(material_rows, list):
+        parser.error('Material reference entries must be an array')
+    if isinstance(manifest, dict) and manifest.get('formatVersion') == 4 and 'materialEntries' not in manifest:
+        parser.error('Version 4 requires material reference entries')
+    if args.delete_unreferenced and not materials_checked and any((root / 'projects').glob('*/materials/*')):
+        parser.error('Private material directories require a complete version 4 material reference export')
     if args.delete_unreferenced:
         # Legacy exports cannot prove that a private image directory is unreferenced.
         if not complete:
@@ -115,6 +125,51 @@ def main():
                     checksum.update(block)
             if checksum.hexdigest() != digest:
                 findings.append(dict(kind='image-hash-mismatch', **identity))
+    referenced_materials = set()
+    material_ids = set()
+    prototype_revisions = set()
+    for row in material_rows:
+        if not isinstance(row, dict):
+            parser.error('Invalid material reference entry')
+        project, version, revision, material, kind, storage = (row.get(key) for key in
+            ('projectId', 'versionId', 'revisionId', 'materialId', 'materialType', 'storagePath'))
+        if any(not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', value)
+               for value in (project, version, revision, material)) or material in material_ids:
+            parser.error('Invalid or duplicate material identity')
+        material_ids.add(material)
+        size, digest = row.get('size'), row.get('sha256')
+        if (kind not in ('prototype', 'image', 'document') or type(size) is not int or size < 1
+                or (kind != 'prototype' and size > 20 * 1024 * 1024)
+                or not isinstance(digest, str) or not re.fullmatch('[a-f0-9]{64}', digest)):
+            parser.error('Invalid material size or checksum')
+        pattern = (r'projects/' + re.escape(project) + r'/versions/[A-Za-z0-9_-]{1,128}/original\.zip'
+                   if kind == 'prototype' else
+                   r'projects/' + re.escape(project) + r'/materials/[A-Za-z0-9_-]{1,128}/content')
+        if not isinstance(storage, str) or not re.fullmatch(pattern, storage):
+            parser.error('Invalid material storage boundary')
+        path = root / storage
+        if any(part.is_symlink() for part in (path, path.parent, path.parent.parent, path.parent.parent.parent)):
+            parser.error('Symlink in material storage boundary')
+        if kind == 'prototype':
+            if revision in prototype_revisions or path.parent not in referenced:
+                parser.error('Invalid prototype source association')
+            prototype_revisions.add(revision)
+        else:
+            if path.parent in referenced_materials:
+                parser.error('Duplicate material payload reference')
+            referenced_materials.add(path.parent)
+        identity = {'projectId': project, 'versionId': version, 'revisionId': revision, 'materialId': material}
+        if not path.is_file():
+            findings.append(dict(kind='missing-material', **identity))
+        elif path.stat().st_size != size:
+            findings.append(dict(kind='material-size-mismatch', **identity))
+        else:
+            checksum = hashlib.sha256()
+            with path.open('rb') as stream:
+                for block in iter(lambda: stream.read(1024 * 1024), b''):
+                    checksum.update(block)
+            if checksum.hexdigest() != digest:
+                findings.append(dict(kind='material-hash-mismatch', **identity))
     unreferenced = []
     for version in sorted((root / 'projects').glob('*/versions/*')):
         if any(part.is_symlink() for part in
@@ -138,10 +193,21 @@ def main():
                 unreferenced.append(image)
             findings.append({'kind': 'unreferenced-directory' if images_checked else 'unchecked-image-directory',
                              'path': str(image.relative_to(root))})
+    for material in sorted((root / 'projects').glob('*/materials/*')):
+        if any(part.is_symlink() for part in (material, material.parent, material.parent.parent, material.parent.parent.parent)):
+            findings.append({'kind': 'symlink', 'path': str(material.relative_to(root))})
+            continue
+        if not material.is_dir() or not re.fullmatch('[A-Za-z0-9_-]{1,128}', material.name):
+            findings.append({'kind': 'invalid-material-directory', 'path': str(material.relative_to(root))})
+        elif material not in referenced_materials:
+            if materials_checked:
+                unreferenced.append(material)
+            findings.append({'kind': 'unreferenced-directory' if materials_checked else 'unchecked-material-directory',
+                             'path': str(material.relative_to(root))})
     print(json.dumps(findings, ensure_ascii=False, indent=2))
     # A broken snapshot cannot authorize any repair, even of an apparently orphaned
     # directory. Scan every reference first so failure never leaves partial repair.
-    if any(finding['kind'] not in ('unreferenced-directory', 'unchecked-image-directory')
+    if any(finding['kind'] not in ('unreferenced-directory', 'unchecked-image-directory', 'unchecked-material-directory')
            for finding in findings):
         return 1
     if args.delete_unreferenced:

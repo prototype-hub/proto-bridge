@@ -32,6 +32,8 @@ class StorageExportPostgresTest(unittest.TestCase):
           CREATE TABLE p_revision(id text primary key,version_id text,project_id text,storage_path text,entry_file text);
           CREATE TABLE p_share(id text primary key,version_id text,project_id text,revision_id text,revision_mode text);
           CREATE TABLE p_creation_receipt(id text primary key,resource_id text,revision_id text);
+          CREATE TABLE p_revision_material(id text primary key,project_id text,version_id text,
+           revision_id text,material_type text,storage_path text,file_size bigint,sha256 text,source_notes text);
           CREATE TABLE p_review_thread(id text primary key,version_id text,project_id text,revision_id text);
           CREATE TABLE p_review_message(id text primary key,thread_id text,version_id text,project_id text,
             revision_id text,visibility text,image_path text,image_content_type text,image_size bigint,
@@ -62,8 +64,8 @@ class StorageExportPostgresTest(unittest.TestCase):
 
     def test_retained_public_internal_images_and_real_receipt_resources_are_complete(self):
         manifest = self.export()
-        self.assertEqual(3, manifest['formatVersion'])
-        self.assertEqual('immutable-revisions-review-images-v1', manifest['sourceSchema'])
+        self.assertEqual(4, manifest['formatVersion'])
+        self.assertEqual('immutable-revisions-materials-v1', manifest['sourceSchema'])
         self.assertTrue(manifest['referencesComplete'])
         self.assertTrue(manifest['receiptReferencesChecked'])
         self.assertTrue(manifest['imageReferencesChecked'])
@@ -74,6 +76,21 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertTrue(manifest['entries'])
         for row in manifest['imageEntries']:
             self.assertEqual({'projectId', 'versionId', 'messageId', 'storagePath', 'size', 'sha256'}, set(row))
+
+    def test_revision_material_references_are_complete_without_exporting_source_text(self):
+        self.sql(self.prefix() + """
+          INSERT INTO p_revision_material VALUES('material','project','version','r1','document',
+           'projects/project/materials/material/content',3,repeat('a',64),'Private source notes');
+          """)
+        manifest = self.export()
+        self.assertTrue(manifest['materialReferencesChecked'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertEqual('material', manifest['materialEntries'][0]['materialId'])
+        self.assertNotIn('Private source notes', json.dumps(manifest))
+        for mutation in ("UPDATE p_revision_material SET revision_id='missing';",
+                         "UPDATE p_revision_material SET storage_path='../escape';",
+                         "UPDATE p_revision_material SET sha256='invalid';"):
+            self.assertGreater(self.export(mutation)['integrityErrors'], 0)
 
     def test_unknown_receipt_resource_or_wrong_revision_is_not_silently_skipped(self):
         for mutation in ("UPDATE p_creation_receipt SET resource_id='missing' WHERE id='message-receipt';",

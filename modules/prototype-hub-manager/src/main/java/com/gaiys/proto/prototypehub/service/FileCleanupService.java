@@ -3,6 +3,7 @@ package com.gaiys.proto.prototypehub.service;
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import java.nio.charset.StandardCharsets;
@@ -25,6 +26,8 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
     private final ReactiveRepository<PrototypeRevisionEntity, String> revisions;
     private final ReactiveRepository<PrototypeVersionEntity, String> versions;
     private final ReactiveRepository<PrototypeReviewMessageEntity, String> messages;
+
+    private final ReactiveRepository<PrototypeRevisionMaterialEntity, String> materials;
 
     /** 只登记已确认未提交归属的上传候选；保留期内的业务删除不得调用文件清理。 */
     public Mono<FileCleanupEntity> enqueueCandidate(String project, String version, String path) {
@@ -81,6 +84,27 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
                 .then();
     }
 
+    /** 私有资料与元数据永久删除同事务登记；软删版本仍保留引用。 */
+    public Mono<Void> enqueueMaterial(String project, String version, String path) {
+        String canonical = SafePaths.canonicalMaterialPath(project, path);
+        FileCleanupEntity task = new FileCleanupEntity();
+        task.setId(
+                HexFormat.of()
+                        .formatHex(
+                                PrototypeCreationReceiptService.sha256()
+                                        .digest(canonical.getBytes(StandardCharsets.UTF_8))));
+        task.setProjectId(SafePaths.id(project));
+        task.setVersionId(SafePaths.id(version));
+        task.setResourceType("material");
+        task.setStoragePath(canonical);
+        task.setCreateTime(System.currentTimeMillis());
+        task.setNextAttempt(0L);
+        task.setAttempts(0);
+        return findById(task.getId())
+                .switchIfEmpty(Mono.defer(() -> insert(task).thenReturn(task)))
+                .then();
+    }
+
     /** 软删行仍是保留引用；不使用业务侧的活动查询。 */
     private Mono<Boolean> referenced(FileCleanupEntity task) {
         Path target = Path.of(task.getStoragePath());
@@ -116,6 +140,25 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
         Mono<Void> deletion =
                 Mono.defer(
                         () -> {
+                            if ("material".equals(task.getResourceType())) {
+                                SafePaths.canonicalMaterialPath(
+                                        task.getProjectId(), task.getStoragePath());
+                                return materials
+                                        .createQuery()
+                                        .where(
+                                                PrototypeRevisionMaterialEntity::getStoragePath,
+                                                task.getStoragePath())
+                                        .count()
+                                        .flatMap(
+                                                count ->
+                                                        count > 0
+                                                                ? Mono.error(
+                                                                        new IllegalStateException(
+                                                                                "Referenced revision material"))
+                                                                : storage.deleteMaterial(
+                                                                        task.getProjectId(),
+                                                                        task.getStoragePath()));
+                            }
                             if ("review-image".equals(task.getResourceType())) {
                                 SafePaths.canonicalReviewImagePath(
                                         task.getProjectId(), task.getStoragePath());

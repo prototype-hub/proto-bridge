@@ -11,6 +11,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeVersionService;
 import com.gaiys.proto.prototypehub.web.info.PrototypePageInfo;
 import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.request.RevisionComparisonRequest;
+import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
 import com.gaiys.proto.prototypehub.web.request.RevisionMigrationRequest;
 import com.gaiys.proto.prototypehub.web.response.PreviewSessionResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
@@ -219,6 +220,10 @@ public class PrototypeVersionController {
             @RequestPart String versionName,
             @RequestPart(required = false) String description,
             @RequestPart FilePart file,
+            @RequestPart(required = false) String sourceTool,
+            @RequestPart(required = false) String sourceName,
+            @RequestPart(required = false) String sourceUrl,
+            @RequestPart(required = false) String sourceNotes,
             @RequestHeader(value = "Idempotency-Key", required = false) String key) {
         return Authentication.currentReactive()
                 .flatMap(
@@ -229,7 +234,9 @@ public class PrototypeVersionController {
                                         description,
                                         file,
                                         auth.getUser().getId(),
-                                        key))
+                                        key,
+                                        RevisionMaterialRequests.Source.of(
+                                                sourceTool, sourceName, sourceUrl, sourceNotes)))
                 .flatMap(versions::response);
     }
 
@@ -241,8 +248,19 @@ public class PrototypeVersionController {
             @RequestPart String versionName,
             @RequestPart(required = false) String description,
             @RequestPart FilePart file,
-            @RequestPart(required = false) String expectedRevisionId) {
-        return upload.update(id, versionName, description, file, expectedRevisionId)
+            @RequestPart(required = false) String expectedRevisionId,
+            @RequestPart(required = false) String sourceTool,
+            @RequestPart(required = false) String sourceName,
+            @RequestPart(required = false) String sourceUrl,
+            @RequestPart(required = false) String sourceNotes) {
+        return upload.update(
+                        id,
+                        versionName,
+                        description,
+                        file,
+                        expectedRevisionId,
+                        RevisionMaterialRequests.Source.of(
+                                sourceTool, sourceName, sourceUrl, sourceNotes))
                 .flatMap(versions::response);
     }
 

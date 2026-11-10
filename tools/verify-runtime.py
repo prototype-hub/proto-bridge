@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_work_item', 'p_viewport_check', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_work_item', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -2289,7 +2289,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_viewport_check',
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

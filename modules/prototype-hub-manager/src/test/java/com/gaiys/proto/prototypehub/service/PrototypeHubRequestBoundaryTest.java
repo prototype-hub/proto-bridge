@@ -49,7 +49,8 @@ class PrototypeHubRequestBoundaryTest {
                         receipts,
                         access,
                         mock(PrototypeRevisionService.class),
-                        mock(PrototypeManifestBuilder.class));
+                        mock(PrototypeManifestBuilder.class),
+                        mock(PrototypeRevisionMaterialService.class));
         Mono<PrototypeVersionEntity> result =
                 replace
                         ? upload.update("version", "Release", "a".repeat(2001), file)
