@@ -54,6 +54,7 @@ public class SystemManagementService {
     private final ApplicationEventPublisher events;
     private final ObjectMapper mapper;
     private final PasswordValidator passwords;
+    private final BuiltInAdministratorService administrators;
 
     public Mono<DimensionEntity> dimension(String type, String id) {
         return dimensions
@@ -305,19 +306,37 @@ public class SystemManagementService {
 
     public Mono<Void> replaceBindings(String userId, String type, List<String> targets) {
         List<String> keys = ids(targets);
-        return Flux.fromIterable(keys)
-                .concatMap(id -> dimension(type, id))
-                .collectList()
+        return administrators
+                .find()
+                .map(user -> user.getId().equals(userId) && "role".equals(type))
+                .defaultIfEmpty(false)
                 .flatMap(
-                        valid ->
-                                bindings.createDelete()
-                                        .where(DimensionUserEntity::getUserId, userId)
-                                        .and(DimensionUserEntity::getDimensionTypeId, type)
-                                        .execute()
-                                        .thenMany(Flux.fromIterable(valid))
-                                        .concatMap(
-                                                d -> bind(type, d.getId(), List.of(userId), false))
-                                        .then());
+                        protectedUser -> {
+                            if (protectedUser && !keys.contains("ADMIN"))
+                                return Mono.error(conflict());
+                            var delete =
+                                    bindings.createDelete()
+                                            .where(DimensionUserEntity::getUserId, userId)
+                                            .and(DimensionUserEntity::getDimensionTypeId, type);
+                            // 全量替换也保留现有 ADMIN 行，不做先删后补的短暂解绑。
+                            if (protectedUser)
+                                delete.and().not(DimensionUserEntity::getDimensionId, "ADMIN");
+                            return Flux.fromIterable(keys)
+                                    .concatMap(id -> dimension(type, id))
+                                    .collectList()
+                                    .flatMap(
+                                            valid ->
+                                                    delete.execute()
+                                                            .thenMany(Flux.fromIterable(valid))
+                                                            .concatMap(
+                                                                    d ->
+                                                                            bind(
+                                                                                    type,
+                                                                                    d.getId(),
+                                                                                    List.of(userId),
+                                                                                    false))
+                                                            .then());
+                        });
     }
 
     @Transactional

@@ -5,10 +5,12 @@ import static org.mockito.Mockito.*;
 
 import com.gaiys.proto.system.service.SystemInitializationLockService;
 import java.util.List;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveQuery;
 import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.system.authorization.api.entity.DimensionEntity;
 import org.hswebframework.web.system.authorization.api.entity.DimensionUserEntity;
 import org.hswebframework.web.system.authorization.api.entity.UserEntity;
+import org.hswebframework.web.system.authorization.api.event.ClearUserAuthorizationCacheEvent;
 import org.hswebframework.web.system.authorization.api.service.reactive.ReactiveUserService;
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.DefaultApplicationArguments;
@@ -30,7 +32,14 @@ class AdministratorInitializerTest {
         for (String password : List.of("", "short", " ".repeat(12), "x".repeat(129))) {
             var initializer =
                     new AdministratorInitializer(
-                            users, bindings, transactions, dimensions, lock, "admin", password);
+                            users,
+                            bindings,
+                            transactions,
+                            dimensions,
+                            lock,
+                            "admin",
+                            password,
+                            event -> {});
             assertThrows(
                     AdministratorInitializer.InitialPasswordException.class,
                     () -> initializer.run(new DefaultApplicationArguments()));
@@ -47,16 +56,26 @@ class AdministratorInitializerTest {
         ReactiveRepository<DimensionEntity, String> dimensions = mock(ReactiveRepository.class);
         TransactionalOperator transactions = mock(TransactionalOperator.class);
         UserEntity existing = new UserEntity();
+        existing.setId("existing-admin");
         existing.setUsername("admin");
+        ReactiveQuery<DimensionUserEntity> query = mock(ReactiveQuery.class, RETURNS_SELF);
+        when(bindings.createQuery()).thenReturn(query);
+        when(query.count()).thenReturn(Mono.just(1));
         when(users.findByUsername("admin")).thenReturn(Mono.just(existing));
         when(transactions.transactional(any(Mono.class))).thenAnswer(call -> call.getArgument(0));
         var lock = mock(SystemInitializationLockService.class);
         when(lock.acquire()).thenReturn(Mono.empty());
+        java.util.List<Object> events = new java.util.ArrayList<>();
         var initializer =
                 new AdministratorInitializer(
-                        users, bindings, transactions, dimensions, lock, "admin", "");
+                        users, bindings, transactions, dimensions, lock, "admin", "", events::add);
         assertDoesNotThrow(() -> initializer.run(new DefaultApplicationArguments()));
         verify(users, never()).addUser(any(UserEntity.class));
-        verifyNoInteractions(bindings, dimensions);
+        verify(bindings, never()).insert(any(Mono.class));
+        verifyNoInteractions(dimensions);
+        assertEquals(1, events.size());
+        var cleared = assertInstanceOf(ClearUserAuthorizationCacheEvent.class, events.getFirst());
+        assertFalse(cleared.isAll());
+        assertEquals(java.util.Set.of("existing-admin"), cleared.getUserId());
     }
 }
