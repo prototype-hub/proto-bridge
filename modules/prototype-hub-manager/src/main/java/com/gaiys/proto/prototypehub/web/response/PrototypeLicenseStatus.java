@@ -10,7 +10,8 @@ import java.util.Map;
 public record PrototypeLicenseStatus(
         @Schema(description = "公共凭证协议版本") int schemaVersion,
         @Schema(description = "持久安装标识") String installationId,
-        @Schema(description = "missing/valid/untrusted/invalid/not_yet_valid") String status,
+        @Schema(description = "missing/valid/untrusted/invalid/not_yet_valid/unsupported")
+                String status,
         @Schema(description = "是否配置受信任公钥") boolean trustConfigured,
         @Schema(description = "接受凭证摘要；缺证为null") AcceptedCredential acceptedCredential,
         @Schema(description = "仅valid时提供已验证声明；不代表实际高级授权") VerifiedEntitlements verifiedEntitlements,
@@ -31,13 +32,13 @@ public record PrototypeLicenseStatus(
             @Schema(description = "客户显示名称") String customer,
             @Schema(description = "声明版本") String edition,
             @Schema(description = "声明功能列表，不代表基础版已激活") List<String> features,
-            @Schema(description = "声明项目总量") int maxProjects,
-            @Schema(description = "基础每项目版本量") int baseVersionsPerProject,
-            @Schema(description = "指定项目版本块声明") List<ProjectVersionGrant> projectVersionGrants,
+            @Schema(description = "声明项目总上限") int maxProjects,
+            @Schema(description = "所有项目统一的版本总上限") int maxVersionsPerProject,
             @Schema(description = "签发Unix毫秒") long issuedAt,
             @Schema(description = "生效Unix毫秒") long notBefore,
             @Schema(description = "试用截止声明；不实施试用激活") Long trialEndsAt,
-            @Schema(description = "维护服务截止声明，不停止永久运行权益") Long maintenanceUntil) {
+            @Schema(description = "维护服务截止声明，不停止永久运行权益") Long maintenanceUntil,
+            @Schema(description = "已验凭证模型，固定为2") int schemaVersion) {
         public static VerifiedEntitlements from(JsonNode payload) {
             return new VerifiedEntitlements(
                     payload.path("customer").asText(),
@@ -47,31 +48,18 @@ public record PrototypeLicenseStatus(
                             .map(JsonNode::asText)
                             .toList(),
                     payload.path("maxProjects").asInt(),
-                    payload.path("baseVersionsPerProject").asInt(),
-                    java.util.stream.StreamSupport.stream(
-                                    payload.path("projectVersionGrants").spliterator(), false)
-                            .map(
-                                    value ->
-                                            new ProjectVersionGrant(
-                                                    value.path("projectId").asText(),
-                                                    value.path("extraVersionBlocks").asInt()))
-                            .toList(),
+                    payload.path("maxVersionsPerProject").asInt(),
                     payload.path("issuedAt").asLong(),
                     payload.path("notBefore").asLong(),
                     nullable(payload, "trialEndsAt"),
-                    nullable(payload, "maintenanceUntil"));
+                    nullable(payload, "maintenanceUntil"),
+                    payload.path("schemaVersion").asInt());
         }
 
         private static Long nullable(JsonNode payload, String field) {
             return payload.path(field).isNull() ? null : payload.path(field).asLong();
         }
     }
-
-    /** 项目ID只绑定声明，不触发新增或永久扩容。 */
-    @Schema(description = "指定项目版本块声明")
-    public record ProjectVersionGrant(
-            @Schema(description = "项目标识") String projectId,
-            @Schema(description = "额外版本块数；每块5个") int extraVersionBlocks) {}
 
     /** 基础能力不依赖商业包或验证码渠道权益。 */
     @Schema(description = "基础免费权益")

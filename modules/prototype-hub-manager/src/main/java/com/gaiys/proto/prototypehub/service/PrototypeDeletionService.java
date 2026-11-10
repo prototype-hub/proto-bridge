@@ -99,7 +99,7 @@ public class PrototypeDeletionService {
                 .as(transactions::transactional);
     }
 
-    /** 按创建相同锁序恢复项目，只恢复父行；历史版本仍须逐项恢复。 */
+    /** 恢复已有项目根不再占新名额；保留创建锁序和恢复权限，只恢复父行。 */
     public Mono<PrototypeProjectEntity> restoreProject(String id) {
         SafePaths.id(id);
         return access.current()
@@ -110,18 +110,15 @@ public class PrototypeDeletionService {
                                         .then(access.lockProject(id))
                                         .then(access.requireDeletedProject(id)))
                 .map(PrototypeProjectAccessService.Grant::project)
-                .flatMap(this::restoreProjectWithinCapacity)
+                .flatMap(this::restoreProjectState)
                 .as(transactions::transactional);
     }
 
-    private Mono<PrototypeProjectEntity> restoreProjectWithinCapacity(
-            PrototypeProjectEntity project) {
-        return projects.requireCapacity()
-                .then(
-                        projects.createUpdate()
-                                .setNull(PrototypeProjectEntity::getDeletedTime)
-                                .where(PrototypeProjectEntity::getId, project.getId())
-                                .execute())
+    private Mono<PrototypeProjectEntity> restoreProjectState(PrototypeProjectEntity project) {
+        return projects.createUpdate()
+                .setNull(PrototypeProjectEntity::getDeletedTime)
+                .where(PrototypeProjectEntity::getId, project.getId())
+                .execute()
                 .thenReturn(project)
                 .doOnNext(restored -> restored.setDeletedTime(null));
     }

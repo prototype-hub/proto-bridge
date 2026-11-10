@@ -68,7 +68,7 @@ public class PrototypeProjectController {
     /** 回收站查询仍使用项目查询动作，范围仅当前所有者及有效管理员。 */
     @PostMapping("/_deleted/_query")
     @QueryAction
-    @Operation(summary = "分页查询可恢复的已删除项目", description = "无限期保留，不提供永久清理；仅当前所有者或有效管理员可见")
+    @Operation(summary = "分页查询可恢复的已删除项目", description = "保留30天后自动彻底清理，清理成功前仍占项目额度；仅当前所有者或有效管理员可见")
     public Mono<PagerResult<ProjectResponse>> deleted(
             @Valid @RequestBody PrototypeListQueryRequest input) {
         return access.deletedProjects(input);
@@ -76,7 +76,9 @@ public class PrototypeProjectController {
 
     @PostMapping("/{id}/_restore")
     @SaveAction
-    @Operation(summary = "恢复已删除项目", description = "重验当前所有权和项目额度，只恢复项目本身，历史版本及旧分享不会自动恢复")
+    @Operation(
+            summary = "恢复已删除项目",
+            description = "重验当前所有权、状态和保留期，已计数项目不重复占额；只恢复项目本身，历史版本及旧分享不会自动恢复")
     public Mono<ProjectResponse> restore(@PathVariable String id) {
         return deletion.restoreProject(id)
                 .flatMap(project -> access.requireProject(project.getId(), Action.READ))

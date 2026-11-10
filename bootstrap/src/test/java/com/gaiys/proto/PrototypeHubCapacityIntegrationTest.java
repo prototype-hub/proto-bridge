@@ -16,6 +16,7 @@ import static org.mockito.Mockito.spy;
 import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.JsonNode;
+import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
@@ -25,6 +26,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeInstallationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
+import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionMaterialService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionMigrationService;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionService;
@@ -53,6 +55,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.api.crud.entity.TransactionManagers;
 import org.hswebframework.web.authorization.token.ParsedToken;
 import org.hswebframework.web.authorization.token.SimpleParsedToken;
@@ -152,6 +155,7 @@ class PrototypeHubCapacityIntegrationTest {
     @Autowired SecureZipExtractor extractor;
     @Autowired FileWork work;
     @Autowired FileCleanupService cleanup;
+    @Autowired PrototypeRetentionService retention;
 
     @Autowired
     @Qualifier(TransactionManagers.reactiveTransactionManager)
@@ -254,6 +258,31 @@ class PrototypeHubCapacityIntegrationTest {
         asAdmin(deletion.deleteProject(empty)).block(TIMEOUT);
         asAdmin(deletion.restoreProject(empty)).block(TIMEOUT);
         assertEquals(projectUsage.used(), projects.usage().block(TIMEOUT).projects().used());
+    }
+
+    @Test
+    void recycledProjectDoesNotReleaseItsCapacity() {
+        createProjects(5);
+        String recycled = projects.activeQuery().fetchOne().block(TIMEOUT).getId();
+        asAdmin(deletion.deleteProject(recycled)).block(TIMEOUT);
+
+        var usage = projects.usage().block(TIMEOUT).projects();
+        var creation =
+                asAdmin(projects.create(input("must-remain-full"), actor))
+                        .materialize()
+                        .block(TIMEOUT);
+        assertAll(
+                () -> assertEquals(5, usage.used(), "Recycled projects still occupy capacity"),
+                () -> assertEquals(0, usage.remaining()),
+                () -> assertFalse(usage.canCreate()),
+                () ->
+                        assertTrue(
+                                creation.isOnError(),
+                                "Moving a project to recycle must not allow another creation"),
+                () -> {
+                    if (creation.isOnError())
+                        assertCode(creation.getThrowable(), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+                });
     }
 
     @Test
@@ -418,29 +447,31 @@ class PrototypeHubCapacityIntegrationTest {
                 asAdmin(projects.create(input("project"), actor, "same-key")),
                 "PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT");
         assertEquals(5, count("p_project"));
-        assertEquals(4, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+        expectCode(
+                asAdmin(projects.create(input("project"), otherActor, "same-key")),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        capacity.setProjectLimit("6");
         assertNotEquals(
                 id,
                 asAdmin(projects.create(input("project"), otherActor, "same-key"))
                         .block(TIMEOUT)
                         .getId());
         assertEquals(6, count("p_project"));
-        assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(6, projects.usage().block(TIMEOUT).projects().used());
     }
 
     @Test
-    void projectRestoreSharesCapacityLockWithCreateAndRetainsTheOriginalReceipt() {
+    void projectRestoreKeepsItsSlotAtCapacityAndAfterLimitReduction() {
         String id =
                 asAdmin(projects.create(input("retained project"), actor, "restore-project"))
                         .block(TIMEOUT)
                         .getId();
         asAdmin(deletion.deleteProject(id)).block(TIMEOUT);
-        createProjects(5);
-        expectCode(asAdmin(deletion.restoreProject(id)), "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
-        assertNotNull(projects.findById(id).block(TIMEOUT).getDeletedTime());
+        createProjects(4);
         assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
-        String active = projects.activeQuery().fetchOne().block(TIMEOUT).getId();
-        asAdmin(deletion.deleteProject(active)).block(TIMEOUT);
+        capacity.setProjectLimit("4");
+        assertTrue(projects.usage().block(TIMEOUT).projects().overLimit());
         var restored = asAdmin(deletion.restoreProject(id)).block(TIMEOUT);
         assertEquals(id, restored.getId());
         assertNull(restored.getDeletedTime());
@@ -451,23 +482,122 @@ class PrototypeHubCapacityIntegrationTest {
                         .getId());
         expectCode(asAdmin(deletion.restoreProject(id)), "PROTOTYPE_HUB_RESOURCE_ACTIVE");
         assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+        expectCode(
+                asAdmin(projects.create(input("still-over-limit"), actor)),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
         assertEquals(1, count("p_creation_receipt"));
     }
 
     @Test
-    void independentCreateAndRestoreCannotBothTakeTheLastProjectSlot() {
+    void projectRestoreDoesNotCompeteWithCreateForItsExistingSlot() {
         String id = project();
         asAdmin(deletion.deleteProject(id)).block(TIMEOUT);
         createProjects(4);
         var replica =
                 context.getAutowireCapableBeanFactory().createBean(PrototypeDeletionService.class);
-        assertLastSlot(
+        var results =
                 concurrent(
                         List.of(
                                 asAdmin(replica.restoreProject(id)),
-                                asAdmin(projects.create(input("competing create"), otherActor)))),
-                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+                                asAdmin(projects.create(input("competing create"), otherActor))));
+        assertLastSlot(results, "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertEquals(
+                id,
+                results.stream().filter(Signal::isOnNext).findFirst().orElseThrow().get().getId());
         assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
+    }
+
+    @Test
+    void expiredProjectKeepsCapacityUntilPendingFilesHaveActuallyBeenDeleted() throws Exception {
+        var rows = createProjects(5);
+        String project = rows.getFirst().getId();
+        var version = upload(project, "retained", zip("retained"), null).block(TIMEOUT);
+        Path site = FILES.resolve(version.getStoragePath());
+        asAdmin(deletion.deleteVersion(version.getId())).block(TIMEOUT);
+        asAdmin(deletion.deleteProject(project)).block(TIMEOUT);
+        ageVersion(version.getId());
+        ageProject(project);
+        assertTrue(retention.purgeVersion(version.getId()).block(TIMEOUT));
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        assertNotNull(projects.findById(project).block(TIMEOUT));
+        assertEquals(5, projects.countForCapacity().block(TIMEOUT));
+        assertTrue(Files.exists(site));
+
+        PrototypeStorageService failing = mock(PrototypeStorageService.class);
+        when(failing.deleteStoredVersion(anyString(), anyString(), anyString()))
+                .thenReturn(Mono.error(new IOException("controlled cleanup failure")));
+        var task = cleanup.createQuery().fetchOne().block(TIMEOUT);
+        cleanupWorker(failing).attempt(task).block(TIMEOUT);
+        assertEquals(1, cleanup.findById(task.getId()).block(TIMEOUT).getAttempts());
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        assertTrue(Files.exists(site));
+        var replica =
+                context.getAutowireCapableBeanFactory().createBean(PrototypeProjectService.class);
+        assertEquals(5, replica.usage().block(TIMEOUT).projects().used());
+        expectCode(
+                asAdmin(replica.create(input("cleanup-pending"), actor)),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+
+        cleanup.createUpdate()
+                .set(FileCleanupEntity::getNextAttempt, 0L)
+                .where(FileCleanupEntity::getProjectId, project)
+                .execute()
+                .block(TIMEOUT);
+        cleanup.retryPending().block(TIMEOUT);
+        assertFalse(Files.exists(site));
+        assertEquals(0, count("p_file_cleanup"));
+        assertTrue(retention.purgeProject(project).block(TIMEOUT));
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        assertEquals(4, projects.countForCapacity().block(TIMEOUT));
+        assertLastSlot(
+                concurrent(
+                        List.of(
+                                asAdmin(projects.create(input("reclaimed-a"), actor)),
+                                asAdmin(replica.create(input("reclaimed-b"), actor)))),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        assertEquals(5, projects.countForCapacity().block(TIMEOUT));
+    }
+
+    @Test
+    void occupiedProjectRestoreKeepsPermissionStateAndRetentionGuards() {
+        String project = project();
+        asAdmin(deletion.deleteProject(project)).block(TIMEOUT);
+        client.post()
+                .uri("/prototype-hub/projects/" + project + "/_restore")
+                .exchange()
+                .expectStatus()
+                .isUnauthorized();
+        String token =
+                response(
+                                client.post()
+                                        .uri("/authorize/login")
+                                        .bodyValue(
+                                                Map.of(
+                                                        "username",
+                                                        users.findById(otherActor)
+                                                                .block(TIMEOUT)
+                                                                .getUsername(),
+                                                        "password",
+                                                        PASSWORD))
+                                        .exchange(),
+                                200)
+                        .path("result")
+                        .path("token")
+                        .asText();
+        client.post()
+                .uri("/prototype-hub/projects/" + project + "/_restore")
+                .header("X-Access-Token", token)
+                .exchange()
+                .expectStatus()
+                .isForbidden();
+        ageProject(project);
+        client.post()
+                .uri("/prototype-hub/projects/" + project + "/_restore")
+                .header("X-Access-Token", admin)
+                .exchange()
+                .expectStatus()
+                .isNotFound();
+        assertEquals(1, projects.countForCapacity().block(TIMEOUT));
     }
 
     @Test
@@ -587,7 +717,7 @@ class PrototypeHubCapacityIntegrationTest {
         assertEquals(1, count("p_version"));
         assertNotNull(projects.findById(project).block(TIMEOUT).getDeletedTime());
         assertNotNull(versions.findById(original.getId()).block(TIMEOUT).getDeletedTime());
-        assertEquals(0, projects.usage().block(TIMEOUT).projects().used());
+        assertEquals(1, projects.usage().block(TIMEOUT).projects().used());
         assertEquals(1, directoryCount(project));
     }
 
@@ -666,7 +796,7 @@ class PrototypeHubCapacityIntegrationTest {
     }
 
     @Test
-    void onlyCommittedDeletionReleasesProjectAndVersionCapacity() throws Exception {
+    void onlyPermanentProjectDeletionAndCommittedVersionDeletionReleaseCapacity() throws Exception {
         var rows = createProjects(5);
         String empty = rows.getLast().getId();
         rejectMutation("p_project", "update");
@@ -682,6 +812,9 @@ class PrototypeHubCapacityIntegrationTest {
             allowMutation("p_project");
         }
         asAdmin(deletion.deleteProject(empty)).block(TIMEOUT);
+        assertFalse(projects.usage().block(TIMEOUT).projects().canCreate());
+        ageProject(empty);
+        assertTrue(retention.purgeProject(empty).block(TIMEOUT));
         assertTrue(projects.usage().block(TIMEOUT).projects().canCreate());
         asAdmin(projects.create(input("reclaimed"), actor)).block(TIMEOUT);
         String project = rows.getFirst().getId();
@@ -781,8 +914,16 @@ class PrototypeHubCapacityIntegrationTest {
         asAdmin(deletion.deleteProject(rows.getLast().getId())).block(TIMEOUT);
         assertFalse(projects.usage().block(TIMEOUT).projects().canCreate());
         asAdmin(deletion.deleteProject(rows.get(3).getId())).block(TIMEOUT);
+        assertEquals(6, projects.usage().block(TIMEOUT).projects().used());
+        expectCode(
+                asAdmin(projects.create(input("still-retained"), actor)),
+                "PROTOTYPE_HUB_PROJECT_LIMIT_REACHED");
+        for (String expired : List.of(rows.getLast().getId(), rows.get(3).getId())) {
+            ageProject(expired);
+            assertTrue(retention.purgeProject(expired).block(TIMEOUT));
+        }
         asAdmin(projects.create(input("reclaimed"), actor)).block(TIMEOUT);
-        assertEquals(7, count("p_project"));
+        assertEquals(5, count("p_project"));
         assertEquals(5, projects.usage().block(TIMEOUT).projects().used());
     }
 
@@ -1081,6 +1222,36 @@ class PrototypeHubCapacityIntegrationTest {
                 .map((row, metadata) -> ((Number) row.get(0)).longValue())
                 .one()
                 .block(TIMEOUT);
+    }
+
+    private void ageProject(String id) {
+        projects.createUpdate()
+                .set(
+                        PrototypeProjectEntity::getDeletedTime,
+                        System.currentTimeMillis() - Duration.ofDays(31).toMillis())
+                .where(PrototypeProjectEntity::getId, id)
+                .execute()
+                .block(TIMEOUT);
+    }
+
+    private void ageVersion(String id) {
+        versions.createUpdate()
+                .set(
+                        PrototypeVersionEntity::getDeletedTime,
+                        System.currentTimeMillis() - Duration.ofDays(31).toMillis())
+                .where(PrototypeVersionEntity::getId, id)
+                .execute()
+                .block(TIMEOUT);
+    }
+
+    private FileCleanupService cleanupWorker(PrototypeStorageService supplied) {
+        return new FileCleanupService(
+                supplied, revisions.getRepository(), versions.getRepository(), null, null) {
+            @Override
+            public ReactiveRepository<FileCleanupEntity, String> getRepository() {
+                return cleanup.getRepository();
+            }
+        };
     }
 
     private void rejectMutation(String table, String event) {

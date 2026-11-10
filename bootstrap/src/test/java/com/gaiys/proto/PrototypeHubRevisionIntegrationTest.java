@@ -985,6 +985,8 @@ class PrototypeHubRevisionIntegrationTest {
         assertFalse(retention.purgeVersion(id).block(TIMEOUT));
         ageVersion(id);
         assertTrue(retention.purgeVersion(id).block(TIMEOUT));
+        assertFalse(retention.purgeProject(project).block(TIMEOUT));
+        cleanup.retryPending().block(TIMEOUT);
         assertTrue(retention.purgeProject(project).block(TIMEOUT));
 
         String orphanProject = project();

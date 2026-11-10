@@ -282,6 +282,99 @@ class PrototypeLicenseIntegrationTest {
     }
 
     @Test
+    void oldTestRecordsAreUnsupportedWithoutClearingInstallationOrAcceptance() throws Exception {
+        var old = PrototypeLicenseVerificationTest.payload(installation, 3);
+        old.put("licenseId", "old-test-lineage");
+        old.put("schemaVersion", 1);
+        old.remove("maxVersionsPerProject");
+        old.put("baseVersionsPerProject", 5);
+        old.putArray("projectVersionGrants");
+        String document = PrototypeLicenseVerificationTest.sign(old);
+        String canonical =
+                new com.gaiys.proto.prototypehub.service.license.PrototypeLicenseVerifier(
+                                PrototypeLicenseVerificationTest.MAPPER, trust)
+                        .canonical(PrototypeLicenseVerificationTest.MAPPER.readTree(document));
+        String fingerprint =
+                java.util.HexFormat.of()
+                        .formatHex(
+                                java.security.MessageDigest.getInstance("SHA-256")
+                                        .digest(
+                                                canonical.getBytes(
+                                                        java.nio.charset.StandardCharsets.UTF_8)));
+        installations
+                .createUpdate()
+                .set(PrototypeInstallationEntity::getLicenseDocument, canonical)
+                .set(PrototypeInstallationEntity::getLicenseId, "old-test-lineage")
+                .set(PrototypeInstallationEntity::getLicenseSequence, 3L)
+                .set(PrototypeInstallationEntity::getLicenseFingerprint, fingerprint)
+                .set(PrototypeInstallationEntity::getLicenseAcceptedAt, System.currentTimeMillis())
+                .set(PrototypeInstallationEntity::getLicenseKeyId, "test")
+                .where(PrototypeInstallationEntity::getId, "default")
+                .execute()
+                .block(TIMEOUT);
+        JsonNode accepted = status().path("acceptedCredential");
+        assertEquals("unsupported", status().path("status").asText());
+        assertTrue(status().path("verifiedEntitlements").isNull());
+        assertEquals(5, status().path("enforcedCapacity").path("versionLimit").asInt());
+        assertEquals(installation, status().path("installationId").asText());
+        var rejected =
+                call(
+                        HttpMethod.POST,
+                        "/prototype-hub/license/_import",
+                        admin,
+                        Map.of("document", document),
+                        400);
+        assertEquals("PROTOTYPE_HUB_LICENSE_SCHEMA_UNSUPPORTED", rejected.path("code").asText());
+        rejected =
+                call(
+                        HttpMethod.POST,
+                        "/prototype-hub/license/_import",
+                        admin,
+                        Map.of("document", document(4)),
+                        409);
+        assertEquals("PROTOTYPE_HUB_LICENSE_LINEAGE_CONFLICT", rejected.path("code").asText());
+        assertEquals(accepted, status().path("acceptedCredential"));
+        assertEquals(canonical, installations.current().block(TIMEOUT).getLicenseDocument());
+    }
+
+    @Test
+    void rotatingKeysStillRequiresMonotoneSequenceWithinTheAcceptedLineage() {
+        upload(document(2));
+        var accepted = status().path("acceptedCredential");
+        var rotated = PrototypeLicenseVerificationTest.keyPair();
+        trust.setTrustedPublicKeys(
+                Map.of(
+                        "rotated",
+                        Base64.getEncoder().encodeToString(rotated.getPublic().getEncoded())));
+        assertEquals("untrusted", status().path("status").asText());
+        String stale =
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.payload(installation, 1),
+                        "rotated",
+                        rotated);
+        var rejected =
+                call(
+                        HttpMethod.POST,
+                        "/prototype-hub/license/_import",
+                        admin,
+                        Map.of("document", stale),
+                        409);
+        assertEquals("PROTOTYPE_HUB_LICENSE_SEQUENCE_CONFLICT", rejected.path("code").asText());
+        assertEquals(accepted, status().path("acceptedCredential"));
+        String replacement =
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.payload(installation, 3),
+                        "rotated",
+                        rotated);
+        assertEquals("imported", upload(replacement).path("result").asText());
+        assertEquals(2, status().path("verifiedEntitlements").path("schemaVersion").asInt());
+        assertEquals(
+                20, status().path("verifiedEntitlements").path("maxVersionsPerProject").asInt());
+        assertFalse(status().path("verifiedEntitlements").has("projectVersionGrants"));
+        assertEquals("unchanged", upload(replacement).path("result").asText());
+    }
+
+    @Test
     void projectManagersAndAnonymousCannotReadOrImportInstallationCredentials() {
         call(HttpMethod.GET, "/prototype-hub/license", null, null, 401);
         String key = UUID.randomUUID().toString().replace("-", "");

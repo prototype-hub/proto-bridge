@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.service;
 
+import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
@@ -528,10 +529,21 @@ public class PrototypeRetentionService {
                                                         .execute())
                                         .then(reviewThreads.purgeProject(id))
                                         .then(review.purgeProject(id))
-                                        .then(projects.deleteById(id))
-                                        .thenReturn(true))
+                                        .then(deleteProjectWhenFilesClean(id)))
                 .defaultIfEmpty(false)
                 .as(transactions::transactional);
+    }
+
+    /** 先提交清理图及队列；文件删除成功前保留到期根占额，下一轮才释放名额。 */
+    private Mono<Boolean> deleteProjectWhenFilesClean(String id) {
+        return cleanup.createQuery()
+                .where(FileCleanupEntity::getProjectId, id)
+                .count()
+                .flatMap(
+                        pending ->
+                                pending == 0
+                                        ? projects.deleteById(id).thenReturn(true)
+                                        : Mono.just(false));
     }
 
     private record Purged(int versions, int projects) {}

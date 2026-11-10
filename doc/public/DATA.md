@@ -308,3 +308,10 @@ EasyORM增量创建 `p_copy_snapshot` 与 `p_copy_entry`，不回填旧版本、
 `preflight-db.sql` 与v3存储引用导出认可非空修订回执的实际version、thread、message或association资源关系，检查相应项目/版本/修订范围。人工授权另检查来源线程/分享及目标邮箱身份归属；访问记录保留实际历史修订，不强行等于分享后来选择的目标；文案快照核对固定manifest、页面和原文件摘要，条目核对同snapshot及完整页面范围。无修订的历史或项目回执继续保持原解释，不从摘要主键猜测操作类型。
 
 隔离工具在停写后取得确定性行摘要和全部文件hash，在新数据库启动应用前严格逐行对比；完整回执不能只比resource/revision绑定。启动后只接受启动前已登记的到期行身份和本次待办文件差集，长期授权审计、线程、消息、工作项和文案必须保持。访问事件的35自然日保留与统计30天窗口分别核验，重放仍有效的原事件票据不能新增访问。隔离SQL定龄用于验证到期分支，不表示真实生产历史已被演练；当前版本恢复也不等于旧schema升级验收。
+
+
+### Project quota lifetime and uniform credential model
+
+Project quota counts every retained `p_project` root, including recycled projects and expired projects waiting for durable file cleanup. Retention first deletes the dependent graph and enqueues its files while retaining the project root. A later locked pass removes the root only when no project cleanup task remains. Failed or interrupted cleanup therefore retains the quota occupation and resumes after restart; restoring a counted project consumes no additional slot. Version quota remains active logical versions. There is no new counter, table, credential migration or automatic data reset. Previously physically deleted project roots cannot be reconstructed from orphan tasks, so the new count cannot retroactively recover those deleted roots.
+
+Only schemaVersion2 credential declarations are interpreted: absolute installation-wide `maxProjects` and uniform `maxVersionsPerProject`. Old accepted test documents are retained but reported unsupported; the application does not translate blocks, clear license acceptance fields or change installation identity. The normal monotone sequence, fingerprint and lineage guards remain. Switching an old test environment requires an explicit administrator backup/reset decision outside the import API, or a new test installation; see [operations](OPERATIONS.md).
