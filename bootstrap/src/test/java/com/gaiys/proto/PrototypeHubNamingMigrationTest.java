@@ -299,7 +299,7 @@ class PrototypeHubNamingMigrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getCode).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(17, actual.size());
+        assertEquals(18, actual.size());
         assertTrue(actual.containsKey("prototype-hub"));
         MenuEntity project = actual.get("prototype-hub/Project");
         assertNotNull(project);
@@ -323,7 +323,13 @@ class PrototypeHubNamingMigrationTest {
                                         "prototype-hub-license",
                                         "授权与安装",
                                         "License & installation",
-                                        "prototype-hub-license"))
+                                        "prototype-hub-license"),
+                                "Search",
+                                List.of(
+                                        "prototype-hub-search",
+                                        "全局搜索",
+                                        "Search",
+                                        "prototype-hub-version"))
                         .entrySet()) {
             MenuEntity menu = actual.get("prototype-hub/" + entry.getKey());
             assertNotNull(menu);

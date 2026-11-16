@@ -287,6 +287,41 @@
         "buttons": []
       },
       {
+        "id": "prototype-hub-search",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "全局搜索",
+        "code": "prototype-hub/Search",
+        "url": "/prototype-hub/search",
+        "icon": "SearchOutlined",
+        "sortIndex": 5,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "全局搜索",
+            "en_US": "Search",
+            "en": "Search"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/Search",
+        "permissions": [
+          {
+            "permission": "prototype-hub-version",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": []
+      },
+      {
         "id": "prototype-hub-license",
         "parentId": "131a644480a0c3253a08103fedfe3280",
         "name": "授权与安装",

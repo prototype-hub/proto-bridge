@@ -18,8 +18,8 @@ import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
 
 /**
- * Imports the packaged default menu tree into an empty table and adds a missing built-in recycle
- * entry to an existing product tree after EasyORM startup.
+ * Imports the packaged default menu tree into an empty table and adds missing built-in entries to
+ * an existing product tree after EasyORM startup.
  *
  * <p>Every invocation takes the shared initialization row lock and rechecks the table in the same
  * reactive transaction as the existing tree save. Existing rows prevent full import; the targeted
@@ -77,6 +77,12 @@ public class MenuStartupInitializationService {
     public Mono<Boolean> ensureLicenseMenuIfMissing() {
         return ensureBuiltInMenuIfMissing(
                 "prototype-hub-license", "prototype-hub/License", "/prototype-hub/license");
+    }
+
+    /** 仅补缺失搜索入口，复用版本query动作，不改任何角色授权或定制菜单。 */
+    public Mono<Boolean> ensureSearchMenuIfMissing() {
+        return ensureBuiltInMenuIfMissing(
+                "prototype-hub-search", "prototype-hub/Search", "/prototype-hub/search");
     }
 
     private Mono<Boolean> ensureBuiltInMenuIfMissing(String id, String code, String url) {

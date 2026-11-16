@@ -2,7 +2,10 @@ package com.gaiys.proto.prototypehub.configuration.customizer;
 
 import com.gaiys.proto.prototypehub.configuration.builder.PrototypeTextTermFragmentBuilder;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import java.beans.PropertyDescriptor;
 import java.lang.annotation.Annotation;
@@ -42,6 +45,20 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
                         .orElseThrow()
                         .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
         }
+        if (PrototypeCopySnapshotEntity.class.isAssignableFrom(entityType))
+            table.getColumn("pagePath")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
+        if (PrototypeRevisionMaterialEntity.class.isAssignableFrom(entityType)) {
+            for (String name : new String[] {"fileName", "sourceTool", "sourceName", "sourceNotes"})
+                table.getColumn(name)
+                        .orElseThrow()
+                        .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
+        }
+        if (PrototypeReviewMessageEntity.class.isAssignableFrom(entityType))
+            table.getColumn("text")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
         if (PrototypeProjectEntity.class.isAssignableFrom(entityType)) {
             table.getColumn("ownerId")
                     .orElseThrow()

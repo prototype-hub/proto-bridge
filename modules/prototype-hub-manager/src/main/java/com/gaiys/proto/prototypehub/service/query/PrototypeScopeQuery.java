@@ -207,7 +207,8 @@ public class PrototypeScopeQuery {
         return query;
     }
 
-    private static <T> void applyScope(
+    /** 将同一活动项目与成员边界用于关联查询；必须在数据库COUNT和分页前调用。 */
+    public static <T> void applyScope(
             QueryHelper.JoinSpec<T> query, String userId, boolean administrator, boolean editOnly) {
         // 删除状态约束也适用于 ADMIN，且必须在 COUNT/分页之前注入。
         query.where(condition -> condition.isNull(PrototypeProjectEntity::getDeletedTime));

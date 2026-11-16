@@ -556,3 +556,18 @@ entry包含id、kind（STATIC/MANUAL）、text、businessTerm、note、requireme
 人工链接仅允许有host、有效端口的HTTP(S)，禁止账号信息、控制字符或空白，不抓取、不自动关联外部需求。每次写及回执重放前重验当前账号、菜单动作和项目权限。条目expectedVersion陈旧返回409 `PROTOTYPE_HUB_COPY_INVENTORY_CONFLICT`；整页configVersion每次成功变更仅增一次。强制请求键为1–128个可打印非空白ASCII；未知结果保留原键、输入和固定scope重试，相同键改语义返回既有IDEMPOTENCY_CONFLICT；删除后的人工条目不因旧创建重放复活。草稿不得自动转移到其他修订或页面。
 
 导出锁内检查整页expectedVersion并取得一致全量DB数据，事务完成后才格式化，发送附件前重验READ。JSON为 `{formatVersion:1,snapshot,entries}`，保留保存的原文。CSV为UTF8 BOM、CRLF、RFC4180全单元格引用：固定列 `recordType,projectId,versionId,revisionId,pageId,snapshotId,inventoryVersion,pagePath,manifestSha256,fileSha256,extractorVersion,extractionState,limitReason,staticComplete,dynamicTextGap,id,kind,text,businessTerm,note,requirementUrl,occurrenceCount,occurrences,configVersion,createdAt,updatedAt`。首行为SNAPSHOT记录（空清单仍保留身份），后续ENTRY行重复固定身份；occurrences为一格JSON。首个非空白/控制字符为`= + - @`或原始首字符为TAB/CR/LF的字符串格加前导单引号防公式，双引号转义；此保护不改变JSON。输出最多64MiB，超限422且不发送部分正文；四个请求级导出槽满返回429。附件使用安全摘要文件名、private/no-store、nosniff、no-referrer，不返回存储路径、原始HTML或凭据。
+
+
+## Permission-scoped basic search
+
+`POST /prototype-hub/search/_query` is an authenticated, read-only member endpoint. It requires the existing `prototype-hub-version:query` action and current active project membership. `COPY` and `MATERIAL` use project READ; `FEEDBACK` retains project EDIT, including public messages and internal notes. A viewer cannot search feedback. Valid ADMIN exceptions follow the existing project scope rules. Guest/share credentials do not authorize this endpoint.
+
+The body requires `type` (`COPY`, `MATERIAL` or `FEEDBACK`) and a literal `keyword` of 1–100 characters after stripping surrounding whitespace. Optional `projectId`, `versionId` and `revisionId` only narrow the authorized scope; IDs contain 1–64 letters, digits, `_` or `-`. `pageIndex` defaults to 0 (0–10000); `pageSize` defaults to 20 (1–50). Each type has its own database count and page, sorted by source update time descending and source ID ascending. Out-of-range pages remain empty with the real total; count and rows do not promise a concurrent-write snapshot. Keywords are request-body data, not URL parameters.
+
+- `COPY`: already collected static/manual text, business terms, notes and fixed page paths. Pages without collected entries are not included.
+- `MATERIAL`: file names and manually declared source tool, source name and source notes. Source URLs, PDF/Office/image contents and external pages are not searched.
+- `FEEDBACK`: message text, with one result per matching message. `sourceId` is the message ID, while `threadId` identifies its original thread. Internal notes remain internal; this does not grant new feedback permissions.
+
+The regular `PagerResult` contains `data`, `total`, `pageIndex` and `pageSize`. Rows contain `type`, `sourceId`, `projectId`, `projectName`, `versionId`, `versionName`, `revisionId`, `revisionCreatedAt`, `pageId`, `pagePath`, `threadId`, `title`, `snippet`, `matchField`, `visibility`, `materialType` and `updatedAt`. Unrelated fields are null. Revision identity is fixed, and no revision number is synthesized. Titles and snippets are plain text bounded to 160 and 240 Unicode code points; render them as text, including any apparent HTML. `matchField` names a matching source field. No storage path, manifest, account/visitor identity or access credential is returned.
+
+Search does not generate public links or replace source authorization. Opening the fixed source rechecks existing preview, material and feedback permissions. Deleted projects/versions and missing or inconsistent parent chains are excluded before count and paging. Changes, removals and membership revocation affect subsequent queries without reindexing.

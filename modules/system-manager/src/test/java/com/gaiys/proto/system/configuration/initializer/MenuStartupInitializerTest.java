@@ -12,7 +12,7 @@ import reactor.core.publisher.Mono;
 
 class MenuStartupInitializerTest {
     private static final List<String> STAGES =
-            List.of("initialize", "recycle", "statistics", "license");
+            List.of("initialize", "recycle", "statistics", "license", "search");
 
     @Test
     void completesInitializationAndExistingMenuSkipAtTheStartupBoundary() {
@@ -27,6 +27,8 @@ class MenuStartupInitializerTest {
                     .thenReturn(stage(subscribed, "statistics", Mono.just(false)));
             when(service.ensureLicenseMenuIfMissing())
                     .thenReturn(stage(subscribed, "license", Mono.just(false)));
+            when(service.ensureSearchMenuIfMissing())
+                    .thenReturn(stage(subscribed, "search", Mono.just(false)));
             var initializer = new MenuStartupInitializer(service);
             assertDoesNotThrow(() -> initializer.run(new DefaultApplicationArguments()));
             assertEquals(STAGES, subscribed);
@@ -34,6 +36,7 @@ class MenuStartupInitializerTest {
             verify(service).ensureRecycleMenuIfMissing();
             verify(service).ensureStatisticsMenuIfMissing();
             verify(service).ensureLicenseMenuIfMissing();
+            verify(service).ensureSearchMenuIfMissing();
         }
     }
 
@@ -55,6 +58,7 @@ class MenuStartupInitializerTest {
             when(service.ensureRecycleMenuIfMissing()).thenReturn(stages.get(1));
             when(service.ensureStatisticsMenuIfMissing()).thenReturn(stages.get(2));
             when(service.ensureLicenseMenuIfMissing()).thenReturn(stages.get(3));
+            when(service.ensureSearchMenuIfMissing()).thenReturn(stages.get(4));
             var initializer = new MenuStartupInitializer(service);
             assertSame(
                     failure,
