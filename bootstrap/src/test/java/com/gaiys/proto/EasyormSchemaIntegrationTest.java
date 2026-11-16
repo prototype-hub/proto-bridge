@@ -192,6 +192,7 @@ class EasyormSchemaIntegrationTest {
                         "prototype-hub/Recycle",
                         "prototype-hub/Statistics",
                         "prototype-hub/License",
+                        "prototype-hub/Search",
                         "system",
                         "system/Basis",
                         "system/User",
