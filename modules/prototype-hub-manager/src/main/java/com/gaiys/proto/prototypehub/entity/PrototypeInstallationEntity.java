@@ -64,6 +64,11 @@ public class PrototypeInstallationEntity extends GenericEntity<String> {
     @Schema(description = "当前凭证签名公钥标识")
     private String licenseKeyId;
 
+    @JsonIgnore
+    @Column(name = "first_trial_accepted_at")
+    @Schema(description = "首次成功导入相对试用凭证的Unix毫秒；换证、重启及重复导入均不重置")
+    private Long firstTrialAcceptedAt;
+
     @Column(name = "retention_deleted_time")
     @Schema(description = "到期版本扫描游标的删除时间；仅作跨轮清理进度，不改变30天截止规则")
     private Long retentionDeletedTime;

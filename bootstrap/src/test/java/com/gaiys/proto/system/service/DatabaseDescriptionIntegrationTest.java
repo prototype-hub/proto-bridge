@@ -117,7 +117,7 @@ class DatabaseDescriptionIntegrationTest {
                 .map(EntityInfo::getEntityType)
                 .filter(type -> type.getName().startsWith("com.gaiys.proto."))
                 .forEach(localTypes::add);
-        assertEquals(32, localTypes.size());
+        assertEquals(33, localTypes.size());
         Map<String, Set<String>> addedColumns =
                 Map.of(
                         "p_viewport_check",
@@ -252,6 +252,7 @@ class DatabaseDescriptionIntegrationTest {
                         "p_project",
                         "p_version",
                         "p_revision",
+                        "p_revision_material",
                         "p_work_item",
                         "p_viewport_check",
                         "p_share",
@@ -275,7 +276,7 @@ class DatabaseDescriptionIntegrationTest {
                         "p_review_association"),
                 tables);
         // 新表逐字段校验真实注释，不能用总数替代持久化契约。
-        assertEquals(368, describedColumns);
+        assertEquals(388, describedColumns);
         assertTrue(columnNames("p_review_guest").containsAll(Set.of("enabled", "config_version")));
         for (String name :
                 Set.of(
@@ -290,7 +291,8 @@ class DatabaseDescriptionIntegrationTest {
                         "license_sequence",
                         "license_fingerprint",
                         "license_accepted_at",
-                        "license_key_id")) {
+                        "license_key_id",
+                        "first_trial_accepted_at")) {
             assertTrue(columnNames("p_installation").contains(name), name);
             assertFalse(comment("p_installation", name).isBlank(), name);
         }

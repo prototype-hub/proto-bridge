@@ -41,7 +41,7 @@ public class PrototypeLicenseController {
 
     @PostMapping("/_import")
     @SaveAction
-    @Operation(summary = "导入本地已签名凭证", description = "全量替代，重复幂等；只验签声明，不启用商业模块或执行扩容")
+    @Operation(summary = "导入本地已签名凭证", description = "全量替代、重复幂等；合法模型3试用首次成功导入即开始30天，即使未安装高级模块也起算")
     public Mono<PrototypeLicenseService.ImportResult> importDocument(
             @Valid @RequestBody ImportRequest request) {
         return access.requireAdministrator().then(licenses.importDocument(request.document()));
