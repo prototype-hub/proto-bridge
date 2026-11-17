@@ -65,6 +65,15 @@ class PrototypeLicenseVerificationTest {
         return value;
     }
 
+    static ObjectNode relativePayload(String installation, long sequence, boolean trial) {
+        ObjectNode value = payload(installation, sequence);
+        value.put("schemaVersion", 3);
+        value.put("edition", trial ? "trial" : "permanent");
+        if (trial) value.put("trialDurationDays", 30);
+        else value.putNull("trialDurationDays");
+        return value;
+    }
+
     static String sign(ObjectNode payload) {
         return sign(payload, "test", KEY);
     }
@@ -145,6 +154,45 @@ class PrototypeLicenseVerificationTest {
     }
 
     @Test
+    void relativeTrialRequiresExactDurationFeaturesAndNoIssuerActivationDate() {
+        var trial = relativePayload(INSTALLATION, 1, true);
+        var claims =
+                com.gaiys.proto.prototypehub.web.response.PrototypeLicenseStatus
+                        .VerifiedEntitlements.from(
+                        verifier().verify(sign(trial), INSTALLATION, NOW).payload());
+        assertEquals(3, claims.schemaVersion());
+        assertEquals(30L, claims.trialDurationDays());
+        assertNull(claims.trialEndsAt());
+        trial.put("trialDurationDays", 29);
+        rejects("DOCUMENT_INVALID", sign(trial));
+        trial.put("trialDurationDays", 30).put("trialEndsAt", NOW + 1000);
+        rejects("DOCUMENT_INVALID", sign(trial));
+        trial.putNull("trialEndsAt");
+        trial.withArray("features").removeAll();
+        rejects("DOCUMENT_INVALID", sign(trial));
+        trial = relativePayload(INSTALLATION, 1, true);
+        trial.remove("trialDurationDays");
+        rejects("DOCUMENT_INVALID", sign(trial));
+    }
+
+    @Test
+    void newPermanentMayAuthorizeOnlyCapacityAndCannotCarryTrialTerms() {
+        var permanent = relativePayload(INSTALLATION, 1, false);
+        permanent.withArray("features").removeAll();
+        assertEquals(
+                3,
+                verifier()
+                        .verify(sign(permanent), INSTALLATION, NOW)
+                        .payload()
+                        .path("schemaVersion")
+                        .asInt());
+        permanent.put("trialDurationDays", 30);
+        rejects("DOCUMENT_INVALID", sign(permanent));
+        permanent.putNull("trialDurationDays").put("edition", "declaration");
+        rejects("DOCUMENT_INVALID", sign(permanent));
+    }
+
+    @Test
     void tamperingAndNonCanonicalSignaturesFail() throws Exception {
         ObjectNode value = (ObjectNode) MAPPER.readTree(sign(payload(INSTALLATION, 1)));
         ((ObjectNode) value.get("payload")).put("maxProjects", 13);
@@ -157,7 +205,7 @@ class PrototypeLicenseVerificationTest {
     @Test
     void unsupportedWrongInstallationAndFutureCannotBeImported() {
         ObjectNode value = payload(INSTALLATION, 1);
-        value.put("schemaVersion", 3);
+        value.put("schemaVersion", 4);
         rejects("SCHEMA_UNSUPPORTED", sign(value));
         rejects("INSTALLATION_MISMATCH", sign(payload(UUID.randomUUID().toString(), 1)));
         value = payload(INSTALLATION, 1);

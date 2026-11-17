@@ -91,6 +91,7 @@ class PrototypeLicenseIntegrationTest {
                 .setNull(PrototypeInstallationEntity::getLicenseFingerprint)
                 .setNull(PrototypeInstallationEntity::getLicenseAcceptedAt)
                 .setNull(PrototypeInstallationEntity::getLicenseKeyId)
+                .setNull(PrototypeInstallationEntity::getFirstTrialAcceptedAt)
                 .where(PrototypeInstallationEntity::getId, "default")
                 .execute()
                 .block(TIMEOUT);
@@ -156,6 +157,93 @@ class PrototypeLicenseIntegrationTest {
                         installations.current().block(TIMEOUT));
         assertFalse(json.contains("statisticsSigningKey"));
         assertFalse(json.contains("licenseDocument"));
+        assertFalse(json.contains("firstTrialAcceptedAt"));
+    }
+
+    @Test
+    void firstValidRelativeTrialStartsOnceEvenWithoutProAndSurvivesReplacementAndReload() {
+        assertTrue(status().path("trialActivation").path("startedAt").isNull());
+        var invalid = PrototypeLicenseVerificationTest.relativePayload(installation, 1, true);
+        invalid.put("trialDurationDays", 31);
+        call(
+                HttpMethod.POST,
+                "/prototype-hub/license/_import",
+                admin,
+                Map.of("document", PrototypeLicenseVerificationTest.sign(invalid)),
+                400);
+        assertNull(installations.current().block(TIMEOUT).getFirstTrialAcceptedAt());
+        var trial = PrototypeLicenseVerificationTest.relativePayload(installation, 1, true);
+        long before = System.currentTimeMillis();
+        JsonNode imported = upload(PrototypeLicenseVerificationTest.sign(trial));
+        long after = System.currentTimeMillis();
+        JsonNode receipt = imported.path("status").path("trialActivation");
+        long start = receipt.path("startedAt").asLong();
+        assertTrue(start >= before && start <= after);
+        assertEquals(
+                start
+                        + com.gaiys.proto.prototypehub.service.license.PrototypeLicenseVerifier
+                                .TRIAL_MILLIS,
+                receipt.path("endsAt").asLong());
+        assertEquals(start, installations.current().block(TIMEOUT).getFirstTrialAcceptedAt());
+        assertEquals(
+                "module_unavailable",
+                imported.path("status").path("advancedEntitlements").path("status").asText());
+        assertTrue(imported.path("status").path("advancedEntitlements").path("features").isEmpty());
+        assertEquals(
+                "unchanged",
+                upload(PrototypeLicenseVerificationTest.sign(trial)).path("result").asText());
+        upload(
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.relativePayload(installation, 2, true)));
+        upload(
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.relativePayload(installation, 3, false)));
+        installations.initialize().block(TIMEOUT);
+        assertEquals(
+                receipt.path("startedAt").asLong(),
+                licenses.current().block(TIMEOUT).trialActivation().startedAt());
+        assertEquals(receipt, status().path("trialActivation"));
+        assertEquals(5, status().path("enforcedCapacity").path("projectLimit").asInt());
+    }
+
+    @Test
+    void concurrentRelativeTrialImportsShareExactlyOnePersistedStart() {
+        String trial =
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.relativePayload(installation, 1, true));
+        var futures =
+                java.util.stream.IntStream.range(0, 8)
+                        .mapToObj(i -> CompletableFuture.supplyAsync(() -> upload(trial)))
+                        .toList();
+        var values = futures.stream().map(CompletableFuture::join).toList();
+        assertEquals(
+                1,
+                values.stream()
+                        .filter(value -> value.path("result").asText().equals("imported"))
+                        .count());
+        JsonNode receipt = status().path("trialActivation");
+        for (JsonNode value : values)
+            assertEquals(receipt, value.path("status").path("trialActivation"));
+        assertEquals(
+                receipt.path("startedAt").asLong(),
+                installations.current().block(TIMEOUT).getFirstTrialAcceptedAt());
+    }
+
+    @Test
+    void legacyTrialDoesNotStartRelativeClockAndTrustChangesKeepReceipt() {
+        var old = PrototypeLicenseVerificationTest.payload(installation, 1);
+        old.put("edition", "trial").put("trialEndsAt", System.currentTimeMillis() + 100000);
+        upload(PrototypeLicenseVerificationTest.sign(old));
+        assertTrue(status().path("trialActivation").path("startedAt").isNull());
+        upload(
+                PrototypeLicenseVerificationTest.sign(
+                        PrototypeLicenseVerificationTest.relativePayload(installation, 2, true)));
+        JsonNode receipt = status().path("trialActivation");
+        trust.setTrustedPublicKeys(Map.of());
+        assertEquals("untrusted", status().path("status").asText());
+        assertEquals(receipt, status().path("trialActivation"));
+        trust.setTrustedPublicKeys(PrototypeLicenseVerificationTest.trust().getTrustedPublicKeys());
+        assertEquals(receipt, status().path("trialActivation"));
     }
 
     @Test

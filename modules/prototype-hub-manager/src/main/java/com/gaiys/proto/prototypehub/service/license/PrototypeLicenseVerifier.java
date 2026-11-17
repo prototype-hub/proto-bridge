@@ -23,10 +23,11 @@ import java.util.TreeMap;
 import java.util.UUID;
 import org.springframework.stereotype.Component;
 
-/** 有界v2凭证解析与公钥验签。只验证声明，不签发凭证，也不执行容量或高级功能授权。 */
+/** 有界v2/v3凭证解析与公钥验签。只验证声明，不签发凭证或执行商业策略。 */
 @Component
 public class PrototypeLicenseVerifier {
     public static final int MAX_BYTES = 65536;
+    public static final long TRIAL_MILLIS = 30L * 24 * 60 * 60 * 1000;
     private static final Set<String> PAYLOAD_V2 =
             Set.of(
                     "schemaVersion",
@@ -43,6 +44,10 @@ public class PrototypeLicenseVerifier {
                     "notBefore",
                     "trialEndsAt",
                     "maintenanceUntil");
+    private static final Set<String> PAYLOAD_V3 =
+            java.util.stream.Stream.concat(
+                            PAYLOAD_V2.stream(), java.util.stream.Stream.of("trialDurationDays"))
+                    .collect(java.util.stream.Collectors.toUnmodifiableSet());
     private final ObjectMapper mapper;
     private final JsonFactory factory;
     private final PrototypeLicenseProperties properties;
@@ -124,8 +129,8 @@ public class PrototypeLicenseVerifier {
     private JsonNode validatePayload(JsonNode payload) {
         if (payload == null || !payload.isObject()) throw failure("DOCUMENT_INVALID");
         long schema = integer(payload, "schemaVersion", 1, Integer.MAX_VALUE);
-        if (schema != 2) throw failure("SCHEMA_UNSUPPORTED");
-        fields(payload, PAYLOAD_V2);
+        if (schema != 2 && schema != 3) throw failure("SCHEMA_UNSUPPORTED");
+        fields(payload, schema == 2 ? PAYLOAD_V2 : PAYLOAD_V3);
         identifier(payload, "licenseId");
         identifier(payload, "orderId");
         identifier(payload, "edition");
@@ -148,7 +153,19 @@ public class PrototypeLicenseVerifier {
                     || !unique.add(feature.textValue())) throw failure("DOCUMENT_INVALID");
         }
         integer(payload, "maxVersionsPerProject", 5, Integer.MAX_VALUE);
+        if (schema == 3) validateRelativeTerm(payload);
         return payload;
+    }
+
+    private static void validateRelativeTerm(JsonNode payload) {
+        String edition = payload.get("edition").asText();
+        if (!payload.get("trialEndsAt").isNull()) throw failure("DOCUMENT_INVALID");
+        if ("trial".equals(edition)) {
+            integer(payload, "trialDurationDays", 30, 30);
+            if (payload.get("features").isEmpty()) throw failure("DOCUMENT_INVALID");
+        } else if (!"permanent".equals(edition) || !payload.get("trialDurationDays").isNull()) {
+            throw failure("DOCUMENT_INVALID");
+        }
     }
 
     /** 仅允许整数和固定层级；按UTF-16键序排序，数组顺序保留，签名不受外层空白或键顺序影响。 */
