@@ -4,14 +4,17 @@ import com.gaiys.proto.system.security.encoder.StrongPasswordEncoder;
 import com.gaiys.proto.system.service.BuiltInAdministratorService;
 import com.gaiys.proto.system.service.SecureReactiveUserService;
 import org.hswebframework.web.crud.annotation.EnableEasyormRepository;
+import org.hswebframework.web.dictionary.configuration.DictionaryProperties;
 import org.hswebframework.web.system.authorization.api.PasswordEncoder;
 import org.hswebframework.web.system.authorization.api.PasswordValidator;
 import org.hswebframework.web.system.authorization.defaults.service.DefaultReactiveUserService;
+import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 
 @Configuration
+@EnableConfigurationProperties(DictionaryProperties.class)
 @EnableEasyormRepository({
     "org.hswebframework.web.system.authorization.api.entity",
     "org.hswebframework.web.dictionary.entity"

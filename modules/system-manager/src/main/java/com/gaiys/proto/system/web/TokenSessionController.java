@@ -5,6 +5,7 @@ import io.swagger.v3.oas.annotations.tags.Tag;
 import lombok.RequiredArgsConstructor;
 import org.hswebframework.web.authorization.annotation.Authorize;
 import org.hswebframework.web.authorization.basic.web.ReactiveUserTokenController;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
@@ -12,6 +13,7 @@ import reactor.core.publisher.Mono;
 /** 当前会话退出的 POST 入口；已发布的 GET 仍由官方控制器提供，不接收其他用户令牌。 */
 @Tag(name = "当前会话")
 @RestController
+@ConditionalOnWebApplication(type = ConditionalOnWebApplication.Type.REACTIVE)
 @RequiredArgsConstructor
 public class TokenSessionController {
     private final ReactiveUserTokenController tokens;

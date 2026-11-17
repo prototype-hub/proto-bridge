@@ -191,3 +191,9 @@ Deploy matching frontend/backend code to expose the new read-only search endpoin
 Search uses the original tables and their existing indexes, with a maximum page size of 50. Literal substring conditions do not become index-backed full-text search merely because relationship indexes exist. Assess query latency and database plans against installation size and depth; this release does not claim arbitrary-scale full-text throughput or add Elasticsearch. Each request executes only its selected source type, with a database count and bounded page; no per-result file read or authorization query is performed. Existing HTTP/SQL tracing applies; do not enable request-body or literal-parameter logging for sensitive search terms.
 
 Rollback the paired code while retaining original source data and the additive menu entry; disable the menu if the older frontend lacks its component. There is no index rebuild, data migration, destructive rollback or change to project capacity, guest identity, drafts or notification delivery.
+
+## 版本替换回执升级
+
+该能力复用既有回执表与不可变修订，不新增配置或存储路径。先发布支持带键替换和结果查询的后端，再启用对应调用方；旧无键客户端保持原行为。不要混用不识别带键语义的旧上传写节点，成功回执须与修订同事务保存。回退前停写并联合备份完整数据库与原型文件，保留回执与固定修订关系；旧节点不会提供新请求的去重保证。
+
+这些恢复工具验证社区版业务图。可选模块若新增自身持久表，还必须执行该模块的备份、失效及恢复验收步骤；社区版通过不表示可选模块的数据或授权恢复已经验证。
