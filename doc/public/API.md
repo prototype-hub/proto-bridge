@@ -449,6 +449,14 @@ Assignment为 `{threadId,assignmentVersion,updatedAt,assignee:null|{userId,name,
 
 目录选择依赖浏览器的 [`webkitdirectory` / `webkitRelativePath`](https://developer.mozilla.org/en-US/docs/Web/API/File/webkitRelativePath) 能力；打包使用 [fflate](https://github.com/101arrowz/fflate) 的流式 ZIP。当前验证范围为本机 macOS 的 Chrome 与合成 HTML 资源；Safari、Firefox、Windows 及真实 Axure 导出包尚未验证。浏览器兼容与真实 Axure 导出包兼容是不同边界，上传及预览仍执行既有权限和 opaque sandbox 策略。
 
+### 版本替换的幂等与结果查询
+
+`PUT /prototype-hub/versions/{id}` 接受可选 `Idempotency-Key`，格式与创建请求相同。替换元数据、来源字段、`expectedRevisionId` 和原始 ZIP 字节共同定义请求意图。相同当前账号、逻辑版本和键的相同意图返回首次成功的 `revisionId`，而 `currentRevisionId` 保持当前真实值，不重复生成修订或回拨当前指针。同键不同内容返回 `409 / PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。未提供键的已发布客户端保持普通替换和并发校验行为。
+
+`GET /prototype-hub/versions/{id}/upload-operations/{key}` 需要当前版本 `query` **和** `save` 动作及项目 `EDIT`，成功回执返回 `{status:"succeeded",versionId,revisionId,currentRevisionId}`；没有成功回执返回 `{status:"not_found",versionId:null,revisionId:null,currentRevisionId:null}`。`not_found` 不代表请求没有在途，也不证明上传失败。响应丢失时先查原键，重试仍保留原 ZIP、元数据、前置修订及原键，不能换键自动重投。
+
+成功重放先于旧 `expectedRevisionId` 冲突检查，因此原请求成功后仍可用原键查询或重试；新的意图使用过时前置修订继续返回 `409 / PROTOTYPE_HUB_VERSION_CONFLICT`。所有查询、重放和提交继续检查当前账号及项目权限。回执与新修订在同一短事务提交，文件接收及散列在事务之外；失败候选不改变已有可预览修订。
+
 ## 原型容量与创建重试
 
 同一数据库的部署按服务端有效额度控制项目总量和每项目逻辑版本量，缺省均为 **5**。用量按未软删除的项目/逻辑版本记录计算，与操作者、列表筛选和应用副本无关；删除释放占用，编辑项目及 `PUT /prototype-hub/versions/{id}` 更新 ZIP 仅增加修订，不增加逻辑版本占用。历史数据库已有超限数据时仍可启动、读取、分享、修改和删除，只拒绝继续新增或占额恢复；项目仍有活动版本时须先删除版本再删除项目，保留的已删除版本不占用额度。

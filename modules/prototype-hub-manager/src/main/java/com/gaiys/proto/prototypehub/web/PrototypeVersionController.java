@@ -18,6 +18,7 @@ import com.gaiys.proto.prototypehub.web.response.RevisionComparisonResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionMigrationResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionQualityResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionResponse;
+import com.gaiys.proto.prototypehub.web.response.UploadOperationResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionResponse;
 import com.gaiys.proto.prototypehub.web.response.VersionUsageResponse;
 import io.swagger.v3.oas.annotations.Operation;
@@ -252,7 +253,8 @@ public class PrototypeVersionController {
             @RequestPart(required = false) String sourceTool,
             @RequestPart(required = false) String sourceName,
             @RequestPart(required = false) String sourceUrl,
-            @RequestPart(required = false) String sourceNotes) {
+            @RequestPart(required = false) String sourceNotes,
+            @RequestHeader(value = "Idempotency-Key", required = false) String key) {
         return upload.update(
                         id,
                         versionName,
@@ -260,8 +262,18 @@ public class PrototypeVersionController {
                         file,
                         expectedRevisionId,
                         RevisionMaterialRequests.Source.of(
-                                sourceTool, sourceName, sourceUrl, sourceNotes))
+                                sourceTool, sourceName, sourceUrl, sourceNotes),
+                        key,
+                        Mono::empty)
                 .flatMap(versions::response);
+    }
+
+    @GetMapping("/versions/{id}/upload-operations/{key}")
+    @QueryAction
+    @Operation(summary = "查询本人版本替换的成功回执", description = "另需save和项目EDIT；not_found不代表请求未在途")
+    public Mono<UploadOperationResponse> uploadOperation(
+            @PathVariable String id, @PathVariable String key) {
+        return upload.operation(id, key);
     }
 
     @DeleteMapping("/versions/{id}")

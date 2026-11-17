@@ -10,6 +10,7 @@ import com.gaiys.proto.prototypehub.storage.builder.PrototypeManifestBuilder;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
+import com.gaiys.proto.prototypehub.web.response.UploadOperationResponse;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.security.DigestInputStream;
@@ -18,6 +19,7 @@ import java.util.Locale;
 import java.util.Optional;
 import java.util.concurrent.CancellationException;
 import java.util.function.Predicate;
+import java.util.function.Supplier;
 import lombok.AllArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.codec.multipart.FilePart;
@@ -173,21 +175,58 @@ public class PrototypeUploadService {
             FilePart file,
             String expectedRevisionId,
             RevisionMaterialRequests.Source sourceInput) {
+        return update(
+                id, name, description, file, expectedRevisionId, sourceInput, null, Mono::empty);
+    }
+
+    /**
+     * 替换上传的公共协调入口；调用方不得持有外层事务或在文件接收期间持业务锁。
+     *
+     * @param key 可空的稳定请求键；元数据、前置修订与原始ZIP字节共同定义一次意图
+     * @param commitAuthorization 文件已校验后、短事务内且项目锁之前执行的准入检查；每次订阅重新创建，
+     *     可先取得调用方权限锁，空完成表示允许，异常原样传播并回滚；不得执行文件或外部网络I/O
+     * @return 首次成功的固定修订；重放保留真实current指针，失败不发布候选
+     * @since 1.0.0
+     */
+    public Mono<PrototypeVersionEntity> update(
+            String id,
+            String name,
+            String description,
+            FilePart file,
+            String expectedRevisionId,
+            RevisionMaterialRequests.Source sourceInput,
+            String key,
+            Supplier<Mono<Void>> commitAuthorization) {
         return Mono.defer(
                 () -> {
                     validate(name, description, file);
                     var source = RevisionMaterialSource.of(sourceInput);
-                    return access.requireVersion(id, PrototypeProjectAccessService.Action.EDIT)
-                            .flatMap(old -> revisions.current(old).thenReturn(old))
+                    return access.current()
                             .flatMap(
-                                    old -> {
-                                        if (expectedRevisionId != null
-                                                && !expectedRevisionId.equals(
-                                                        old.getCurrentRevisionId()))
-                                            return Mono.error(versionConflict());
-                                        return access.current()
+                                    actor -> {
+                                        var request =
+                                                receipts.request(
+                                                        actor.userId(),
+                                                        "replace-version",
+                                                        id,
+                                                        key,
+                                                        name.trim(),
+                                                        description,
+                                                        expectedRevisionId,
+                                                        source.tool(),
+                                                        source.name(),
+                                                        source.url(),
+                                                        source.notes());
+                                        return access.requireVersion(
+                                                        id,
+                                                        PrototypeProjectAccessService.Action.EDIT)
                                                 .flatMap(
-                                                        actor ->
+                                                        old ->
+                                                                revisions
+                                                                        .current(old)
+                                                                        .thenReturn(old))
+                                                .flatMap(
+                                                        old ->
                                                                 updateExistingVersion(
                                                                         id,
                                                                         old,
@@ -195,9 +234,64 @@ public class PrototypeUploadService {
                                                                         description,
                                                                         file,
                                                                         actor.userId(),
-                                                                        source));
+                                                                        source,
+                                                                        expectedRevisionId,
+                                                                        request,
+                                                                        commitAuthorization));
                                     });
                 });
+    }
+
+    /** 成功回执是唯一结果证据；查无回执不能证明另一请求未在途。 */
+    public Mono<UploadOperationResponse> operation(String id, String key) {
+        if (key == null)
+            return Mono.error(
+                    PrototypeHubException.badRequest(
+                            "error.prototype-hub.idempotency_key_invalid",
+                            "PROTOTYPE_HUB_IDEMPOTENCY_KEY_INVALID"));
+        return access.current()
+                .flatMap(
+                        actor -> {
+                            if (!(actor.authentication()
+                                            .hasPermission("prototype-hub-version", "query")
+                                    && actor.authentication()
+                                            .hasPermission("prototype-hub-version", "save")))
+                                return Mono.error(PrototypeProjectAccessService.roleDenied());
+                            var lookup =
+                                    receipts.request(actor.userId(), "replace-version", id, key);
+                            return access.requireVersion(
+                                            id, PrototypeProjectAccessService.Action.EDIT)
+                                    .flatMap(
+                                            version ->
+                                                    receipts.findById(lookup.id())
+                                                            .filter(
+                                                                    receipt ->
+                                                                            id.equals(
+                                                                                            receipt
+                                                                                                    .getResourceId())
+                                                                                    && receipt
+                                                                                                    .getRevisionId()
+                                                                                            != null)
+                                                            .flatMap(
+                                                                    receipt ->
+                                                                            revisions
+                                                                                    .require(
+                                                                                            version,
+                                                                                            receipt
+                                                                                                    .getRevisionId())
+                                                                                    .map(
+                                                                                            revision ->
+                                                                                                    new UploadOperationResponse(
+                                                                                                            "succeeded",
+                                                                                                            id,
+                                                                                                            revision
+                                                                                                                    .getId(),
+                                                                                                            version
+                                                                                                                    .getCurrentRevisionId())))
+                                                            .defaultIfEmpty(
+                                                                    UploadOperationResponse
+                                                                            .notFound()));
+                        });
     }
 
     private Mono<UploadPaths> prepareUpload(
@@ -417,7 +511,10 @@ public class PrototypeUploadService {
             String description,
             FilePart file,
             String actor,
-            RevisionMaterialSource source) {
+            RevisionMaterialSource source,
+            String expectedRevisionId,
+            PrototypeCreationReceiptService.Request request,
+            Supplier<Mono<Void>> commitAuthorization) {
         String revisionId = PrototypeShareService.random();
         String replacement = id + "-revision-" + revisionId;
         UploadAttempt attempt = new UploadAttempt();
@@ -437,8 +534,12 @@ public class PrototypeUploadService {
                                                                                                                 paths
                                                                                                                         .site(),
                                                                                                                 entry))
+                                                                                .zipWith(
+                                                                                        payloadDigest(
+                                                                                                request,
+                                                                                                paths))
                                                                                 .flatMap(
-                                                                                        manifest ->
+                                                                                        received ->
                                                                                                 replaceVersion(
                                                                                                         old,
                                                                                                         name,
@@ -447,9 +548,19 @@ public class PrototypeUploadService {
                                                                                                         entry,
                                                                                                         revisionId,
                                                                                                         actor,
-                                                                                                        manifest,
+                                                                                                        received
+                                                                                                                .getT1(),
                                                                                                         acquired,
-                                                                                                        source)))),
+                                                                                                        source,
+                                                                                                        expectedRevisionId,
+                                                                                                        request
+                                                                                                                        == null
+                                                                                                                ? null
+                                                                                                                : request
+                                                                                                                        .withPayload(
+                                                                                                                                received
+                                                                                                                                        .getT2()),
+                                                                                                        commitAuthorization)))),
                 paths -> cleanup(old.getProjectId(), replacement, attempt),
                 (paths, error) -> cleanup(old.getProjectId(), replacement, attempt),
                 paths -> cleanup(old.getProjectId(), replacement, attempt));
@@ -465,7 +576,10 @@ public class PrototypeUploadService {
             String actor,
             PrototypeManifestBuilder.Built manifest,
             UploadAttempt attempt,
-            RevisionMaterialSource source) {
+            RevisionMaterialSource source,
+            String expectedRevisionId,
+            PrototypeCreationReceiptService.Request request,
+            Supplier<Mono<Void>> commitAuthorization) {
         PrototypeRevisionEntity revision = revisions.candidate(old, revisionId, manifest);
         revision.setVersionName(name.trim());
         revision.setDescription(description);
@@ -479,33 +593,87 @@ public class PrototypeUploadService {
                             // 项目→版本行锁；CAS 当前指针和路径防止并发覆盖。只发布 ready 快照，失败候选不进入历史。
                             // 新快照与当前投影同一短事务提交，旧目录持续被旧 revision 引用，替换不得登记清理。
                             Mono<PrototypeVersionEntity> result =
-                                    access.lockProject(old.getProjectId())
+                                    Mono.defer(commitAuthorization)
+                                            .then(access.lockProject(old.getProjectId()))
                                             .then(access.lockVersion(old.getId()))
                                             .then(
                                                     access.requireVersion(
                                                             old.getId(),
                                                             PrototypeProjectAccessService.Action
                                                                     .EDIT))
-                                            .then(
-                                                    versions.replace(
-                                                            old,
-                                                            name,
-                                                            description,
-                                                            storage.relativeSitePath(
-                                                                    old.getProjectId(),
-                                                                    replacement),
-                                                            entry,
-                                                            revisionId))
                                             .flatMap(
-                                                    updated -> {
-                                                        return revisions
-                                                                .insert(revision)
-                                                                .then(
-                                                                        materials.insertPrototype(
-                                                                                material))
-                                                                .thenReturn(updated);
-                                                    });
-                            return inUploadTransaction(attempt, result, updated -> true);
+                                                    current ->
+                                                            receipts.replayReceipt(
+                                                                            request,
+                                                                            receipt ->
+                                                                                    replayReplacement(
+                                                                                            current,
+                                                                                            receipt
+                                                                                                    .getRevisionId()))
+                                                                    .switchIfEmpty(
+                                                                            Mono.defer(
+                                                                                    () -> {
+                                                                                        // 重放必须先于前置条件；成功后原键携旧expected仍返回原修订。
+                                                                                        if (expectedRevisionId
+                                                                                                        != null
+                                                                                                && !expectedRevisionId
+                                                                                                        .equals(
+                                                                                                                current
+                                                                                                                        .getCurrentRevisionId()))
+                                                                                            return Mono
+                                                                                                    .error(
+                                                                                                            versionConflict());
+                                                                                        return versions.replace(
+                                                                                                        old,
+                                                                                                        name,
+                                                                                                        description,
+                                                                                                        storage
+                                                                                                                .relativeSitePath(
+                                                                                                                        old
+                                                                                                                                .getProjectId(),
+                                                                                                                        replacement),
+                                                                                                        entry,
+                                                                                                        revisionId)
+                                                                                                .flatMap(
+                                                                                                        updated ->
+                                                                                                                revisions
+                                                                                                                        .insert(
+                                                                                                                                revision)
+                                                                                                                        .then(
+                                                                                                                                materials
+                                                                                                                                        .insertPrototype(
+                                                                                                                                                material))
+                                                                                                                        .then(
+                                                                                                                                receipts
+                                                                                                                                        .record(
+                                                                                                                                                request,
+                                                                                                                                                old
+                                                                                                                                                        .getId(),
+                                                                                                                                                revisionId))
+                                                                                                                        .thenReturn(
+                                                                                                                                updated));
+                                                                                    })));
+                            return inUploadTransaction(
+                                    attempt,
+                                    result,
+                                    updated ->
+                                            revisionId.equals(updated.getCurrentRevisionId())
+                                                    && updated.getResponseRevisionId() == null);
+                        });
+    }
+
+    private Mono<PrototypeVersionEntity> replayReplacement(
+            PrototypeVersionEntity current, String revisionId) {
+        return revisions
+                .require(current, revisionId)
+                .map(
+                        original -> {
+                            var response = current.copyTo(new PrototypeVersionEntity());
+                            response.setResponseRevisionId(original.getId());
+                            response.setVersionName(original.getVersionName());
+                            response.setDescription(original.getDescription());
+                            response.setEntryFile(original.getEntryFile());
+                            return response;
                         });
     }
 

@@ -9,7 +9,6 @@ import org.springframework.boot.autoconfigure.SpringBootApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.cache.annotation.EnableCaching;
 import org.springframework.context.event.EventListener;
-import org.springframework.scheduling.annotation.EnableScheduling;
 
 /**
  * Starts the reactive application and activates existing repository, authorization and job support.
@@ -33,7 +32,6 @@ import org.springframework.scheduling.annotation.EnableScheduling;
             "org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchRestClientAutoConfiguration",
             "org.springframework.boot.autoconfigure.elasticsearch.ElasticsearchClientAutoConfiguration"
         })
-@EnableScheduling
 @EnableCaching
 @EnableEasyormRepository("com.gaiys.proto.**.entity")
 @EnableAopAuthorize
