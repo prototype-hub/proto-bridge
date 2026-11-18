@@ -160,9 +160,11 @@ Normal completion, preparation errors and client cancellation close the request'
 
 ## 固定修订私有资料升级与恢复
 
-停写并取得同窗口数据库、原型存储及系统文件备份，先在隔离恢复副本启动EasyORM增补 `p_revision_material` 和表/字段描述。新增表保存人工来源与文件摘要，不改旧manifest、原ZIP或来源历史。新上传资料仅内部READ/EDIT开放，不发送外部通知、访问来源URL或渲染Office。
+停写并取得同窗口数据库、原型存储及系统文件备份，先在隔离恢复副本启动EasyORM增补 `p_revision_material` 和表/字段描述。资料表保存人工来源、文件摘要及五个可空text派生列，不改旧manifest、原ZIP或来源历史。新上传资料仅内部READ/EDIT开放，不发送外部通知、访问来源URL或渲染Office。
 
 备份包含完整资料表、创建回执和 `projects/*/materials/*/content`，同时保留原型来源所引用的original.zip。使用当前format4引用清单及配套audit-storage验证固定项目/版本/修订关联、原字节数及SHA-256；缺引用或损坏时禁止离线清理。旧format3不能证明新资料目录无引用。回收站恢复应保持同一资料ID/修订/摘要并重验授权；30天永久清理先事务登记material任务，再由现有持久队列删除无引用目录。回退必须保留新增表和文件，旧工具不能处理新目录。
+
+正文增量只加可空列，不自动回填历史文档。新上传自动准备；旧资料由有query/save与EDIT权限的成员在固定资料页面显式准备/重试。NOT_EXTRACTED表示尚未准备，EMPTY表示没有文本层或正文，ENCRYPTED表示加密PDF，LIMIT_EXCEEDED表示超过输入/文字/XML/PDF页数或子进程等待预算，FAILED表示解析失败。PDF子JVM限制128MiB堆、64MiB元空间及单处理器，启动后最多等待30秒，超时强制终止并最多等待2秒回收；这不是包含FileWork排队和启动前工作的HTTP总耗时保证。上述状态不删除原文件，不能据此重置摘要、覆盖修订或宣称OCR完成。派生文本与原始文件一起按项目权限和保留期保护，日志/诊断不输出正文、搜索词或凭据。解析走已有FileWork有限线程，不新增后台全库任务；回退旧应用保留text列和原文件，旧应用忽略新增列。
 
 
 ### Historical test-only switch from schema1 to uniform P/V credentials
@@ -188,9 +190,9 @@ Verify active/recycled/pending project totals, at-limit restore, rejected new cr
 
 Deploy matching frontend/backend code to expose the new read-only search endpoint. Startup supplements a missing built-in Search menu only under the enabled existing product parent; it does not overwrite a customized/disabled entry or assign ordinary-role grants. Administrators may expose that menu to appropriate users through existing menu administration. The endpoint requires current `prototype-hub-version:query` and project scope regardless of menu visibility.
 
-Search uses the original tables and their existing indexes, with a maximum page size of 50. Literal substring conditions do not become index-backed full-text search merely because relationship indexes exist. Assess query latency and database plans against installation size and depth; this release does not claim arbitrary-scale full-text throughput or add Elasticsearch. Each request executes only its selected source type, with a database count and bounded page; no per-result file read or authorization query is performed. Existing HTTP/SQL tracing applies; do not enable request-body or literal-parameter logging for sensitive search terms.
+Search uses the original tables and their existing indexes, including persisted material document text, with a maximum page size of 50. Literal substring conditions do not become index-backed full-text search merely because relationship indexes exist. Assess query latency and database plans against installation size, text volume and depth; this release does not claim arbitrary-scale full-text throughput or add Elasticsearch. Each request executes only its selected source type, with a database count and bounded page; no per-result file read, text extraction or authorization query is performed. Existing HTTP/SQL tracing applies; do not enable request-body or literal-parameter logging for sensitive search terms.
 
-Rollback the paired code while retaining original source data and the additive menu entry; disable the menu if the older frontend lacks its component. There is no index rebuild, data migration, destructive rollback or change to project capacity, guest identity, drafts or notification delivery.
+Rollback the paired code while retaining original source data, additive material text columns and menu entry; disable the menu if the older frontend lacks its component. There is no index rebuild, destructive rollback or change to project capacity, guest identity, drafts or notification delivery. Older nodes ignore the new text columns; mixed-version nodes must not be used to infer complete document search coverage.
 
 ## 版本替换回执升级
 

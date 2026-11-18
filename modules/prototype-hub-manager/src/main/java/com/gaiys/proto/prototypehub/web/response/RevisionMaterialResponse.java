@@ -23,7 +23,11 @@ public record RevisionMaterialResponse(
         @Schema(description = "创建成员标识") String createdBy,
         @Schema(description = "最近维护成员标识") String updatedBy,
         @Schema(description = "创建Unix毫秒") Long createdAt,
-        @Schema(description = "最近维护Unix毫秒") Long updatedAt) {
+        @Schema(description = "最近维护Unix毫秒") Long updatedAt,
+        @Schema(description = "派生正文状态；与原文件下载是否可用无关") String textStatus,
+        @Schema(description = "成功提取正文的Unicode码点数量") int textCharacterCount,
+        @Schema(description = "正文提取完成Unix毫秒；未提取为空") Long textExtractedAt,
+        @Schema(description = "完成提取的规则版本；未提取为空") String textExtractorVersion) {
     public static RevisionMaterialResponse of(PrototypeRevisionMaterialEntity row) {
         return new RevisionMaterialResponse(
                 row.getId(),
@@ -43,6 +47,10 @@ public record RevisionMaterialResponse(
                 row.getCreatedBy(),
                 row.getUpdatedBy(),
                 row.getCreatedAt(),
-                row.getUpdatedAt());
+                row.getUpdatedAt(),
+                RevisionMaterialTextResponse.status(row),
+                row.getTextCharacterCount() == null ? 0 : row.getTextCharacterCount(),
+                row.getTextExtractedAt(),
+                row.getTextExtractorVersion());
     }
 }

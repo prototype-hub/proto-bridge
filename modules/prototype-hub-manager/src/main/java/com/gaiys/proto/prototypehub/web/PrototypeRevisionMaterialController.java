@@ -3,6 +3,7 @@ package com.gaiys.proto.prototypehub.web;
 import com.gaiys.proto.prototypehub.service.PrototypeRevisionMaterialService;
 import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
 import com.gaiys.proto.prototypehub.web.response.RevisionMaterialResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionMaterialTextResponse;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -14,6 +15,7 @@ import org.hswebframework.web.authorization.annotation.Resource;
 import org.hswebframework.web.authorization.annotation.SaveAction;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.multipart.FilePart;
+import org.springframework.http.server.reactive.ServerHttpResponse;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -105,5 +107,41 @@ public class PrototypeRevisionMaterialController {
             @PathVariable String revisionId,
             @PathVariable String materialId) {
         return materials.read(versionId, revisionId, materialId);
+    }
+
+    @GetMapping("/{materialId}/text")
+    @QueryAction
+    @Operation(summary = "按当前query与项目READ读取固定资料派生纯文本")
+    public Mono<RevisionMaterialTextResponse> text(
+            @PathVariable String versionId,
+            @PathVariable String revisionId,
+            @PathVariable String materialId,
+            ServerHttpResponse response) {
+        response.getHeaders().setCacheControl("private, no-store");
+        return materials.text(versionId, revisionId, materialId);
+    }
+
+    @GetMapping("/{materialId}")
+    @QueryAction
+    @Operation(summary = "按当前query与项目READ直接读取唯一固定资料元数据")
+    public Mono<RevisionMaterialResponse> detail(
+            @PathVariable String versionId,
+            @PathVariable String revisionId,
+            @PathVariable String materialId,
+            ServerHttpResponse response) {
+        response.getHeaders().setCacheControl("private, no-store");
+        return materials.detail(versionId, revisionId, materialId);
+    }
+
+    @PostMapping("/{materialId}/text/_extract")
+    @SaveAction
+    @Operation(summary = "按当前query/save与项目EDIT显式提取或重试资料正文")
+    public Mono<RevisionMaterialTextResponse> extractText(
+            @PathVariable String versionId,
+            @PathVariable String revisionId,
+            @PathVariable String materialId,
+            ServerHttpResponse response) {
+        response.getHeaders().setCacheControl("private, no-store");
+        return materials.extractText(versionId, revisionId, materialId);
     }
 }

@@ -164,6 +164,7 @@ public class PrototypeSearchService {
                         .as(PrototypeRevisionMaterialEntity::getSourceTool, Row::setSourceTool)
                         .as(PrototypeRevisionMaterialEntity::getSourceName, Row::setSourceName)
                         .as(PrototypeRevisionMaterialEntity::getSourceNotes, Row::setSourceNotes)
+                        .as(PrototypeRevisionMaterialEntity::getTextContent, Row::setTextContent)
                         .as(PrototypeRevisionMaterialEntity::getMaterialType, Row::setMaterialType)
                         .as(PrototypeRevisionMaterialEntity::getUpdatedAt, Row::setUpdatedAt)
                         .from(PrototypeRevisionMaterialEntity.class)
@@ -214,6 +215,11 @@ public class PrototypeSearchService {
                                 .or()
                                 .accept(
                                         PrototypeRevisionMaterialEntity::getSourceNotes,
+                                        CONTAINS,
+                                        input.getKeyword())
+                                .or()
+                                .accept(
+                                        PrototypeRevisionMaterialEntity::getTextContent,
                                         CONTAINS,
                                         input.getKeyword())
                                 .end());
@@ -334,7 +340,8 @@ public class PrototypeSearchService {
                                     new Field("fileName", row.fileName),
                                     new Field("sourceTool", row.sourceTool),
                                     new Field("sourceName", row.sourceName),
-                                    new Field("sourceNotes", row.sourceNotes));
+                                    new Field("sourceNotes", row.sourceNotes),
+                                    new Field("textContent", row.textContent));
                     case FEEDBACK -> List.of(new Field("text", row.text));
                 };
         Field match =
@@ -407,6 +414,7 @@ public class PrototypeSearchService {
         private String sourceTool;
         private String sourceName;
         private String sourceNotes;
+        private String textContent;
         private String visibility;
         private String materialType;
         private long updatedAt;
