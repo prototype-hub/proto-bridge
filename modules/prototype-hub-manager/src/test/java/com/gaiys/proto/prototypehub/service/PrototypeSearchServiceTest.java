@@ -36,6 +36,20 @@ class PrototypeSearchServiceTest {
     }
 
     @Test
+    void materialTextMatchUsesBodyExcerptAndKeepsTheOriginalFilename() {
+        var row = new PrototypeSearchService.Row();
+        row.setTitle("requirements.docx");
+        row.setFileName("requirements.docx");
+        row.setTextContent("😀".repeat(300) + "正文_100%<script>命中" + "后".repeat(300));
+        var response = PrototypeSearchService.response(Type.MATERIAL, "_100%<SCRIPT>", row);
+        assertEquals("textContent", response.matchField());
+        assertEquals("requirements.docx", response.title());
+        assertTrue(response.snippet().contains("正文_100%<script>命中"));
+        assertEquals(240, response.snippet().codePointCount(0, response.snippet().length()));
+        assertNull(response.pageId());
+    }
+
+    @Test
     void boundaryNormalizesBeforeValidationAndRejectsUnboundedOrUnsafeInputs() {
         try (var factory = Validation.buildDefaultValidatorFactory()) {
             var validator = factory.getValidator();

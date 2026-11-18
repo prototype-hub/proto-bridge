@@ -50,7 +50,10 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
                     .orElseThrow()
                     .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);
         if (PrototypeRevisionMaterialEntity.class.isAssignableFrom(entityType)) {
-            for (String name : new String[] {"fileName", "sourceTool", "sourceName", "sourceNotes"})
+            for (String name :
+                    new String[] {
+                        "fileName", "sourceTool", "sourceName", "sourceNotes", "textContent"
+                    })
                 table.getColumn(name)
                         .orElseThrow()
                         .addFeature(PrototypeTextTermFragmentBuilder.COPY_LITERAL_CONTAINS);

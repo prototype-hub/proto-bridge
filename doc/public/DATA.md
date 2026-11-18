@@ -156,7 +156,9 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 ## 固定修订私有资料数据
 
-EasyORM增量创建 `p_revision_material`，包含主键、`project_id/version_id/revision_id`、`material_type/file_name/media_type/file_size/sha256/storage_path`、`source_tool/source_name/source_url/source_notes`、`config_version/created_by/updated_by/created_at/updated_at`，同步表和字段描述。索引 `(revision_id,created_at,id)` 用于固定范围分页，project_id/version_id用于永久清理。不回填旧来源，不更改 `p_revision` 的不可变manifest或原ZIP。
+EasyORM增量创建 `p_revision_material`，包含主键、`project_id/version_id/revision_id`、`material_type/file_name/media_type/file_size/sha256/storage_path`、`source_tool/source_name/source_url/source_notes`、`config_version/created_by/updated_by/created_at/updated_at`，同步表和字段描述。正文使用同表可空列 `text_status/text_content/text_character_count/text_extracted_at/text_extractor_version`，`text_content` 为有界LONGVARCHAR纯文本。索引 `(revision_id,created_at,id)` 用于固定范围分页，project_id/version_id用于永久清理。不回填旧来源，不更改 `p_revision` 的不可变manifest或原ZIP。
+
+旧文档的空text_status读为NOT_EXTRACTED，非文档读为UNSUPPORTED；新文档上传时自动生成派生状态，保持原save与EDIT准入及创建事务，不改变正文读取所需query与READ。READY保存完整有界文本和Unicode码点数量，EMPTY、UNSUPPORTED、ENCRYPTED、LIMIT_EXCEEDED及FAILED保存空正文和零计数；旧记录提取时间/规则版本可空。旧文档只由EDIT成员显式准备，不在启动或搜索时后台回填。旧资料显式提取结果提交前重验当前账号、query/save、EDIT及同scope材料，只更新五个派生列，不改变人工来源config_version、updated_at或created_by。正文与文件共享材料ID和生命周期，没有异步索引副本或另一张永久表。
 
 原型来源声明引用原 `versions/{storage}/original.zip`，声明自身有不可复用ID；项目→版本锁内保证一个固定修订最多一条当前原型声明。图片/文档采用独占随机目录 `projects/{project}/materials/{storage}/content`，原文件名称不参与路径。写入沿账号→项目→版本锁序，重验当前权限、修订、资源预算和CAS，与完整创建回执原子提交。回执resource_id归版本、revision_id归固定修订；删除后保留回执，旧请求不能复活资料，重新声明使用新ID。
 
@@ -323,6 +325,6 @@ Only schemaVersion2 credential declarations are interpreted: absolute installati
 
 ## Basic search reads the source graph
 
-Basic search adds no business table, text backfill, asynchronous search index or credential fields. Its three queries read `p_copy_entry` with `p_copy_snapshot`, `p_revision_material`, or `p_review_message` with `p_review_thread`, joined to the same active project, logical version and fixed revision. COUNT and page selection share the project/member predicate; orphaned or mismatched source chains do not produce results. Source-specific permissions are retained: READ for collected copy/material metadata and EDIT for all feedback search.
+Basic search adds no separate business table, automatic text backfill, asynchronous search index or credential fields. Its three queries read `p_copy_entry` with `p_copy_snapshot`, `p_revision_material`, or `p_review_message` with `p_review_thread`, joined to the same active project, logical version and fixed revision. Material search includes its persisted `text_content` alongside filename/source metadata. COUNT and page selection share the project/member predicate; orphaned or mismatched source chains do not produce results. Source-specific permissions are retained: READ for collected copy/material text and EDIT for all feedback search.
 
-No document body or source URL is fetched or extracted. Search does not populate missing copy snapshots. Existing source backups, retention and deletion remain authoritative. The added default Search menu uses the existing version query action; startup only supplies a missing built-in entry and preserves custom/disabled entries and role grants.
+The search request does not read original document files, extract missing text, fetch source URLs or populate missing copy snapshots. Existing source backups, retention and deletion remain authoritative, including derived material text in the same row. The default Search menu uses the existing version query action; startup only supplies a missing built-in entry and preserves custom/disabled entries and role grants.

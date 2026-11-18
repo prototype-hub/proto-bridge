@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.materials.RevisionMaterialFiles;
+import com.gaiys.proto.prototypehub.storage.materials.text.MaterialTextExtractor;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import java.io.OutputStream;
@@ -45,9 +46,27 @@ public class PrototypeRevisionMaterialFileService {
     private final FileWork work;
     private final FileCleanupService cleanup;
     private final TransactionalOperator transactions;
+    private final MaterialTextExtractor textExtractor = new MaterialTextExtractor();
+
+    /** 派生正文在FileWork完成后才进入短事务；不改变来源并发版本或原文件。 */
+    public record Text(MaterialTextExtractor.Result result, long extractedAt) {
+        void apply(PrototypeRevisionMaterialEntity row) {
+            row.setTextStatus(result.status().name());
+            row.setTextContent(result.content());
+            row.setTextCharacterCount(result.characterCount());
+            row.setTextExtractedAt(extractedAt);
+            row.setTextExtractorVersion(result.extractorVersion());
+        }
+    }
 
     public record Candidate(
-            String path, String fileName, String type, String mediaType, long size, String sha256) {
+            String path,
+            String fileName,
+            String type,
+            String mediaType,
+            long size,
+            String sha256,
+            Text text) {
         void apply(PrototypeRevisionMaterialEntity row) {
             row.setStoragePath(path);
             row.setFileName(fileName);
@@ -55,6 +74,7 @@ public class PrototypeRevisionMaterialFileService {
             row.setMediaType(mediaType);
             row.setFileSize(size);
             row.setSha256(sha256);
+            if (text != null) text.apply(row);
         }
     }
 
@@ -166,13 +186,24 @@ public class PrototypeRevisionMaterialFileService {
                                 throw RevisionMaterialFiles.invalid();
                             }
                         }
+                        String sha256 = hash(bytes);
+                        Text text =
+                                "document".equals(metadata.type())
+                                        ? extractVerified(
+                                                target,
+                                                name,
+                                                metadata.mediaType(),
+                                                bytes.length,
+                                                sha256)
+                                        : null;
                         return new Candidate(
                                 path,
                                 name,
                                 metadata.type(),
                                 metadata.mediaType(),
                                 bytes.length,
-                                hash(bytes));
+                                sha256,
+                                text);
                     } catch (java.io.IOException
                             | IllegalArgumentException
                             | ArithmeticException error) {
@@ -209,7 +240,8 @@ public class PrototypeRevisionMaterialFileService {
                             "prototype",
                             "application/zip",
                             size,
-                            hash(file));
+                            hash(file),
+                            null);
                 });
     }
 
@@ -285,6 +317,39 @@ public class PrototypeRevisionMaterialFileService {
                                     .body(resource);
                         })
                 .checkpoint("prototype-hub/material/file-read");
+    }
+
+    /** 旧资料按原文件重新提取；全部文件读取和解析在授权数据库连接正常释放后、业务锁外执行。 */
+    public Mono<Text> extractText(PrototypeRevisionMaterialEntity row) {
+        return work.call(
+                        () ->
+                                extractVerified(
+                                        SafePaths.material(
+                                                properties.getRoot(),
+                                                row.getProjectId(),
+                                                row.getStoragePath()),
+                                        row.getFileName(),
+                                        row.getMediaType(),
+                                        row.getFileSize(),
+                                        row.getSha256()))
+                .onErrorMap(java.io.IOException.class, ignored -> RevisionMaterialFiles.missing())
+                .checkpoint("prototype-hub/material/text-file");
+    }
+
+    private Text extractVerified(Path file, String name, String mediaType, long size, String sha256)
+            throws java.io.IOException {
+        if (!Files.isRegularFile(file, LinkOption.NOFOLLOW_LINKS)
+                || size < 1
+                || size > RevisionMaterialFiles.MAX_DOCUMENT_BYTES
+                || Files.size(file) != size
+                || !hash(file).equals(sha256)) {
+            throw RevisionMaterialFiles.missing();
+        }
+        var result = textExtractor.extract(file, name, mediaType);
+        // 不把解析期间被替换的文件内容发布为原始SHA256的派生文本。
+        if (Files.size(file) != size || !hash(file).equals(sha256))
+            throw RevisionMaterialFiles.missing();
+        return new Text(result, System.currentTimeMillis());
     }
 
     public Mono<Void> delete(String project, String path) {

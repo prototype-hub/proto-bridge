@@ -23,7 +23,7 @@ public class PrototypeSearchRequest {
     }
 
     @NotNull
-    @Schema(description = "已收录文案、资料元数据或评审消息")
+    @Schema(description = "已收录文案、资料元数据或正文、评审消息")
     private Type type;
 
     @NotBlank

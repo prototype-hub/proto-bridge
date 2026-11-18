@@ -50,12 +50,19 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 | `PUT /{materialId}` | JSON完整来源字段、`expectedVersion`、`clientRequestId`，CAS替换来源，省略字段表示清空，不改变载荷 |
 | `POST /{materialId}/_delete` | JSON `{expectedVersion,clientRequestId}`；删除图片/文档后持久排队回收文件；原型类别只删除声明，保留修订和原ZIP |
 | `GET /{materialId}/content` | 当前READ授权后交付原字节，强制attachment、nosniff、sandbox和private no-store，不使用公共静态地址 |
+| `GET /{materialId}` | 当前query与项目READ交集直接读取唯一资料元数据，不依赖资料分页，不含正文；private no-store |
+| `GET /{materialId}/text` | 当前query与项目READ交集读取唯一资料的派生纯文本和状态，不依赖资料分页；private no-store |
+| `POST /{materialId}/text/_extract` | 当前query/save与项目EDIT交集显式准备或重试旧资料正文；不接收文件、URL或额外作用域，private no-store |
 
-资料响应包含 `id/projectId/versionId/revisionId/materialType/fileName/mediaType/fileSize/sha256`、四个来源字段、`configVersion/createdBy/updatedBy/createdAt/updatedAt`，不返回存储路径。来源声明ID与修订ID不同；删除后重新声明使用新ID，旧请求不能覆盖或指向新声明。未记录的旧修订没有原型来源行，不能推断历史工具。来源工具和名称分别最多80/200字符，备注最多2000；地址最多2048且仅接受无用户凭据的绝对HTTP/HTTPS，服务端不抓取。所有来源均由成员声明，不代表认证来源或官方集成。
+资料响应包含 `id/projectId/versionId/revisionId/materialType/fileName/mediaType/fileSize/sha256`、四个来源字段、`configVersion/createdBy/updatedBy/createdAt/updatedAt`，末尾追加 `textStatus/textCharacterCount/textExtractedAt/textExtractorVersion`，不返回存储路径或正文。来源声明ID与修订ID不同；删除后重新声明使用新ID，旧请求不能覆盖或指向新声明。未记录的旧修订没有原型来源行，不能推断历史工具。来源工具和名称分别最多80/200字符，备注最多2000；地址最多2048且仅接受无用户凭据的绝对HTTP/HTTPS，服务端不抓取。所有来源均由成员声明，不代表认证来源或官方集成。
 
 原有版本ZIP创建、替换接口增加上述四个可选multipart来源字段，绑定实际生成修订并与修订原子提交。全部省略保留旧行为；旧创建回执指纹保持兼容。重复创建键必须保留完整文件和来源，文件或来源变化返回409；未知结果重试保留原键，CAS冲突先重新读取，不能自动换键重复提交。
 
-接受PNG/JPEG图片（实际解码、最多5MiB、每边不超过16384且不超过1600万像素）以及PDF、UTF-8 txt/md、无宏DOCX/XLSX/PPTX文档（最多20MiB）。文件名、签名、UTF-8或Office容器不匹配返回400，不接受HTML/SVG/rp或通用归档；Office仅原字节下载，不执行、解压或渲染。每个固定修订最多100份图片/文档、总计200MiB，属于资源安全边界，独立于项目/逻辑版本授权额度。超单文件返回413，修订资料预算或CAS冲突返回409，缺失原文件返回404。
+接受PNG/JPEG图片（实际解码、最多5MiB、每边不超过16384且不超过1600万像素）以及PDF、UTF-8 txt/md、无宏DOCX/XLSX/PPTX文档（最多20MiB）。文件名、签名、UTF-8或Office容器不匹配返回400，不接受HTML/SVG/rp或通用归档；不执行Office、宏、公式或外部关系，不渲染文档。每个固定修订最多100份图片/文档、总计200MiB，属于资源安全边界，独立于项目/逻辑版本授权额度。超单文件返回413，修订资料预算或CAS冲突返回409，缺失或摘要不符的原文件返回404。
+
+新文档上传自动准备正文；旧文档只在EDIT成员显式调用提取端点时准备，不后台全库回填。正文端点返回 `{id,status,content,characterCount,extractedAt,extractorVersion}`。旧文档状态为 `NOT_EXTRACTED`；图片和原型声明为 `UNSUPPORTED`。提取状态为 `READY/EMPTY/UNSUPPORTED/ENCRYPTED/LIMIT_EXCEEDED/FAILED`：只有READY返回正文，其余 `content` 为空串、计数为0，失败不妨碍原文件下载。计数按Unicode码点；内存预算最多200000个UTF-16单元，超限整份返回LIMIT_EXCEEDED，不静默截断。`extractedAt` 为实际完成Unix毫秒、`extractorVersion` 为规则版本；尚未提取时均为空。相同规则已成功或为空的不可变文件可安全重复读取；规则升级或旧失败允许显式重新提取。
+
+TXT/MD按UTF-8原文读取，不执行Markdown；DOCX读取正文段落和表格文字；XLSX按工作簿顺序读取工作表名及已存储的字符串、单元格值，不计算公式或编造缺失缓存；PPTX按演示文稿关系顺序读取幻灯片文字。OOXML禁DTD、实体及外部读取，单XML最多4MiB、合计最多12MiB。PDF只取最多100页的文本层，不运行脚本或OCR；扫描文档无文本为EMPTY，加密文档为ENCRYPTED。PDF提取在128MiB堆、64MiB元空间及单处理器的独立短命JVM中执行，子进程启动后最多等待30秒；到期强制终止，并最多等待2秒回收。此等待预算不含FileWork排队和启动前工作。文件I/O和解析在FileWork锁外执行。新上传保留既有save与EDIT准入及创建事务，自动正文属于同次创建的派生数据，不额外授予query或正文读取权。旧资料显式提取在发布前短事务重验当前账号、query/save、EDIT及固定资料仍存在，只更新派生正文，不改变来源CAS或原文件字节。
 
 ## 项目成员与授权
 
@@ -581,9 +588,11 @@ entry包含id、kind（STATIC/MANUAL）、text、businessTerm、note、requireme
 The body requires `type` (`COPY`, `MATERIAL` or `FEEDBACK`) and a literal `keyword` of 1–100 characters after stripping surrounding whitespace. Optional `projectId`, `versionId` and `revisionId` only narrow the authorized scope; IDs contain 1–64 letters, digits, `_` or `-`. `pageIndex` defaults to 0 (0–10000); `pageSize` defaults to 20 (1–50). Each type has its own database count and page, sorted by source update time descending and source ID ascending. Out-of-range pages remain empty with the real total; count and rows do not promise a concurrent-write snapshot. Keywords are request-body data, not URL parameters.
 
 - `COPY`: already collected static/manual text, business terms, notes and fixed page paths. Pages without collected entries are not included.
-- `MATERIAL`: file names and manually declared source tool, source name and source notes. Source URLs, PDF/Office/image contents and external pages are not searched.
+- `MATERIAL`: file names, manually declared source tool/name/notes, and successfully extracted document text. Source URLs, image text, unextracted/failed document contents and external pages are not searched. Search itself never prepares missing text; an EDIT member can prepare it from the fixed material workspace.
 - `FEEDBACK`: message text, with one result per matching message. `sourceId` is the message ID, while `threadId` identifies its original thread. Internal notes remain internal; this does not grant new feedback permissions.
 
-The regular `PagerResult` contains `data`, `total`, `pageIndex` and `pageSize`. Rows contain `type`, `sourceId`, `projectId`, `projectName`, `versionId`, `versionName`, `revisionId`, `revisionCreatedAt`, `pageId`, `pagePath`, `threadId`, `title`, `snippet`, `matchField`, `visibility`, `materialType` and `updatedAt`. Unrelated fields are null. Revision identity is fixed, and no revision number is synthesized. Titles and snippets are plain text bounded to 160 and 240 Unicode code points; render them as text, including any apparent HTML. `matchField` names a matching source field. No storage path, manifest, account/visitor identity or access credential is returned.
+The regular `PagerResult` contains `data`, `total`, `pageIndex` and `pageSize`. Rows contain `type`, `sourceId`, `projectId`, `projectName`, `versionId`, `versionName`, `revisionId`, `revisionCreatedAt`, `pageId`, `pagePath`, `threadId`, `title`, `snippet`, `matchField`, `visibility`, `materialType` and `updatedAt`. Unrelated fields are null. Revision identity is fixed, and no revision number is synthesized. Titles and snippets are plain text bounded to 160 and 240 Unicode code points; render them as text, including any apparent HTML. `matchField` names a matching source field, including `textContent` for a document-body match; the title remains the original filename. No full document, storage path, manifest, account/visitor identity or access credential is returned.
 
 Search does not generate public links or replace source authorization. Opening the fixed source rechecks existing preview, material and feedback permissions. Deleted projects/versions and missing or inconsistent parent chains are excluded before count and paging. Changes, removals and membership revocation affect subsequent queries without reindexing.
+
+Material source navigation may include the opaque `materialId` together with its fixed revision and controlled materials tool marker. The workspace uses the direct metadata endpoint to locate that exact material, even outside the current list page. It does not scan all pages, add a synthetic list row or put the keyword/document text in the URL. Missing, deleted, mismatched or revoked sources keep the existing authorization failures.

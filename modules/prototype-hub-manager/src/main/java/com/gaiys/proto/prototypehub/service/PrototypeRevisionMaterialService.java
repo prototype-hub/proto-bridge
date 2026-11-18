@@ -7,8 +7,11 @@ import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeCreationReceiptService.Request;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.service.validation.RevisionMaterialSource;
+import com.gaiys.proto.prototypehub.storage.materials.text.MaterialTextExtractor;
+import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
 import com.gaiys.proto.prototypehub.web.response.RevisionMaterialResponse;
+import com.gaiys.proto.prototypehub.web.response.RevisionMaterialTextResponse;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Optional;
@@ -71,11 +74,19 @@ public class PrototypeRevisionMaterialService {
                             query.doPaging(input.getPageIndex(), input.getPageSize());
                             query.setParallelPager(true);
                             return QueryHelper.queryPager(
-                                    query, materials::createQuery, RevisionMaterialResponse::of);
+                                    query,
+                                    () ->
+                                            materials
+                                                    .createQuery()
+                                                    .selectExcludes(
+                                                            PrototypeRevisionMaterialEntity
+                                                                    ::getTextContent),
+                                    RevisionMaterialResponse::of);
                         })
                 .checkpoint("prototype-hub/material/query");
     }
 
+    /** 上传保持既有save与EDIT准入；自动正文属于同次创建，读取正文仍需独立query与READ。 */
     public Mono<RevisionMaterialResponse> upload(
             String version,
             String revision,
@@ -398,6 +409,108 @@ public class PrototypeRevisionMaterialService {
         return prepare(version, revision, Action.READ)
                 .flatMap(scope -> require(scope, id))
                 .flatMap(files::read);
+    }
+
+    /** 深链按唯一资料读取元数据，不扫描资料分页，不在响应中附带正文。 */
+    public Mono<RevisionMaterialResponse> detail(String version, String revision, String id) {
+        SafePaths.id(version);
+        SafePaths.id(revision);
+        SafePaths.id(id);
+        return prepare(version, revision, Action.READ)
+                .flatMap(scope -> require(scope, id))
+                .map(RevisionMaterialResponse::of)
+                .checkpoint("prototype-hub/material/detail");
+    }
+
+    /** 直接读取唯一资料，不依赖资料分页；每次沿当前账号、动作和固定修订READ交集鉴权。 */
+    public Mono<RevisionMaterialTextResponse> text(String version, String revision, String id) {
+        SafePaths.id(version);
+        SafePaths.id(revision);
+        SafePaths.id(id);
+        return prepare(version, revision, Action.READ)
+                .flatMap(scope -> require(scope, id))
+                .map(RevisionMaterialTextResponse::of)
+                .checkpoint("prototype-hub/material/text-read");
+    }
+
+    /** 显式提取不可变原文件；文件I/O不持锁，发布前重验账号、query/save、EDIT和材料仍存在。 */
+    public Mono<RevisionMaterialTextResponse> extractText(
+            String version, String revision, String id) {
+        SafePaths.id(version);
+        SafePaths.id(revision);
+        SafePaths.id(id);
+        return prepare(version, revision, Action.EDIT)
+                .flatMap(scope -> extractText(scope, id))
+                .checkpoint("prototype-hub/material/text-extract");
+    }
+
+    private Mono<RevisionMaterialTextResponse> extractText(Scope scope, String id) {
+        return requireTextQuery(scope)
+                .then(require(scope, id))
+                .flatMap(
+                        row -> {
+                            if (currentText(row))
+                                return Mono.just(RevisionMaterialTextResponse.of(row));
+                            return files.extractText(row)
+                                    .flatMap(text -> publishText(scope, id, text));
+                        });
+    }
+
+    private Mono<RevisionMaterialTextResponse> publishText(
+            Scope scope, String id, PrototypeRevisionMaterialFileService.Text text) {
+        return locked(
+                scope,
+                () ->
+                        requireTextQuery(scope)
+                                .then(require(scope, id))
+                                .flatMap(
+                                        current ->
+                                                currentText(current)
+                                                        ? Mono.just(
+                                                                RevisionMaterialTextResponse.of(
+                                                                        current))
+                                                        : persistText(current, text)));
+    }
+
+    private Mono<Void> requireTextQuery(Scope scope) {
+        return access.actor(scope.user())
+                .flatMap(
+                        actor ->
+                                actor.authentication()
+                                                .hasPermission("prototype-hub-version", "query")
+                                        ? Mono.empty()
+                                        : Mono.error(PrototypeProjectAccessService.roleDenied()));
+    }
+
+    private static boolean currentText(PrototypeRevisionMaterialEntity row) {
+        return !"document".equals(row.getMaterialType())
+                || (("READY".equals(row.getTextStatus()) || "EMPTY".equals(row.getTextStatus()))
+                        && MaterialTextExtractor.VERSION.equals(row.getTextExtractorVersion()));
+    }
+
+    private Mono<RevisionMaterialTextResponse> persistText(
+            PrototypeRevisionMaterialEntity row, PrototypeRevisionMaterialFileService.Text text) {
+        text.apply(row);
+        // 只写派生列；来源CAS、人工元数据和updatedAt不能被锁外读取的旧副本覆盖。
+        return materials
+                .createUpdate()
+                .set(row::getTextStatus)
+                .set(row::getTextContent)
+                .set(row::getTextCharacterCount)
+                .set(row::getTextExtractedAt)
+                .set(row::getTextExtractorVersion)
+                .where(PrototypeRevisionMaterialEntity::getId, row.getId())
+                .and(PrototypeRevisionMaterialEntity::getProjectId, row.getProjectId())
+                .and(PrototypeRevisionMaterialEntity::getVersionId, row.getVersionId())
+                .and(PrototypeRevisionMaterialEntity::getRevisionId, row.getRevisionId())
+                .and(PrototypeRevisionMaterialEntity::getSha256, row.getSha256())
+                .execute()
+                .flatMap(
+                        changed ->
+                                changed == 1
+                                        ? Mono.just(RevisionMaterialTextResponse.of(row))
+                                        : Mono.error(
+                                                () -> PrototypeHubException.missing("material")));
     }
 
     private Mono<Scope> prepare(String version, String revision, Action action) {

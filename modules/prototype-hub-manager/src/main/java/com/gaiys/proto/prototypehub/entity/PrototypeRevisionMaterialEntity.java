@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.entity;
 
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.sql.JDBCType;
 import javax.persistence.Column;
 import javax.persistence.GeneratedValue;
 import javax.persistence.Id;
@@ -8,6 +9,7 @@ import javax.persistence.Index;
 import javax.persistence.Table;
 import lombok.Getter;
 import lombok.Setter;
+import org.hswebframework.ezorm.rdb.mapping.annotation.ColumnType;
 import org.hswebframework.web.api.crud.entity.Entity;
 
 /** 固定修订的私有资料及成员声明来源；不改变原始清单或认证来源。 */
@@ -82,6 +84,27 @@ public class PrototypeRevisionMaterialEntity implements Entity {
     @Column(name = "source_notes", length = 2000)
     @Schema(description = "成员填写的来源备注，纯文本")
     private String sourceNotes;
+
+    @Column(name = "text_status", length = 24)
+    @Schema(description = "派生正文状态；旧文档空值表示尚未提取")
+    private String textStatus;
+
+    @Column(name = "text_content")
+    @ColumnType(jdbcType = JDBCType.LONGVARCHAR, javaType = String.class)
+    @Schema(description = "有界派生纯文本，与原文件同生命周期，不在资料列表返回")
+    private String textContent;
+
+    @Column(name = "text_character_count")
+    @Schema(description = "成功提取正文的Unicode码点数量")
+    private Integer textCharacterCount;
+
+    @Column(name = "text_extracted_at")
+    @Schema(description = "本次正文提取完成Unix毫秒；旧资料为空")
+    private Long textExtractedAt;
+
+    @Column(name = "text_extractor_version", length = 64)
+    @Schema(description = "完成提取的解析规则版本；旧资料为空")
+    private String textExtractorVersion;
 
     @Column(name = "config_version", nullable = false)
     @Schema(description = "从零递增的来源维护并发版本")
