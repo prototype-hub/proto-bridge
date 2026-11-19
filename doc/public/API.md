@@ -138,7 +138,7 @@ DOM 子树变化、窗口尺寸、字体加载、样式表加载及 transition/a
 
 `GET /prototype-hub/versions/{id}/revisions/{rid}/quality` 按保存清单及该固定修订的实际 HTML/CSS 字节检查交付包。沿用 `prototype-hub-version.query` 与当前项目读取范围；活动父项目、逻辑版本和修订必须精确关联，不接受公开分享证明，也不将历史目标替换成 current。每次请求重新鉴权，不保存报告或修改文件。
 
-统一响应的 `result` 包含 `versionId/revisionId/manifestSha256/entryFile`、`summary`、`limits`、`complete` 和 `findings`。客户端只对这份有界结果分页和下载 JSON，不调用额外下载接口；下载内容对应已显示的固定修订，无访问令牌、内部存储根路径或完整 manifest。
+统一响应的 `result` 包含 `versionId/revisionId/manifestSha256/entryFile`、`summary`、`limits`、`complete` 和 `findings`。客户端对这份有界结果分页，并在本地生成 JSON、真实 XLSX 或 DOCX，不调用额外下载接口或重新扫描；三种格式均保留同一份已显示结果的全部保留问题、计数、检查预算及未检查范围，无访问令牌、内部存储根路径或完整 manifest。导出前调用既有 `GET /prototype-hub/versions/{id}/revisions/{rid}` 重新校验当前读取权限，并核对固定修订、版本和清单摘要；该元数据读取不触发质量扫描。权限失效或身份不符时不导出，切换目标或账号后丢弃旧报告。已下载的文件不提供远程撤回。
 
 | 字段 | 含义 |
 | --- | --- |

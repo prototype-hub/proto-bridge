@@ -791,31 +791,51 @@ class PrototypeHubProjectAccessIntegrationTest {
                 .isNotFound();
     }
 
-    @ParameterizedTest(name = "fixed revision read authorization, comparison={0}")
-    @ValueSource(booleans = {true, false})
-    void comparisonAndQualityRequireCurrentReadAndRejectPublicProofRevokedOrDisabledActors(
-            boolean comparison) {
+    @ParameterizedTest(name = "fixed revision read authorization, endpoint={0}")
+    @ValueSource(strings = {"comparison", "quality", "metadata"})
+    void fixedRevisionReadsRequireCurrentReadAndRejectPublicProofRevokedOrDisabledActors(
+            String endpoint) {
         Actor owner = actor(ALL_ACTIONS), viewer = actor(ALL_ACTIONS);
         Actor noVersionRead = actor(Map.of("prototype-hub-project", List.of("query")));
         String project = project(owner, "Comparison scope").path("id").asText();
         JsonNode first = upload(owner.token(), project, null, "R1", null, 200);
         String id = first.path("id").asText(), rid = first.path("revisionId").asText();
+        String revisionPath = "/prototype-hub/versions/" + id + "/revisions/" + rid;
+        JsonNode original = result(HttpMethod.GET, revisionPath, owner.token(), null);
+        upload(owner.token(), project, id, "R2", null, 200);
         String path =
                 "/prototype-hub/versions/"
                         + id
-                        + (comparison
-                                ? "/revisions/_compare?leftRevisionId="
-                                        + rid
-                                        + "&rightRevisionId="
-                                        + rid
-                                : "/revisions/" + rid + "/quality");
+                        + switch (endpoint) {
+                            case "comparison" ->
+                                    "/revisions/_compare?leftRevisionId="
+                                            + rid
+                                            + "&rightRevisionId="
+                                            + rid;
+                            case "quality" -> "/revisions/" + rid + "/quality";
+                            default -> "/revisions/" + rid;
+                        };
         member(project, viewer, "viewer");
         member(project, noVersionRead, "viewer");
         JsonNode readable = result(HttpMethod.GET, path, viewer.token(), null);
         assertEquals(
                 rid,
-                (comparison ? readable.path("left").path("id") : readable.path("revisionId"))
+                (switch (endpoint) {
+                            case "comparison" -> readable.path("left").path("id");
+                            case "quality" -> readable.path("revisionId");
+                            default -> readable.path("id");
+                        })
                         .asText());
+        if (!endpoint.equals("comparison")) {
+            assertEquals(original.path("manifestSha256"), readable.path("manifestSha256"));
+            assertEquals(id, readable.path("versionId").asText());
+            assertEquals("index.html", readable.path("entryFile").asText());
+        }
+        if (endpoint.equals("metadata")) {
+            assertEquals(project, readable.path("projectId").asText());
+            assertFalse(readable.has("manifestJson"));
+            assertFalse(readable.has("storagePath"));
+        }
         call(HttpMethod.GET, path, noVersionRead.token(), null, 403);
         JsonNode share =
                 result(
