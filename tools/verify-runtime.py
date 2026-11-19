@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_work_item', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_work_item', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -1739,6 +1739,15 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                                     'row': api.request('POST', path, payload)}
         owner = self.sql('runtime_source', "select owner_id from p_project where id=:'project';",
                          variables={'project': project['id']})
+        path = '/api/prototype-hub/versions/' + version['id'] + '/page-deliveries/' + base['pageId']
+        payload = {'revisionId': base['revisionId'], 'state': 'READY', 'assigneeId': owner,
+                   'reason': 'Original private delivery reason', 'expectedVersion': 0,
+                   'clientRequestId': uuid.uuid4().hex}
+        fixture['pageDelivery'] = {'path': path, 'payload': payload,
+                                   'row': api.request('PUT', path, payload)}
+        require(fixture['pageDelivery']['row']['state'] == 'READY' and
+                fixture['pageDelivery']['row']['assignee']['userId'] == owner,
+                'Current fixture has no actual page delivery or assignee')
         path = discussion['memberPath'] + '/' + discussion['thread']['id'] + '/assignment'
         payload = dict(base, assigneeId=owner, expectedVersion=0, clientRequestId=uuid.uuid4().hex)
         fixture['assignment'] = {'path': path, 'payload': payload,
@@ -1847,6 +1856,14 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'Work item receipt replay changed identity or metadata')
         require(api.request('POST', work['path'] + '/_query', fixture['review']['discussion']['base'])['data'] ==
                 [work['row']], 'Restored work item lost its fixed page scope')
+        delivery = fixture['pageDelivery']
+        require(api.request('PUT', delivery['path'], delivery['payload']) == delivery['row'],
+                'Page delivery replay changed its fixed scope, reason, assignee or version')
+        require(api.request('GET', delivery['path'] + '?revisionId=' + delivery['payload']['revisionId']) ==
+                delivery['row'], 'Restored page delivery lost its full persisted metadata')
+        require(api.request('POST', delivery['path'].rsplit('/', 1)[0] + '/_query',
+                            {'revisionId': delivery['payload']['revisionId']})['data'] == [delivery['row']],
+                'Restored page delivery list lost its fixed revision scope')
         viewport = fixture['viewportCheck']
         require(api.request('POST', viewport['path'], viewport['payload']) == viewport['row'],
                 'Viewport check receipt replay changed identity or metadata')
@@ -1912,7 +1929,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         require(stats['visits'] == expected and sum(row['visits'] or 0 for row in stats['trend']) == expected,
                 'Restored statistics differ from current database events')
         self.report['currentGraph'] = {'businessTables': len(BUSINESS_TABLES),
-            'nonemptyWorkItemAnchorAssignment': True, 'manualViewportCheckPreserved': True, 'activeAndRevokedAssociationsPreserved': True,
+            'nonemptyWorkItemAnchorAssignment': True, 'nonemptyPageDeliveryPreserved': True,
+            'manualViewportCheckPreserved': True, 'activeAndRevokedAssociationsPreserved': True,
             'fixedCopyStates': [item['state'] for item in fixture['copy']],
             'staticManualOccurrencesAndReceiptsPreserved': True, 'readWriteAndForeignScopeChecked': True,
             'recentVisitReplayDoesNotInsert': True, 'statisticsMatchDatabase': True}
@@ -2289,7 +2307,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_page_delivery', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

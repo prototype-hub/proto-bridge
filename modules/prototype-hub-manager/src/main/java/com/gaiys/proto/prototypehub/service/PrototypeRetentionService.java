@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
@@ -53,6 +54,7 @@ public class PrototypeRetentionService {
     private final PrototypeStatisticsService statistics;
     private final PrototypeReviewThreadService reviewThreads;
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
+    private final ReactiveRepository<PrototypePageDeliveryEntity, String> pageDeliveries;
     private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
@@ -432,6 +434,11 @@ public class PrototypeRetentionService {
                                 .execute())
                 .then(reviewThreads.purgeVersion(id))
                 .then(review.purgeVersion(id))
+                .then(
+                        pageDeliveries
+                                .createDelete()
+                                .where(PrototypePageDeliveryEntity::getVersionId, id)
+                                .execute())
                 .then(
                         workItems
                                 .createDelete()
