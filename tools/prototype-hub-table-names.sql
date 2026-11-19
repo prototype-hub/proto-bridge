@@ -14,6 +14,7 @@
 \set prototype_hub_receipt_table :prototype_hub_table_prefix 'creation_receipt'
 \set prototype_hub_installation_table :prototype_hub_table_prefix 'installation'
 \set prototype_hub_work_item_table :prototype_hub_table_prefix 'work_item'
+\set prototype_hub_page_delivery_table :prototype_hub_table_prefix 'page_delivery'
 \set prototype_hub_share_visit_table :prototype_hub_table_prefix 'share_visit'
 \set prototype_hub_review_guest_table :prototype_hub_table_prefix 'review_guest'
 \set prototype_hub_review_unverified_guest_table :prototype_hub_table_prefix 'review_unverified_guest'

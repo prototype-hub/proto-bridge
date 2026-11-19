@@ -109,6 +109,16 @@ EasyORM增补 `p_work_item`，保存 `project_id/version_id/revision_id/page_id`
 
 写入沿当前账号→项目→版本锁序，与 `p_creation_receipt` 原子提交。回执resource_id归逻辑版本、revision_id归实际修订，原始请求键和备注不写入回执；引用行删除后保留回执，防止未知结果重试复活旧引用。软删保留行和回执，30天永久清理版本时在同一事务清除。备份应保留完整表、固定修订及回执；URL和备注属于项目私有业务资料，不放入公开日志或运行证据。此表不引入文件引用，存储清单采用当前完整引用格式。
 
+## 固定页面人工交付状态
+
+EasyORM仅增补 `p_page_delivery` 及索引，不回填旧页面或改写既有表。行包含 `project_id/version_id/revision_id/page_id`、不可变清单的 `page_name/page_path` 快照、人工 `state/assignee_id/assignee_name/reason`、独立 `config_version/updated_at`。名称和路径使用PostgreSQL text，覆盖现有合法清单的长中文名称及路径，不引入更短的数据库截断预算。确定性主键绑定修订和页标识；索引 `(revision_id,state,updated_at,page_id)` 与 `(revision_id,updated_at,page_id)` 服务固定修订筛选分页，version_id索引用于清理。未设置页不建行，新修订不复制结论。
+
+写入按稳定账号顺序取得调用者及目标账号锁，再取项目→版本锁，重验当前授权与范围；状态和 `p_creation_receipt` 原子提交。回执resource_id为逻辑版本、revision_id为固定修订，指纹包含全部保存输入，不存原始请求键、理由或姓名。精确重放返回当前行；负责人失效不阻断原成功请求的恢复，新请求须清除/重选有效项目成员。姓名为分派时快照，可用性由当前账号及项目成员资格批量查询，不保存授权副本。
+
+软删/恢复保留状态和回执，永久版本清理在原图删除事务中移除两者；数据库失败全部回滚，既有清理调度可重试。父项目仍须所有原始子版本清理完成后才删除，不提前级联。此表不引入文件引用、通知或新调度器，现有文件队列的失败/重启语义保持不变。备份应包含完整新增表、回执及其固定修订，并与完整私有文件同窗口保存；人工理由/姓名属于私有业务资料，不写公开诊断或日志。
+
+数据库核对清单将 `p_page_delivery` 纳入完整业务表集合，`page_deliveries` 项记录完整行数量与摘要，不能只备份状态枚举而遗漏理由、负责人、并发版本或修订关联。存储引用导出保持 `formatVersion:4`、原 `sourceSchema/referencesComplete` 兼容语义，并提供可选 `pageDeliveryReferencesChecked` 布尔标记：为true表示交付行的项目/版本/修订以及清单真实叶子pageId和精确pagePath已核对；它不证明历史负责人当前启用或仍有成员资格，也不表示人工结论已被验收。旧导出缺少此标记不能据此声称已核对新增交付表。
+
 ## 固定页面人工视口自测
 
 EasyORM纯新增 `p_viewport_check`，包含 `id`、固定范围 `project_id/version_id/revision_id/page_id`、`viewport_width/viewport_height/viewport_scale`、人工 `category/title/steps/expected/observed/result/evidence`、`config_version/created_at/updated_at` 共18列；同步表、字段中文描述，不回填或重写旧记录。索引 `(revision_id,page_id,created_at,id)` 服务固定页分页，version_id和project_id索引用于永久清理。

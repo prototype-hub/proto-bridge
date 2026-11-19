@@ -190,6 +190,29 @@ DOM 子树变化、窗口尺寸、字体加载、样式表加载及 transition/a
 
 非法输入返回400，未登录401，缺动作或当前项目角色不足403，未绑定项目、目标不存在、跨范围、已软删或页面不在固定清单中404。引用随版本软删保留，恢复后重新按当前权限读取；30天永久清理时与修订及其回执同事务删除。手工删除引用即时删除该行，不删除任何外部工作项。
 
+## 固定页面人工交付状态
+
+交付状态是内部成员明确维护的人工结论，与上传成功、正式批准、线程解决及通知相互独立。每个固定修订的真实页面只有一条当前状态；未维护页面返回 `state:null`、`configVersion:0`、空理由及空负责人/更新时间，读取不建行。新修订不继承旧状态，旧修订继续保留原结论。
+
+集合路径为 `/prototype-hub/versions/{versionId}/page-deliveries`：
+
+| 请求 | 输入与结果 |
+| --- | --- |
+| `GET /{pageId}?revisionId={revisionId}` | 必填固定修订，返回该页当前状态或明确未设置 |
+| `PUT /{pageId}` | `{revisionId,state,assigneeId,reason,expectedVersion,clientRequestId}`；保存整份人工结论 |
+| `POST /_query` | `{revisionId,state?,pageIndex:0,pageSize:20}`；只分页已设置状态的页面 |
+| `POST /_candidates` | `{revisionId,keyword?,pageIndex:0,pageSize:20}`；当前项目负责人候选，返回 `{userId,name}` |
+
+响应为 `{projectId,versionId,revisionId,pageId,pageName,pagePath,state,assignee,reason,configVersion,updatedAt}`。`pageName/pagePath` 由服务器首次保存时从不可变清单取快照，不接受客户端覆盖；列表不重建完整页面目录。`assignee` 为null或 `{userId,name,available}`，`updatedAt` 为Unix毫秒或null。`state` 只接受精确的 `DRAFT/READY/IN_PROGRESS/DONE`，任意四态均可人工设置，不自动转换。理由最多2000字符，省略/null规范为空串，按纯文本显示。
+
+负责人只能选当前项目启用的所有者、编辑者或查看者；全局ADMIN若不是项目成员也不能作为候选。被指派不授予编辑或其他权限。成员撤除、账号停用或所有权变化后保留当时姓名，`available:false`；下一次新保存必须清除或重选合法目标，不自动转派。已提交原请求的精确重放仍可恢复结果，不因原负责人失效而失败，也不会重新写回旧负责人。
+
+详情/列表要求 `prototype-hub-version.query` 与当前项目READ；保存/候选要求 `prototype-hub-version.save` 与EDIT，不要求成员管理动作。每次请求及重放重新检查当前账号、动作、活动项目/版本与固定修订，详情/保存同时验证真实清单页面。分享、访客及匿名均无此接口。页码为JSON整数0–10000，每页JSON整数1–50，越界页保留真实total并返回空data；列表先按修订/状态过滤，再按 `updatedAt DESC,pageId ASC` 在数据库计数分页。候选按姓名字面包含筛选，不解释 `%/_` 为通配符，再按姓名、用户ID升序分页；keyword最多100字符。
+
+`expectedVersion` 是必填非负JSON整数。首次保存期望0并返回1，之后每个新成功请求加一；陈旧版本、首次创建竞争及版本溢出返回409 / `PROTOTYPE_HUB_PAGE_DELIVERY_CONFLICT`。`clientRequestId` 为1–128个非空白可打印ASCII字符，同一账号/固定页面内持久去重；同键改变任一保存输入返回409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。精确重放返回当前行，可能已包含后续更新，不重复递增、不恢复旧值。网络结果未知时保留原键及完整输入，以同一PUT确认/重试；单独GET只能读取当前状态，不能证明原请求是否提交。
+
+非法或失效负责人返回400 / `PROTOTYPE_HUB_PAGE_DELIVERY_ASSIGNEE_INVALID`；字段、长度与分页错误返回标准400，未登录401，动作或角色不足403，未绑定/不存在/软删/跨范围404。保存与回执同事务；软删与恢复保留结论，30天永久清理版本时同事务清除状态和相关回执。没有通知、外部待办或自动审批副作用。
+
 ## 固定页面人工视口自测
 
 内部成员可在固定修订的真实叶子页面记录人工场景、CSS视口及观察结论。接口不执行原型、不抓取DOM、不截图或上传附件，也不推断测试结果；分享和guest没有该入口。
