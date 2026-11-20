@@ -3,11 +3,13 @@ package com.gaiys.proto.prototypehub.service;
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.Mockito.*;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.validation.RevisionMaterialSource;
 import com.gaiys.proto.prototypehub.storage.materials.RevisionMaterialFiles;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
+import com.gaiys.proto.prototypehub.web.response.RevisionMaterialResponse;
 import java.io.ByteArrayOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -59,6 +61,57 @@ class PrototypeRevisionMaterialTest {
                         RevisionMaterialSource.of(
                                 RevisionMaterialRequests.Source.of(
                                         "x".repeat(81), null, null, null)));
+    }
+
+    @Test
+    void independentLinkRequiresTitleTargetAndValidPortWithoutChangingLegacySources() {
+        for (String url :
+                List.of(
+                        "https://example.org:0/prd",
+                        "https://example.org:65536/prd",
+                        "https://example.org:/prd",
+                        "https://example.org/a\u00a0b")) {
+            assertThrows(
+                    PrototypeHubException.class,
+                    () ->
+                            RevisionMaterialSource.of(
+                                            RevisionMaterialRequests.Source.of(
+                                                    null, "Title", url, null))
+                                    .requireLink());
+        }
+        assertThrows(
+                PrototypeHubException.class,
+                () ->
+                        RevisionMaterialSource.of(
+                                        RevisionMaterialRequests.Source.of(
+                                                null, " ", "https://example.org", null))
+                                .requireLink());
+        assertThrows(
+                PrototypeHubException.class,
+                () ->
+                        RevisionMaterialSource.of(
+                                        RevisionMaterialRequests.Source.of(
+                                                null, "Title", " ", null))
+                                .requireLink());
+        assertEquals(
+                "Title",
+                RevisionMaterialSource.of(
+                                RevisionMaterialRequests.Source.of(
+                                        null, " Title ", "https://example.org:65535/prd", null))
+                        .requireLink()
+                        .name());
+        var row = new PrototypeRevisionMaterialEntity();
+        row.setMaterialType("link");
+        row.setFileName("");
+        row.setMediaType("");
+        row.setFileSize(0L);
+        row.setSha256("");
+        var response = RevisionMaterialResponse.of(row);
+        assertNull(response.fileName());
+        assertNull(response.mediaType());
+        assertNull(response.fileSize());
+        assertNull(response.sha256());
+        assertEquals("UNSUPPORTED", response.textStatus());
     }
 
     @Test

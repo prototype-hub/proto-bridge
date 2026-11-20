@@ -50,6 +50,20 @@ class PrototypeSearchServiceTest {
     }
 
     @Test
+    void independentLinkMetadataMatchUsesItsTitleWithoutInventingAFile() {
+        var row = new PrototypeSearchService.Row();
+        row.setTitle("");
+        row.setFileName("");
+        row.setMaterialType("link");
+        row.setSourceName("设计 PRD");
+        row.setSourceNotes("Requirement needle");
+        var response = PrototypeSearchService.response(Type.MATERIAL, "needle", row);
+        assertEquals("设计 PRD", response.title());
+        assertEquals("link", response.materialType());
+        assertEquals("sourceNotes", response.matchField());
+    }
+
+    @Test
     void boundaryNormalizesBeforeValidationAndRejectsUnboundedOrUnsafeInputs() {
         try (var factory = Validation.buildDefaultValidatorFactory()) {
             var validator = factory.getValidator();

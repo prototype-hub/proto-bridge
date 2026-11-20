@@ -10,7 +10,7 @@ public record RevisionMaterialResponse(
         @Schema(description = "所属项目标识") String projectId,
         @Schema(description = "所属逻辑版本标识") String versionId,
         @Schema(description = "固定修订标识，不随当前版本变化") String revisionId,
-        @Schema(description = "资料类别prototype、image或document") String materialType,
+        @Schema(description = "资料类别prototype、image、document或link；link无文件字段") String materialType,
         @Schema(description = "原始文件名称，仅作显示和下载名称") String fileName,
         @Schema(description = "服务端校验得到的媒体类型") String mediaType,
         @Schema(description = "原始文件字节数") Long fileSize,
@@ -29,16 +29,17 @@ public record RevisionMaterialResponse(
         @Schema(description = "正文提取完成Unix毫秒；未提取为空") Long textExtractedAt,
         @Schema(description = "完成提取的规则版本；未提取为空") String textExtractorVersion) {
     public static RevisionMaterialResponse of(PrototypeRevisionMaterialEntity row) {
+        boolean link = "link".equals(row.getMaterialType());
         return new RevisionMaterialResponse(
                 row.getId(),
                 row.getProjectId(),
                 row.getVersionId(),
                 row.getRevisionId(),
                 row.getMaterialType(),
-                row.getFileName(),
-                row.getMediaType(),
-                row.getFileSize(),
-                row.getSha256(),
+                link ? null : row.getFileName(),
+                link ? null : row.getMediaType(),
+                link ? null : row.getFileSize(),
+                link ? null : row.getSha256(),
                 row.getSourceTool(),
                 row.getSourceName(),
                 row.getSourceUrl(),

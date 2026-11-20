@@ -6,6 +6,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.storage.extractor.SecureZipExtractor;
 import com.gaiys.proto.prototypehub.storage.materials.RevisionMaterialFiles;
 import com.gaiys.proto.prototypehub.storage.materials.text.MaterialTextExtractor;
+import com.gaiys.proto.prototypehub.storage.materials.text.PdfPreviewProcess;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import java.io.OutputStream;
@@ -17,6 +18,8 @@ import java.nio.file.StandardOpenOption;
 import java.security.DigestInputStream;
 import java.util.HexFormat;
 import java.util.concurrent.CancellationException;
+import java.util.concurrent.Semaphore;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Function;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -42,6 +45,7 @@ import reactor.core.publisher.Sinks;
 @RequiredArgsConstructor
 @Slf4j
 public class PrototypeRevisionMaterialFileService {
+    private final Semaphore previewSlots = new Semaphore(2);
     private final PrototypeHubStorageProperties properties;
     private final FileWork work;
     private final FileCleanupService cleanup;
@@ -317,6 +321,42 @@ public class PrototypeRevisionMaterialFileService {
                                     .body(resource);
                         })
                 .checkpoint("prototype-hub/material/file-read");
+    }
+
+    /** 两个请求槽持有到实际worker finally；取消排队请求不再启动，运行中的worker先终止再释放槽。 */
+    public Mono<PdfPreviewProcess.Page> preview(PrototypeRevisionMaterialEntity row, int page) {
+        return Mono.defer(
+                () -> {
+                    if (!previewSlots.tryAcquire())
+                        return Mono.error(PdfPreviewProcess.error("BUSY", 429));
+                    var phase = new AtomicInteger();
+                    // read共用原安全路径/大小/hash校验；worker仅获得该不可变字节的私有临时副本。
+                    return read(row)
+                            .flatMap(
+                                    content ->
+                                            work.call(
+                                                    () -> {
+                                                        if (!phase.compareAndSet(0, 1))
+                                                            throw new CancellationException();
+                                                        try (var input =
+                                                                content.getBody()
+                                                                        .getInputStream()) {
+                                                            return PdfPreviewProcess.render(
+                                                                    input.readNBytes(
+                                                                            RevisionMaterialFiles
+                                                                                            .MAX_DOCUMENT_BYTES
+                                                                                    + 1),
+                                                                    page);
+                                                        } finally {
+                                                            phase.set(2);
+                                                            previewSlots.release();
+                                                        }
+                                                    }))
+                            .doFinally(
+                                    ignored -> {
+                                        if (phase.compareAndSet(0, 2)) previewSlots.release();
+                                    });
+                });
     }
 
     /** 旧资料按原文件重新提取；全部文件读取和解析在授权数据库连接正常释放后、业务锁外执行。 */

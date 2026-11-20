@@ -23,6 +23,7 @@ import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RequestPart;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Mono;
@@ -77,6 +78,16 @@ public class PrototypeRevisionMaterialController {
         return materials.createSource(versionId, revisionId, input);
     }
 
+    @PostMapping("/links")
+    @SaveAction
+    @Operation(summary = "按项目EDIT关联独立HTTP(S)链接，不上传文件或访问目标")
+    public Mono<RevisionMaterialResponse> createLink(
+            @PathVariable String versionId,
+            @PathVariable String revisionId,
+            @Valid @RequestBody RevisionMaterialRequests.CreateSource input) {
+        return materials.createLink(versionId, revisionId, input);
+    }
+
     @PutMapping("/{materialId}")
     @SaveAction
     @Operation(summary = "CAS维护人工来源声明，保留原始文件")
@@ -119,6 +130,17 @@ public class PrototypeRevisionMaterialController {
             ServerHttpResponse response) {
         response.getHeaders().setCacheControl("private, no-store");
         return materials.text(versionId, revisionId, materialId);
+    }
+
+    @GetMapping("/{materialId}/preview")
+    @QueryAction
+    @Operation(summary = "按当前query与项目READ受限绘制固定PDF的一页PNG")
+    public Mono<ResponseEntity<org.springframework.core.io.Resource>> preview(
+            @PathVariable String versionId,
+            @PathVariable String revisionId,
+            @PathVariable String materialId,
+            @RequestParam(defaultValue = "0") String page) {
+        return materials.preview(versionId, revisionId, materialId, page);
     }
 
     @GetMapping("/{materialId}")

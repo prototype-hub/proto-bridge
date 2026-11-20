@@ -46,9 +46,10 @@ public class PrototypeRevisionMaterialEntity implements Entity {
     private String revisionId;
 
     @Column(name = "material_type", length = 16, nullable = false)
-    @Schema(description = "资料类别prototype、image或document")
+    @Schema(description = "资料类别prototype、image、document或无文件link")
     private String materialType;
 
+    // link沿既有NOT NULL表使用空串/0表示无文件；对外不投影成文件名、摘要或路径。
     @Column(name = "file_name", length = 255, nullable = false)
     @Schema(description = "原始文件名称，仅作显示和下载名称")
     private String fileName;

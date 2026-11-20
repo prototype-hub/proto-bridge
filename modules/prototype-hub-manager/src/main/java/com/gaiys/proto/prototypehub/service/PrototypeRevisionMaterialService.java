@@ -8,6 +8,7 @@ import com.gaiys.proto.prototypehub.service.PrototypeCreationReceiptService.Requ
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.service.validation.RevisionMaterialSource;
 import com.gaiys.proto.prototypehub.storage.materials.text.MaterialTextExtractor;
+import com.gaiys.proto.prototypehub.storage.materials.text.PdfPreviewProcess;
 import com.gaiys.proto.prototypehub.storage.paths.SafePaths;
 import com.gaiys.proto.prototypehub.web.request.RevisionMaterialRequests;
 import com.gaiys.proto.prototypehub.web.response.RevisionMaterialResponse;
@@ -21,7 +22,9 @@ import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.api.crud.entity.QueryParamEntity;
 import org.hswebframework.web.crud.query.QueryHelper;
+import org.springframework.core.io.ByteArrayResource;
 import org.springframework.core.io.Resource;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.multipart.FilePart;
 import org.springframework.stereotype.Service;
@@ -34,6 +37,7 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class PrototypeRevisionMaterialService {
     public static final int MAX_FILES = 100;
+    public static final int MAX_LINKS = 100;
     public static final long MAX_TOTAL_BYTES = 200L * 1024 * 1024;
     private final ReactiveRepository<PrototypeRevisionMaterialEntity, String> materials;
     private final PrototypeRevisionMaterialFileService files;
@@ -155,7 +159,7 @@ public class PrototypeRevisionMaterialService {
                 .createQuery()
                 .select(PrototypeRevisionMaterialEntity::getFileSize)
                 .where(PrototypeRevisionMaterialEntity::getRevisionId, scope.revision().getId())
-                .not(PrototypeRevisionMaterialEntity::getMaterialType, "prototype")
+                .in(PrototypeRevisionMaterialEntity::getMaterialType, "image", "document")
                 .paging(0, MAX_FILES + 1)
                 .fetch()
                 .collectList()
@@ -189,6 +193,72 @@ public class PrototypeRevisionMaterialService {
                                                             source));
                         })
                 .checkpoint("prototype-hub/material/create-source");
+    }
+
+    /** 独立链接共用资料范围和回执；不创建占位文件，也不将目标URL交给文件线程或网络客户端。 */
+    public Mono<RevisionMaterialResponse> createLink(
+            String version, String revision, RevisionMaterialRequests.CreateSource input) {
+        return Mono.defer(
+                        () -> {
+                            var source = RevisionMaterialSource.of(input).requireLink();
+                            return prepare(version, revision, Action.EDIT)
+                                    .flatMap(
+                                            scope ->
+                                                    locked(
+                                                            scope,
+                                                            () ->
+                                                                    createLink(
+                                                                            scope,
+                                                                            source,
+                                                                            input
+                                                                                    .getClientRequestId())));
+                        })
+                .checkpoint("prototype-hub/material/create-link");
+    }
+
+    private Mono<RevisionMaterialResponse> createLink(
+            Scope scope, RevisionMaterialSource source, String key) {
+        Request request = request(scope, "link", key, null, null, source);
+        return receipts.replay(request, ignored -> find(scope, request.id()))
+                .switchIfEmpty(
+                        Mono.defer(
+                                () ->
+                                        materials
+                                                .createQuery()
+                                                .where(
+                                                        PrototypeRevisionMaterialEntity
+                                                                ::getRevisionId,
+                                                        scope.revision().getId())
+                                                .and(
+                                                        PrototypeRevisionMaterialEntity
+                                                                ::getMaterialType,
+                                                        "link")
+                                                .count()
+                                                .flatMap(
+                                                        count -> {
+                                                            if (count >= MAX_LINKS)
+                                                                return Mono.error(
+                                                                        new PrototypeHubException(
+                                                                                "error.prototype-hub.material_link_limit_reached",
+                                                                                "PROTOTYPE_HUB_MATERIAL_LIMIT_REACHED",
+                                                                                409));
+                                                            var candidate =
+                                                                    new PrototypeRevisionMaterialFileService
+                                                                            .Candidate(
+                                                                            "", "", "link", "", 0,
+                                                                            "", null);
+                                                            var row =
+                                                                    row(
+                                                                            scope,
+                                                                            request.id(),
+                                                                            candidate,
+                                                                            source);
+                                                            return materials
+                                                                    .insert(row)
+                                                                    .then(record(scope, request))
+                                                                    .thenReturn(row);
+                                                        })))
+                .map(RevisionMaterialResponse::of);
     }
 
     private Mono<RevisionMaterialResponse> createSource(
@@ -316,6 +386,7 @@ public class PrototypeRevisionMaterialService {
             RevisionMaterialSource source,
             Request request) {
         checkVersion(row, input.getExpectedVersion());
+        if ("link".equals(row.getMaterialType())) source.requireLink();
         source.apply(row);
         row.setConfigVersion(row.getConfigVersion() + 1);
         row.setUpdatedAt(System.currentTimeMillis());
@@ -408,7 +479,68 @@ public class PrototypeRevisionMaterialService {
     public Mono<ResponseEntity<Resource>> read(String version, String revision, String id) {
         return prepare(version, revision, Action.READ)
                 .flatMap(scope -> require(scope, id))
+                .flatMap(
+                        row ->
+                                "link".equals(row.getMaterialType())
+                                        ? Mono.error(
+                                                PrototypeHubException.badRequest(
+                                                        "error.prototype-hub.material_type_unsupported",
+                                                        "PROTOTYPE_HUB_MATERIAL_TYPE_UNSUPPORTED"))
+                                        : Mono.just(row))
                 .flatMap(files::read);
+    }
+
+    /** 按需单页PNG不成为另一套资料；文件工作结束后重新授权，撤权或删除不能借在途绘制继续读取。 */
+    public Mono<ResponseEntity<Resource>> preview(
+            String version, String revision, String id, String requestedPage) {
+        return Mono.defer(
+                        () -> {
+                            if (!requestedPage.matches("0|[1-9][0-9]?"))
+                                return Mono.error(PdfPreviewProcess.error("PAGE_INVALID", 400));
+                            int page = Integer.parseInt(requestedPage);
+                            return prepare(version, revision, Action.READ)
+                                    .flatMap(scope -> require(scope, id))
+                                    .flatMap(
+                                            row -> {
+                                                if (!"document".equals(row.getMaterialType())
+                                                        || !"application/pdf"
+                                                                .equals(row.getMediaType()))
+                                                    return Mono.error(
+                                                            PdfPreviewProcess.error(
+                                                                    "UNSUPPORTED", 400));
+                                                return files.preview(row, page)
+                                                        .flatMap(
+                                                                result ->
+                                                                        prepare(
+                                                                                        version,
+                                                                                        revision,
+                                                                                        Action.READ)
+                                                                                .flatMap(
+                                                                                        scope ->
+                                                                                                require(
+                                                                                                        scope,
+                                                                                                        id))
+                                                                                .thenReturn(
+                                                                                        previewResponse(
+                                                                                                result)));
+                                            });
+                        })
+                .checkpoint("prototype-hub/material/preview");
+    }
+
+    private static ResponseEntity<Resource> previewResponse(PdfPreviewProcess.Page page) {
+        return ResponseEntity.ok()
+                .contentType(MediaType.IMAGE_PNG)
+                .contentLength(page.bytes().length)
+                .header("Cache-Control", "private, no-store")
+                .header("X-Content-Type-Options", "nosniff")
+                .header("Content-Security-Policy", "sandbox; default-src 'none'")
+                .header("Content-Disposition", "inline; filename=preview.png")
+                .header("X-Preview-Page", Integer.toString(page.page()))
+                .header("X-Preview-Pages", Integer.toString(page.pages()))
+                .header("X-Preview-Width", Integer.toString(page.width()))
+                .header("X-Preview-Height", Integer.toString(page.height()))
+                .body(new ByteArrayResource(page.bytes()));
     }
 
     /** 深链按唯一资料读取元数据，不扫描资料分页，不在响应中附带正文。 */
@@ -449,6 +581,8 @@ public class PrototypeRevisionMaterialService {
                 .then(require(scope, id))
                 .flatMap(
                         row -> {
+                            if ("link".equals(row.getMaterialType()))
+                                return Mono.just(RevisionMaterialTextResponse.of(row));
                             if (currentText(row))
                                 return Mono.just(RevisionMaterialTextResponse.of(row));
                             return files.extractText(row)
@@ -636,7 +770,8 @@ public class PrototypeRevisionMaterialService {
     }
 
     private Mono<Void> queue(PrototypeRevisionMaterialEntity row) {
-        return "prototype".equals(row.getMaterialType())
+        // 原型声明和独立链接都不拥有materials文件，不能把无文件哨兵送入持久清理队列。
+        return "prototype".equals(row.getMaterialType()) || "link".equals(row.getMaterialType())
                 ? Mono.empty()
                 : cleanup.enqueueMaterial(
                         row.getProjectId(), row.getVersionId(), row.getStoragePath());

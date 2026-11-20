@@ -104,6 +104,414 @@ class PrototypeHubRevisionMaterialIntegrationTest {
     }
 
     @Test
+    void independentLinksHaveNoPayloadAndReuseFixedScopeCasAndReceipts() throws Exception {
+        Fixture f = fixture();
+        var input = link("link-create", "设计 PRD", "https://example.org:443/prd");
+        JsonNode link = result(HttpMethod.POST, endpoint(f) + "/links", f.owner().token(), input);
+        String id = link.path("id").asText();
+        assertEquals("link", link.path("materialType").asText());
+        for (String field : List.of("fileName", "mediaType", "fileSize", "sha256"))
+            assertTrue(link.path(field).isNull(), field);
+        assertFalse(link.has("storagePath"));
+        assertEquals("UNSUPPORTED", link.path("textStatus").asText());
+        assertEquals(
+                link, result(HttpMethod.POST, endpoint(f) + "/links", f.owner().token(), input));
+        call(
+                HttpMethod.POST,
+                endpoint(f) + "/links",
+                f.owner().token(),
+                link("link-create", "Changed", "https://example.org/prd"),
+                409);
+        assertEquals(
+                1L,
+                count(
+                        "select count(*) as count from p_revision_material where material_type='link' and file_name='' and media_type='' and file_size=0 and sha256='' and storage_path=''"));
+        assertFalse(
+                Files.exists(FILES.resolve("projects").resolve(f.project()).resolve("materials")));
+        assertEquals(
+                1,
+                result(
+                                HttpMethod.POST,
+                                endpoint(f) + "/_query",
+                                f.owner().token(),
+                                Map.of("materialType", "link", "pageSize", 1))
+                        .path("total")
+                        .asInt());
+        assertEquals(link, result(HttpMethod.GET, endpoint(f) + "/" + id, f.owner().token(), null));
+        assertEquals(
+                "PROTOTYPE_HUB_MATERIAL_TYPE_UNSUPPORTED",
+                call(
+                                HttpMethod.GET,
+                                endpoint(f) + "/" + id + "/content",
+                                f.owner().token(),
+                                null,
+                                400)
+                        .path("code")
+                        .asText());
+        assertEquals(
+                "UNSUPPORTED",
+                result(HttpMethod.GET, endpoint(f) + "/" + id + "/text", f.owner().token(), null)
+                        .path("status")
+                        .asText());
+        assertEquals(
+                "UNSUPPORTED",
+                result(
+                                HttpMethod.POST,
+                                endpoint(f) + "/" + id + "/text/_extract",
+                                f.owner().token(),
+                                null)
+                        .path("status")
+                        .asText());
+        var update =
+                new LinkedHashMap<String, Object>(
+                        link("link-update", "新标题", "https://example.org/new"));
+        update.put("expectedVersion", 0);
+        JsonNode changed =
+                result(HttpMethod.PUT, endpoint(f) + "/" + id, f.owner().token(), update);
+        assertEquals(1, changed.path("configVersion").asInt());
+        assertEquals("新标题", changed.path("sourceName").asText());
+        assertEquals(
+                changed, result(HttpMethod.PUT, endpoint(f) + "/" + id, f.owner().token(), update));
+        call(
+                HttpMethod.PUT,
+                endpoint(f) + "/" + id,
+                f.owner().token(),
+                Map.of("clientRequestId", "clear-link", "expectedVersion", 1),
+                400);
+        update.put("clientRequestId", "stale-link");
+        call(HttpMethod.PUT, endpoint(f) + "/" + id, f.owner().token(), update, 409);
+        String current =
+                upload(f.project(), f.version(), f.revision(), "R2")
+                        .path("currentRevisionId")
+                        .asText();
+        call(
+                HttpMethod.GET,
+                endpoint(f).replace(f.revision(), current) + "/" + id,
+                f.owner().token(),
+                null,
+                404);
+        var deletion = mutation(1, "link-delete");
+        result(HttpMethod.POST, endpoint(f) + "/" + id + "/_delete", f.owner().token(), deletion);
+        result(HttpMethod.POST, endpoint(f) + "/" + id + "/_delete", f.owner().token(), deletion);
+        call(HttpMethod.POST, endpoint(f) + "/links", f.owner().token(), input, 409);
+        call(HttpMethod.PUT, endpoint(f) + "/" + id, f.owner().token(), update, 404);
+        assertEquals(
+                0L,
+                count(
+                        "select count(*) as count from p_file_cleanup where resource_type='material'"));
+    }
+
+    @Test
+    void linksRequireCurrentActionsAndMembershipAndKeepIndependentCountBudget() throws Exception {
+        Fixture f = fixture();
+        var input = link("owned-link", "Requirement", "https://example.org/prd");
+        JsonNode row = result(HttpMethod.POST, endpoint(f) + "/links", f.owner().token(), input);
+        String detail = endpoint(f) + "/" + row.path("id").asText();
+        Actor viewer = actor(List.of("query", "save"));
+        member(f.project(), viewer.id(), "viewer");
+        result(HttpMethod.GET, detail, viewer.token(), null);
+        call(HttpMethod.POST, endpoint(f) + "/links", viewer.token(), input, 403);
+        Actor noSave = actor(List.of("query"));
+        member(f.project(), noSave.id(), "editor");
+        call(HttpMethod.POST, endpoint(f) + "/links", noSave.token(), input, 403);
+        Actor noQuery = actor(List.of("save"));
+        member(f.project(), noQuery.id(), "editor");
+        call(HttpMethod.GET, detail, noQuery.token(), null, 403);
+        Actor outsider = actor(List.of("query", "save"));
+        call(HttpMethod.GET, detail, outsider.token(), null, 404);
+        call(HttpMethod.POST, endpoint(f) + "/links", outsider.token(), input, 404);
+        call(HttpMethod.GET, detail, null, null, 401);
+        call(HttpMethod.POST, endpoint(f) + "/links", null, input, 401);
+        database.sql("delete from p_project_member where project_id=:p and user_id=:u")
+                .bind("p", f.project())
+                .bind("u", viewer.id())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        call(HttpMethod.GET, detail, viewer.token(), null, 404);
+        database.sql(
+                        "insert into p_revision_material (id,project_id,version_id,revision_id,material_type,file_name,media_type,file_size,sha256,storage_path,source_tool,source_name,source_url,source_notes,config_version,created_by,updated_by,created_at,updated_at,text_status,text_content,text_character_count,text_extracted_at,text_extractor_version) select 'bounded-link-' || n, project_id,version_id,revision_id,material_type,file_name,media_type,file_size,sha256,storage_path,source_tool,source_name,source_url,source_notes,config_version,created_by,updated_by,created_at,updated_at,text_status,text_content,text_character_count,text_extracted_at,text_extractor_version from p_revision_material cross join generate_series(1,99) n where id=:id")
+                .bind("id", row.path("id").asText())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        call(
+                HttpMethod.POST,
+                endpoint(f) + "/links",
+                f.owner().token(),
+                link("too-many-links", "Another", "https://example.org/another"),
+                409);
+        result(HttpMethod.POST, endpoint(f) + "/links", f.owner().token(), input);
+        material(
+                f,
+                f.owner().token(),
+                "notes.txt",
+                "original".getBytes(StandardCharsets.UTF_8),
+                "file-after-links",
+                200);
+        assertEquals(101, query(f, f.owner().token(), 0, 1).path("total").asInt());
+    }
+
+    @Test
+    void linkValidationAndParallelCasNeverOverwriteOrDuplicateAnIntent() throws Exception {
+        Fixture f = fixture();
+        for (String url :
+                List.of(
+                        "javascript:alert(1)",
+                        "file:///tmp/prd",
+                        "/relative",
+                        "https://u:p@example.org/prd",
+                        "https://example.org:65536/prd",
+                        "https://example.org/a b"))
+            call(
+                    HttpMethod.POST,
+                    endpoint(f) + "/links",
+                    f.owner().token(),
+                    link("invalid", "Title", url),
+                    400);
+        call(
+                HttpMethod.POST,
+                endpoint(f) + "/links",
+                f.owner().token(),
+                Map.of("sourceName", "Title", "sourceUrl", "https://example.org"),
+                400);
+        call(
+                HttpMethod.POST,
+                endpoint(f) + "/links",
+                f.owner().token(),
+                link("invalid-name", " ", "https://example.org"),
+                400);
+        var input = link("parallel-link", "Original", "https://example.org/prd");
+        var first =
+                CompletableFuture.supplyAsync(
+                        () ->
+                                result(
+                                        HttpMethod.POST,
+                                        endpoint(f) + "/links",
+                                        f.owner().token(),
+                                        input));
+        var second =
+                CompletableFuture.supplyAsync(
+                        () ->
+                                result(
+                                        HttpMethod.POST,
+                                        endpoint(f) + "/links",
+                                        f.owner().token(),
+                                        input));
+        JsonNode row = first.get(30, TimeUnit.SECONDS);
+        assertEquals(row, second.get(30, TimeUnit.SECONDS));
+        assertEquals(1L, count("select count(*) as count from p_revision_material"));
+        String target = endpoint(f) + "/" + row.path("id").asText();
+        var left =
+                new LinkedHashMap<String, Object>(
+                        link("parallel-left", "Left", "https://example.org/left"));
+        left.put("expectedVersion", 0);
+        var right =
+                new LinkedHashMap<String, Object>(
+                        link("parallel-right", "Right", "https://example.org/right"));
+        right.put("expectedVersion", 0);
+        var leftResult =
+                CompletableFuture.supplyAsync(
+                        () -> status(HttpMethod.PUT, target, f.owner().token(), left));
+        var rightResult =
+                CompletableFuture.supplyAsync(
+                        () -> status(HttpMethod.PUT, target, f.owner().token(), right));
+        assertEquals(
+                List.of(200, 409),
+                java.util.stream.Stream.of(
+                                leftResult.get(30, TimeUnit.SECONDS),
+                                rightResult.get(30, TimeUnit.SECONDS))
+                        .sorted()
+                        .toList());
+        assertEquals(
+                1,
+                result(HttpMethod.GET, target, f.owner().token(), null)
+                        .path("configVersion")
+                        .asInt());
+    }
+
+    @Test
+    void linkRecycleRestoreAndPermanentPurgeNeverQueueAPayload() throws Exception {
+        Fixture f = fixture();
+        JsonNode row =
+                result(
+                        HttpMethod.POST,
+                        endpoint(f) + "/links",
+                        f.owner().token(),
+                        link("retained-link", "Retained", "https://example.org/retained"));
+        String detail = endpoint(f) + "/" + row.path("id").asText();
+        call(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + f.version(),
+                f.owner().token(),
+                null,
+                200);
+        call(HttpMethod.GET, detail, f.owner().token(), null, 404);
+        result(
+                HttpMethod.POST,
+                "/prototype-hub/versions/" + f.version() + "/_restore",
+                f.owner().token(),
+                null);
+        assertEquals(row, result(HttpMethod.GET, detail, f.owner().token(), null));
+        call(
+                HttpMethod.DELETE,
+                "/prototype-hub/versions/" + f.version(),
+                f.owner().token(),
+                null,
+                200);
+        database.sql("update p_version set deleted_time=:t where id=:id")
+                .bind(
+                        "t",
+                        System.currentTimeMillis()
+                                - PrototypeRetentionService.RETENTION_MILLIS
+                                - 1000)
+                .bind("id", f.version())
+                .fetch()
+                .rowsUpdated()
+                .block(TIMEOUT);
+        assertTrue(retention.purgeVersion(f.version()).block(TIMEOUT));
+        assertEquals(0L, count("select count(*) as count from p_revision_material"));
+        assertEquals(
+                0L,
+                count(
+                        "select count(*) as count from p_file_cleanup where resource_type='material'"));
+    }
+
+    private Map<String, Object> link(String key, String name, String url) {
+        return Map.of("clientRequestId", key, "sourceName", name, "sourceUrl", url);
+    }
+
+    @Test
+    void pdfPreviewReturnsOnlyOnePngAndKeepsFixedOriginalBytesAndCurrentPermissions()
+            throws Exception {
+        Fixture f = fixture();
+        byte[] pdf;
+        try (var document = new org.apache.pdfbox.pdmodel.PDDocument();
+                var output = new ByteArrayOutputStream()) {
+            for (int i = 0; i < 2; i++) {
+                var page =
+                        new org.apache.pdfbox.pdmodel.PDPage(
+                                new org.apache.pdfbox.pdmodel.common.PDRectangle(300, 150));
+                document.addPage(page);
+                try (var content =
+                        new org.apache.pdfbox.pdmodel.PDPageContentStream(document, page)) {
+                    content.setNonStrokingColor(i == 0 ? java.awt.Color.RED : java.awt.Color.BLUE);
+                    content.addRect(0, 0, 300, 150);
+                    content.fill();
+                }
+            }
+            document.save(output);
+            pdf = output.toByteArray();
+        }
+        JsonNode row =
+                material(f, f.owner().token(), "layout.pdf", pdf, "pdf-preview", 200)
+                        .path("result");
+        String base = endpoint(f) + "/" + row.path("id").asText();
+        client.get()
+                .uri(base + "/preview?page=1")
+                .header("X-Access-Token", f.owner().token())
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .contentType(MediaType.IMAGE_PNG)
+                .expectHeader()
+                .valueEquals("X-Preview-Page", "1")
+                .expectHeader()
+                .valueEquals("X-Preview-Pages", "2")
+                .expectHeader()
+                .valueEquals("X-Preview-Width", "400")
+                .expectHeader()
+                .valueEquals("X-Preview-Height", "200")
+                .expectHeader()
+                .valueEquals("Cache-Control", "private, no-store")
+                .expectHeader()
+                .valueEquals("X-Content-Type-Options", "nosniff")
+                .expectHeader()
+                .valueEquals("Content-Disposition", "inline; filename=preview.png")
+                .expectHeader()
+                .valueEquals("Content-Security-Policy", "sandbox; default-src 'none'")
+                .expectBody()
+                .consumeWith(
+                        response -> {
+                            try {
+                                var image =
+                                        javax.imageio.ImageIO.read(
+                                                new java.io.ByteArrayInputStream(
+                                                        response.getResponseBody()));
+                                assertEquals(0x0000ff, image.getRGB(50, 50) & 0xffffff);
+                            } catch (IOException error) {
+                                throw new UncheckedIOException(error);
+                            }
+                        });
+        client.get()
+                .uri(base + "/content")
+                .header("X-Access-Token", f.owner().token())
+                .exchange()
+                .expectStatus()
+                .isOk()
+                .expectHeader()
+                .contentType(MediaType.APPLICATION_PDF)
+                .expectHeader()
+                .value("Content-Disposition", value -> assertTrue(value.startsWith("attachment;")))
+                .expectBody()
+                .consumeWith(response -> assertArrayEquals(pdf, response.getResponseBody()));
+        assertEquals(
+                "PROTOTYPE_HUB_MATERIAL_PREVIEW_PAGE_INVALID",
+                call(HttpMethod.GET, base + "/preview?page=99", f.owner().token(), null, 400)
+                        .path("code")
+                        .asText());
+        call(HttpMethod.GET, base + "/preview?page=1.5", f.owner().token(), null, 400);
+        call(HttpMethod.GET, base + "/preview", null, null, 401);
+        Actor outsider = actor(List.of("query"));
+        call(HttpMethod.GET, base + "/preview", outsider.token(), null, 404);
+        Actor viewer = actor(List.of("save"));
+        member(f.project(), viewer.id(), "viewer");
+        call(HttpMethod.GET, base + "/preview", viewer.token(), null, 403);
+        JsonNode broken =
+                material(
+                                f,
+                                f.owner().token(),
+                                "broken.pdf",
+                                "%PDF-broken".getBytes(StandardCharsets.US_ASCII),
+                                "broken-pdf",
+                                200)
+                        .path("result");
+        assertEquals(
+                "PROTOTYPE_HUB_MATERIAL_PREVIEW_INVALID",
+                call(
+                                HttpMethod.GET,
+                                endpoint(f) + "/" + broken.path("id").asText() + "/preview",
+                                f.owner().token(),
+                                null,
+                                422)
+                        .path("code")
+                        .asText());
+        JsonNode link =
+                result(
+                        HttpMethod.POST,
+                        endpoint(f) + "/links",
+                        f.owner().token(),
+                        link("pdf-test-link", "External", "https://example.org"));
+        call(
+                HttpMethod.GET,
+                endpoint(f) + "/" + link.path("id").asText() + "/preview",
+                f.owner().token(),
+                null,
+                400);
+        String storage =
+                database.sql("select storage_path from p_revision_material where id=:id")
+                        .bind("id", row.path("id").asText())
+                        .map((r, metadata) -> r.get("storage_path", String.class))
+                        .one()
+                        .block(TIMEOUT);
+        byte[] corrupt = pdf.clone();
+        corrupt[corrupt.length - 1] ^= 1;
+        Files.write(FILES.resolve(storage), corrupt);
+        call(HttpMethod.GET, base + "/preview", f.owner().token(), null, 404);
+    }
+
+    @Test
     void sourceDeclarationsBindToTheActualRevisionWithoutChangingManifestAndOldClientsStillWork()
             throws Exception {
         Fixture f = fixture();
@@ -555,7 +963,7 @@ class PrototypeHubRevisionMaterialIntegrationTest {
                         .one()
                         .block(TIMEOUT));
         assertEquals(
-                19L,
+                24L,
                 count(
                         "select count(*) as count from pg_attribute where attrelid='p_revision_material'::regclass and attnum>0 and not attisdropped and col_description(attrelid,attnum) ~ '[一-龥]'"));
         assertEquals(
@@ -634,6 +1042,11 @@ class PrototypeHubRevisionMaterialIntegrationTest {
                         .path("code")
                         .asText());
         assertEquals(100, query(f, f.owner().token(), 0, 1).path("total").asInt());
+        result(
+                HttpMethod.POST,
+                endpoint(f) + "/links",
+                f.owner().token(),
+                link("link-after-file-budget", "Independent", "https://example.org/prd"));
     }
 
     private JsonNode material(
