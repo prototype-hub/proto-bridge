@@ -33,7 +33,8 @@ class StorageExportPostgresTest(unittest.TestCase):
           CREATE TABLE p_share(id text primary key,version_id text,project_id text,revision_id text,revision_mode text);
           CREATE TABLE p_creation_receipt(id text primary key,resource_id text,revision_id text);
           CREATE TABLE p_revision_material(id text primary key,project_id text,version_id text,
-           revision_id text,material_type text,storage_path text,file_size bigint,sha256 text,source_notes text);
+           revision_id text,material_type text,storage_path text,file_size bigint,sha256 text,source_notes text,
+           file_name text,media_type text,source_name text,source_url text);
           CREATE TABLE p_review_thread(id text primary key,version_id text,project_id text,revision_id text);
           CREATE TABLE p_review_message(id text primary key,thread_id text,version_id text,project_id text,
             revision_id text,visibility text,image_path text,image_content_type text,image_size bigint,
@@ -94,7 +95,8 @@ class StorageExportPostgresTest(unittest.TestCase):
 
     def test_revision_material_references_are_complete_without_exporting_source_text(self):
         self.sql(self.prefix() + """
-          INSERT INTO p_revision_material VALUES('material','project','version','r1','document',
+          INSERT INTO p_revision_material(id,project_id,version_id,revision_id,material_type,storage_path,file_size,sha256,source_notes)
+           VALUES('material','project','version','r1','document',
            'projects/project/materials/material/content',3,repeat('a',64),'Private source notes');
           """)
         manifest = self.export()
@@ -106,6 +108,28 @@ class StorageExportPostgresTest(unittest.TestCase):
                          "UPDATE p_revision_material SET storage_path='../escape';",
                          "UPDATE p_revision_material SET sha256='invalid';"):
             self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+
+    def test_independent_links_validate_scope_and_no_payload_without_exporting_targets(self):
+        self.sql(self.prefix() + """
+          INSERT INTO p_revision_material VALUES('link','project','version','r1','link','',0,'',
+           'Private link notes','','','Private link title','https://private.example/prd');
+          """)
+        manifest = self.export()
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertEqual([], manifest['materialEntries'])
+        for private in ('private.example', 'Private link title', 'Private link notes'):
+            self.assertNotIn(private, json.dumps(manifest))
+        for mutation in ("UPDATE p_revision_material SET revision_id='missing';",
+                         "UPDATE p_revision_material SET file_name='fake.pdf';",
+                         "UPDATE p_revision_material SET media_type='application/pdf';",
+                         "UPDATE p_revision_material SET file_size=1;",
+                         "UPDATE p_revision_material SET sha256=repeat('a',64);",
+                         "UPDATE p_revision_material SET storage_path='projects/project/materials/link/content';",
+                         "UPDATE p_revision_material SET source_name='';",
+                         "UPDATE p_revision_material SET source_url=null;",
+                         "UPDATE p_revision_material SET material_type='unknown';"):
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
 
     def test_unknown_receipt_resource_or_wrong_revision_is_not_silently_skipped(self):
         for mutation in ("UPDATE p_creation_receipt SET resource_id='missing' WHERE id='message-receipt';",

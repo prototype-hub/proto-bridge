@@ -99,7 +99,7 @@ public final class RevisionMaterialRequests {
         @Schema(description = "每页数量，默认20")
         private int pageSize = 20;
 
-        @Pattern(regexp = "prototype|image|document")
+        @Pattern(regexp = "prototype|image|document|link")
         @Schema(description = "可选资料类别筛选")
         private String materialType;
     }

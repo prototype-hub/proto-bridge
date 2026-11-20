@@ -11,6 +11,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
 import com.gaiys.proto.prototypehub.storage.materials.text.MaterialTextExtractor;
+import com.gaiys.proto.prototypehub.storage.materials.text.PdfPreviewProcess;
 import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import com.gaiys.proto.prototypehub.web.response.RevisionMaterialResponse;
 import com.gaiys.proto.prototypehub.web.response.RevisionMaterialTextResponse;
@@ -37,6 +38,72 @@ import reactor.test.StepVerifier;
 /** 正文派生更新必须在锁外解析、提交重验且不覆盖人工来源或复活已删资料。 */
 class PrototypeMaterialTextServiceTest {
     @TempDir Path directory;
+
+    @Test
+    void previewRechecksQueryAndExistenceAfterRenderingAndDoesNotHoldBusinessLocks() {
+        var fixture = new Fixture();
+        var row = material();
+        row.setMediaType("application/pdf");
+        when(fixture.query.fetch()).thenReturn(Flux.just(row));
+        var rendered = Sinks.<PdfPreviewProcess.Page>one();
+        when(fixture.files.preview(row, 0)).thenReturn(rendered.asMono());
+        StepVerifier.create(fixture.service.preview("v", "r", "m", "0"))
+                .then(
+                        () -> {
+                            assertFalse(fixture.locked.get());
+                            when(fixture.auth.hasPermission("prototype-hub-version", "query"))
+                                    .thenReturn(false);
+                            rendered.tryEmitValue(
+                                    new PdfPreviewProcess.Page(new byte[] {1}, 0, 1, 1, 1));
+                        })
+                .expectError()
+                .verify();
+        when(fixture.auth.hasPermission("prototype-hub-version", "query")).thenReturn(true);
+        when(fixture.query.fetch()).thenReturn(Flux.just(row), Flux.empty());
+        when(fixture.files.preview(row, 0))
+                .thenReturn(Mono.just(new PdfPreviewProcess.Page(new byte[] {1}, 0, 1, 1, 1)));
+        StepVerifier.create(fixture.service.preview("v", "r", "m", "0")).expectError().verify();
+        verify(fixture.materials, never()).createUpdate();
+    }
+
+    @Test
+    void previewRejectsWrongTypesAndInvalidPagesBeforeFileWork() {
+        var fixture = new Fixture();
+        StepVerifier.create(fixture.service.preview("v", "r", "m", "0")).expectError().verify();
+        for (String page : new String[] {"-1", "100", "1.5", "wrong"})
+            StepVerifier.create(fixture.service.preview("v", "r", "m", page))
+                    .expectError()
+                    .verify();
+        verify(fixture.files, never()).preview(any(), anyInt());
+    }
+
+    @Test
+    void queuedPreviewCancellationAndFileFailureReturnBothRequestSlots() {
+        var work = mock(FileWork.class);
+        when(work.call(any())).thenReturn(Mono.never());
+        var files =
+                new PrototypeRevisionMaterialFileService(
+                        new PrototypeHubStorageProperties(), work, null, null);
+        var first = files.preview(material(), 0).subscribe();
+        var second = files.preview(material(), 0).subscribe();
+        StepVerifier.create(files.preview(material(), 0))
+                .expectErrorMatches(
+                        error ->
+                                error instanceof PrototypeHubException exception
+                                        && "PROTOTYPE_HUB_MATERIAL_PREVIEW_BUSY"
+                                                .equals(exception.getCode()))
+                .verify();
+        first.dispose();
+        second.dispose();
+        when(work.call(any()))
+                .thenReturn(Mono.error(new IllegalStateException("file-work-failed")));
+        StepVerifier.create(files.preview(material(), 0))
+                .expectError(IllegalStateException.class)
+                .verify();
+        StepVerifier.create(files.preview(material(), 0))
+                .expectError(IllegalStateException.class)
+                .verify();
+    }
 
     @Test
     void oldRowsHaveExplicitStatesAndListNeverContainsDocumentText() {

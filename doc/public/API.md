@@ -44,17 +44,29 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 | 请求 | 输入与行为 |
 | --- | --- |
-| `POST /_query` | JSON `{pageIndex:0,pageSize:20,materialType?:"prototype"\|"image"\|"document"}`；页号0–10000、页大小1–100，数据库按创建时间倒序、ID升序稳定分页 |
+| `POST /_query` | JSON `{pageIndex:0,pageSize:20,materialType?:"prototype"\|"image"\|"document"\|"link"}`；省略类别返回混合资料；页号0–10000、页大小1–100，数据库按创建时间倒序、ID升序稳定分页 |
 | `POST` | multipart `file`，可选 `sourceTool/sourceName/sourceUrl/sourceNotes`，推荐发送 `Idempotency-Key`；创建私有图片或文档 |
+| `POST /links` | JSON来源字段及 `clientRequestId`；`sourceName`为必填链接标题、`sourceUrl`为必填HTTP(S)目标；无文件上传或占位文件 |
 | `POST /prototype-source` | JSON来源字段及 `clientRequestId`，为旧修订补录人工来源；至少一个来源字段非空，原ZIP必须实际存在；每修订最多一条当前原型来源 |
-| `PUT /{materialId}` | JSON完整来源字段、`expectedVersion`、`clientRequestId`，CAS替换来源，省略字段表示清空，不改变载荷 |
-| `POST /{materialId}/_delete` | JSON `{expectedVersion,clientRequestId}`；删除图片/文档后持久排队回收文件；原型类别只删除声明，保留修订和原ZIP |
+| `PUT /{materialId}` | JSON完整来源字段、`expectedVersion`、`clientRequestId`，CAS替换来源；文件/原型来源省略字段表示清空，不改变载荷；独立link仍须提交非空标题及合法目标 |
+| `POST /{materialId}/_delete` | JSON `{expectedVersion,clientRequestId}`；删除图片/文档后持久排队回收文件；原型类别只删除声明，保留修订和原ZIP；link仅移除关联，不访问或删除外部内容、不排文件清理 |
 | `GET /{materialId}/content` | 当前READ授权后交付原字节，强制attachment、nosniff、sandbox和private no-store，不使用公共静态地址 |
+| `GET /{materialId}/preview?page=0` | 当前query与READ授权后，将固定PDF显式一页绘为PNG；page为0–99整数，默认0，不预绘其他页面 |
 | `GET /{materialId}` | 当前query与项目READ交集直接读取唯一资料元数据，不依赖资料分页，不含正文；private no-store |
 | `GET /{materialId}/text` | 当前query与项目READ交集读取唯一资料的派生纯文本和状态，不依赖资料分页；private no-store |
 | `POST /{materialId}/text/_extract` | 当前query/save与项目EDIT交集显式准备或重试旧资料正文；不接收文件、URL或额外作用域，private no-store |
 
 资料响应包含 `id/projectId/versionId/revisionId/materialType/fileName/mediaType/fileSize/sha256`、四个来源字段、`configVersion/createdBy/updatedBy/createdAt/updatedAt`，末尾追加 `textStatus/textCharacterCount/textExtractedAt/textExtractorVersion`，不返回存储路径或正文。来源声明ID与修订ID不同；删除后重新声明使用新ID，旧请求不能覆盖或指向新声明。未记录的旧修订没有原型来源行，不能推断历史工具。来源工具和名称分别最多80/200字符，备注最多2000；地址最多2048且仅接受无用户凭据的绝对HTTP/HTTPS，服务端不抓取。所有来源均由成员声明，不代表认证来源或官方集成。
+
+独立链接的 `materialType` 为 `link`，四个公开文件字段 `fileName/mediaType/fileSize/sha256` 均为null；标题使用 `sourceName`，不呈现为0字节附件或伪造摘要。标题和目标去首尾空白后必填，目标必须有host、无用户凭据/控制字符/空白，端口省略或1–65535。原三种资料的可选来源字段规则保持。每修订最多100条独立链接，不消耗原100份图片/文档或200MiB预算。链接创建、维护、删除均使用当前账号、固定范围和原幂等/CAS机制；`clientRequestId`为1–128个非空白可打印ASCII，未知结果保留原键和完整输入，同键改语义或删除后重放旧创建返回409，不复活资料。
+
+链接 `GET /content` 返回400 `PROTOTYPE_HUB_MATERIAL_TYPE_UNSUPPORTED`，不重定向；`GET /text` 和有query/save与EDIT权限的显式提取均返回UNSUPPORTED，不进入文件路径或解析线程。目标仅供用户明确打开HTTP(S)外链，不嵌入、不后台抓取标题、图像或正文，也不证明目标存在、可信或由平台管理。已交付客户端的目标地址和原始文件字节不能撤回。
+
+PDF视觉预览只支持document＋application/pdf。原件先验证安全路径、实际大小与SHA256，worker只读这些已验证字节的私有临时副本。每次仅静态绘制所选页，不运行PDF脚本、链接动作、表单或附件，不请求远程资源；生成PNG不缓存、不入DB或持久存储。完成后再次检查当前账号、query、READ、固定父归属及资料仍存在，然后返回image/png，带 `X-Preview-Page/Pages/Width/Height` 整数header、固定inline文件名preview.png、private/no-store、nosniff及CSP sandbox/default-src none；原content字节、摘要及attachment行为不变。
+
+视觉预算为原件20MiB、总页数100、固定96dpi、所选页几何finite且正数、输出每边最多4096且最多4000000像素、PNG最多16MiB。两个请求槽满返回429；I/O及绘图在FileWork锁外，独立子JVM限制128MiB堆、64MiB元空间、单CPU，启动后最多等待30秒，之后强杀并最多等待2秒回收；预算不含FileWork排队。取消不再启动排队worker，已启动worker终止并清理私有临时输入/输出后释放槽，不进行全量渲染或后台预览。
+
+预览失败使用 `PROTOTYPE_HUB_MATERIAL_PREVIEW_` 前缀：非PDF为400 UNSUPPORTED，非法或超实际页为400 PAGE_INVALID，坏PDF为422 INVALID，加密为422 ENCRYPTED，输入/页数/几何/像素/输出/等待预算为413 LIMIT_EXCEEDED，槽满为429 BUSY。原件缺失或摘要不符仍404 `PROTOTYPE_HUB_MATERIAL_FILE_MISSING`；资料行或归属不存在为404 `PROTOTYPE_HUB_MATERIAL_NOT_FOUND`。不把失败当成功空图、不返回部分PNG。当前仍有权且原件可用时可选既有正文或下载，这两者不代表视觉预览成功。
 
 原有版本ZIP创建、替换接口增加上述四个可选multipart来源字段，绑定实际生成修订并与修订原子提交。全部省略保留旧行为；旧创建回执指纹保持兼容。重复创建键必须保留完整文件和来源，文件或来源变化返回409；未知结果重试保留原键，CAS冲突先重新读取，不能自动换键重复提交。
 

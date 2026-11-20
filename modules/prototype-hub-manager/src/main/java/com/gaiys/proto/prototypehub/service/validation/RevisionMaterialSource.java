@@ -34,6 +34,18 @@ public record RevisionMaterialSource(String tool, String name, String url, Strin
         return Stream.of(tool, name, url, notes).anyMatch(value -> value != null);
     }
 
+    /** 独立链接必须有标题和目标；不把新链接约束追溯为历史附件来源字段迁移。 */
+    public RevisionMaterialSource requireLink() {
+        if (name == null
+                || url == null
+                || url.chars().anyMatch(c -> Character.isWhitespace(c) || Character.isSpaceChar(c)))
+            throw invalid();
+        URI uri = URI.create(url);
+        int port = uri.getPort();
+        if (port == 0 || port > 65535 || uri.getRawAuthority().endsWith(":")) throw invalid();
+        return this;
+    }
+
     public void apply(PrototypeRevisionMaterialEntity row) {
         row.setSourceTool(tool);
         row.setSourceName(name);

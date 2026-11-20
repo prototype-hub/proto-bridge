@@ -361,7 +361,7 @@ public class PrototypeSearchService {
                 row.pageId,
                 row.pagePath,
                 row.threadId,
-                truncate(row.title, 160),
+                truncate("link".equals(row.materialType) ? row.sourceName : row.title, 160),
                 excerpt(match.value(), keyword),
                 match.name(),
                 row.visibility,

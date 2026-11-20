@@ -206,13 +206,19 @@ WITH storage_references AS (
  LEFT JOIN :"prototype_hub_revision_table" r ON r.id=m.revision_id
  WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
   OR v.project_id IS DISTINCT FROM m.project_id OR r.project_id IS DISTINCT FROM m.project_id
-  OR r.version_id IS DISTINCT FROM m.version_id OR m.material_type IS NULL OR m.file_size IS NULL
-  OR m.sha256 IS NULL OR m.storage_path IS NULL OR m.material_type NOT IN ('prototype','image','document')
-  OR m.file_size<1 OR m.sha256 !~ '^[a-f0-9]{64}$'
-  OR (m.material_type='prototype' AND m.storage_path IS DISTINCT FROM regexp_replace(r.storage_path,'/site$','/original.zip'))
-  OR (m.material_type<>'prototype' AND (m.storage_path !~ ('^projects/' || m.project_id || '/materials/[A-Za-z0-9_-]{1,128}/content$') OR m.file_size>20971520))
-  OR EXISTS(SELECT 1 FROM :"prototype_hub_revision_material_table" other WHERE other.id<>m.id
-   AND (other.storage_path=m.storage_path OR (m.material_type='prototype' AND other.material_type='prototype' AND other.revision_id=m.revision_id)))
+  OR r.version_id IS DISTINCT FROM m.version_id OR m.material_type IS NULL
+  OR m.material_type NOT IN ('prototype','image','document','link')
+  -- Links have no payload: check the whole association but never invent a file reference.
+  OR (m.material_type='link' AND (m.file_name IS DISTINCT FROM '' OR m.media_type IS DISTINCT FROM ''
+   OR m.file_size IS DISTINCT FROM 0 OR m.sha256 IS DISTINCT FROM '' OR m.storage_path IS DISTINCT FROM ''
+   OR m.source_name IS NULL OR btrim(m.source_name)='' OR length(m.source_name)>200
+   OR m.source_url IS NULL OR btrim(m.source_url)='' OR length(m.source_url)>2048))
+  OR (m.material_type IN ('prototype','image','document') AND (m.file_size IS NULL
+   OR m.sha256 IS NULL OR m.storage_path IS NULL OR m.file_size<1 OR m.sha256 !~ '^[a-f0-9]{64}$'
+   OR (m.material_type='prototype' AND m.storage_path IS DISTINCT FROM regexp_replace(r.storage_path,'/site$','/original.zip'))
+   OR (m.material_type<>'prototype' AND (m.storage_path !~ ('^projects/' || m.project_id || '/materials/[A-Za-z0-9_-]{1,128}/content$') OR m.file_size>20971520))
+   OR EXISTS(SELECT 1 FROM :"prototype_hub_revision_material_table" other WHERE other.id<>m.id
+    AND (other.storage_path=m.storage_path OR (m.material_type='prototype' AND other.material_type='prototype' AND other.revision_id=m.revision_id)))))
 \endif
 \if :prototype_hub_has_review_images
  UNION ALL
@@ -278,7 +284,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'materialEntries',(SELECT coalesce(json_agg(json_build_object('projectId',project_id,'versionId',version_id,
  'revisionId',revision_id,'materialId',id,'materialType',material_type,'storagePath',storage_path,
  'size',file_size,'sha256',sha256) ORDER BY project_id,version_id,revision_id,id),'[]'::json)
- FROM :"prototype_hub_revision_material_table")
+ FROM :"prototype_hub_revision_material_table" WHERE material_type IN ('prototype','image','document'))
 \else
  'materialEntries','[]'::json
 \endif

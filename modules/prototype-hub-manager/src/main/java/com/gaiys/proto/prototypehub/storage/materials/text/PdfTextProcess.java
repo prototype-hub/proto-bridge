@@ -27,16 +27,7 @@ final class PdfTextProcess {
                 Files.setPosixFilePermissions(
                         directory, PosixFilePermissions.fromString("rwx------"));
             Path result = directory.resolve("text");
-            String classpath =
-                    java.util.Arrays.stream(
-                                    System.getProperty(
-                                                    "surefire.test.class.path",
-                                                    System.getProperty("java.class.path"))
-                                            .split(
-                                                    java.util.regex.Pattern.quote(
-                                                            File.pathSeparator)))
-                            .map(entry -> Path.of(entry).toAbsolutePath().normalize().toString())
-                            .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+            String classpath = classpath();
             var command = new ArrayList<String>();
             command.add(
                     Path.of(
@@ -129,7 +120,17 @@ final class PdfTextProcess {
                                         .contains(name.toUpperCase(java.util.Locale.ROOT)));
     }
 
-    private static boolean bootClasspath(String classpath) throws IOException {
+    static String classpath() {
+        return java.util.Arrays.stream(
+                        System.getProperty(
+                                        "surefire.test.class.path",
+                                        System.getProperty("java.class.path"))
+                                .split(java.util.regex.Pattern.quote(File.pathSeparator)))
+                .map(entry -> Path.of(entry).toAbsolutePath().normalize().toString())
+                .collect(java.util.stream.Collectors.joining(File.pathSeparator));
+    }
+
+    static boolean bootClasspath(String classpath) throws IOException {
         String launcher = "org/springframework/boot/loader/launch/PropertiesLauncher.class";
         for (String entry : classpath.split(java.util.regex.Pattern.quote(File.pathSeparator))) {
             Path path = Path.of(entry);
