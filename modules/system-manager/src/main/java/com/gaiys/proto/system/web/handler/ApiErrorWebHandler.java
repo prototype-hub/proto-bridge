@@ -12,6 +12,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.util.DisconnectedClientHelper;
 import reactor.core.Exceptions;
 import reactor.core.publisher.Mono;
 
@@ -26,11 +27,14 @@ public class ApiErrorWebHandler implements ErrorWebExceptionHandler {
 
     @Override
     public Mono<Void> handle(ServerWebExchange exchange, Throwable error) {
+        // 只忽略 Spring 确认的客户端断开，磁盘或上游调用错误仍保留正常错误语义。
+        if (DisconnectedClientHelper.isClientDisconnectedException(error)) return Mono.empty();
         if (exchange.getResponse().isCommitted()) return Mono.error(error);
         Locale locale = exchange.getLocaleContext().getLocale();
         ApiResponse<Void> response =
                 ApiErrors.response(error, locale == null ? Locale.ENGLISH : locale);
         exchange.getAttributes().put(AuditWebFilter.ERROR_CODE, response.getCode());
+        exchange.getResponse().getHeaders().clearContentHeaders();
         exchange.getResponse()
                 .setStatusCode(
                         org.springframework.http.HttpStatusCode.valueOf(response.getStatus()));
