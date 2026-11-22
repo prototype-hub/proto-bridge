@@ -62,6 +62,16 @@ ES_API_KEY: ''
 # CA 证书
 ES_CA_CERTIFICATE: ''
 
+# 邮件发送配置；凭据通过环境变量或本地覆盖文件提供，勿提交真实值。
+SMTP_HOST: ''
+SMTP_PORT: '587'
+SMTP_USERNAME: ''
+SMTP_PASSWORD: ''
+SMTP_PROTOCOL: 'smtp'
+SMTP_FROM: ''
+SMTP_DEFAULT_ENCODING: 'UTF-8'
+SMTP_LOCALHOST: 'localhost'
+
 # 日志级别、输出与文件位置
 # 根日志级别
 LOG_LEVEL_ROOT: 'INFO'
@@ -107,6 +117,8 @@ LOGIN_ENCRYPTION_ENABLED: 'true'
 CORS_ENABLED: 'false'
 # 允许的源
 CORS_ALLOWED_ORIGINS: 'http://localhost:5173'
+# 审核前端可信来源；生产环境填写确切的 HTTPS 来源。
+PROTOTYPEHUB_REVIEW_TRUSTEDORIGIN: ''
 # 管理员用户名
 ADMIN_USERNAME: 'admin'
 # 初始管理员密码（首次启动必须填写）

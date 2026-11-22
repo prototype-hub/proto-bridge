@@ -547,4 +547,4 @@ curl --fail https://proto.example.com/api/actuator/health/readiness
 
 本项目有权授予的原创贡献采用 [Apache License 2.0](LICENSE)，并提供 [NOTICE](NOTICE)。允许依条款商业使用、修改和闭源分发，但须保留适用版权、许可证及 NOTICE、标明修改并遵守专利条款；不授予商标权。源码与依赖来源、发行说明见[来源文档](doc/SOURCE_PROVENANCE.md)；第三方组件遵循各自许可证，发行包的依赖清单与声明由 `release-audit` 生成。请保留适用的许可证与版权声明，配套前端采用相同许可证但保留独立发行与第三方声明。公开源码使用 `python3 tools/export-source.py`，见[公开发布指南](doc/public/RELEASE.md)和[贡献说明](CONTRIBUTING.md)。
 
-感谢 hsweb、EasyORM、Spring、Project Reactor、Vue、Apache Commons Compress、PostgreSQL、Redis、Elasticsearch、Nginx 等开源项目提供的基础能力。组件版本与来源可在[依赖矩阵](doc/DEPENDENCY_BASELINE.md)中核对。
+感谢 [Spring](https://github.com/spring-projects/spring-framework)、[Project Reactor](https://github.com/reactor/reactor-core)、[hsweb](https://github.com/hs-web/hsweb-framework)、EasyORM、[Vue](https://github.com/vuejs/core)、[Ant Design Vue](https://github.com/vueComponent/ant-design-vue)、Apache Commons Compress、[PostgreSQL](https://github.com/postgres/postgres)、[Redis](https://github.com/redis/redis)、[Elasticsearch](https://github.com/elastic/elasticsearch)、[Nginx](https://github.com/nginx/nginx) 等开源项目提供的基础能力。组件版本与来源可在[依赖矩阵](doc/DEPENDENCY_BASELINE.md)中核对。
