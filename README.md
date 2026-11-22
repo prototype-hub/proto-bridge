@@ -158,6 +158,7 @@ flowchart LR
 | `bootstrap/` | 启动装配、应用配置、Dockerfile、集成测试 |
 | `modules/prototype-hub-manager/` | 项目、版本、分享、ZIP 与文件生命周期 |
 | `modules/system-manager/` | 系统管理、hsweb 适配、个人资料及初始化 |
+| `modules/notification-manager/` | 共用 SMTP、固定用途 OTP 与默认拒绝的业务邮件扩展边界 |
 | `components/logging-component/` | 日志采集、存储、脱敏与日志级别管理 |
 | `tools/` | 巡检、菜单资源生成、发行校验工具及测试夹具 |
 | `third-party/` | 固定来源与摘要的第三方许可证、声明及元数据 |
