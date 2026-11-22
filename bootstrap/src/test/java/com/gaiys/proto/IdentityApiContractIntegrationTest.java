@@ -879,7 +879,7 @@ class IdentityApiContractIntegrationTest {
     }
 
     @Test
-    void methodNotAllowedPreservesAllowAndJsonThroughBothErrorBoundaries() {
+    void methodNotAllowedPreservesAllowAndJsonThroughBothErrorBoundaries() throws Throwable {
         client.delete()
                 .uri("/system/version")
                 .header("X-Access-Token", admin)
