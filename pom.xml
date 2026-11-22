@@ -29,6 +29,7 @@
     <modules>
         <module>components/logging-component</module>
         <module>modules/system-manager</module>
+        <module>modules/notification-manager</module>
         <module>modules/prototype-hub-manager</module>
         <module>bootstrap</module>
     </modules>

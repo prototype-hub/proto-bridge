@@ -36,7 +36,7 @@ EasyORM以增量方式创建 `p_work_item` 及其索引，无配置项、外部�
 
 ## 邮箱身份与SMTP
 
-访问者身份默认关闭，由分享管理员逐条开启。邮箱OTP需要SMTP；无SMTP时原型预览仍可用，邮箱验证明确显示不可用。管理员可对单个分享额外允许“未验证”低保障身份，访客须主动选择且界面保留未验证标识，不因邮件故障自动切换或标为已验证。固定分享的邀请通过管理员手动复制链接交付，邮件仍仅发必要验证码，不自动发送邀请或业务提醒。
+访问者身份默认关闭，由分享管理员逐条开启。邮箱OTP需要SMTP；无SMTP时原型预览仍可用，邮箱验证明确显示不可用。管理员可对单个分享额外允许“未验证”低保障身份，访客须主动选择且界面保留未验证标识，不因邮件故障自动切换或标为已验证。固定分享的邀请通过管理员手动复制链接交付；基础版邮件仅发必要验证码。可选业务模块经独立权益、规则及当前收件范围授权后使用同一 SMTP 客户端，不能借验证码入口传入业务主题或正文。
 
 SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml`：`spring.mail.host` 默认为空，未配置时不启用发送，也不在启动时连接服务商。填写标准 `spring.mail.host/port/username/password`，默认SMTP端口587、认证及STARTTLS启用且要求升级TLS，服务端身份校验开启；按服务商要求覆盖真实属性并使用有效TLS信任链。SMTPS需明确设置protocol为smtps及端口465，使用同一properties中的mail.smtps配置。发件地址使用 `spring.mail.properties.mail.smtp.from`（便利变量 `SMTP_FROM`），非空配置优先，空值取非空username，仍为空才取本机身份prototype-hub@localhost；必须填写服务商许可的单一完整邮箱，例如 `sender@example.invalid`，不能只填产品名称，也不接受显示名称、地址列表或换行。显式错误值不会静默改用认证账号，而是在连接前拒绝发送；若认证账号就是许可发件邮箱，可将 `SMTP_FROM` 留空复用它。连接、读、写默认各五秒，可用同级 `mail.smtp.connectiontimeout/timeout/writetimeout` 覆盖；这些是socket超时，不是DNS解析或第三方调用的整体耗时上限。SMTP/SMTPS的 `mail.smtp.localhost/mail.smtps.localhost` 缺省为localhost，避免为EHLO反查本机DNS；服务商要求FQDN时应在 `spring.mail.properties` 中显式填写并保留有效DNS配置。SMTP debug必须关闭。不确定发送不自动重试，失败仍占限额，不能标为已验证。
 
@@ -46,7 +46,11 @@ SMTP客户端配置集中声明在 `bootstrap/src/main/resources/application.yml
 
 SMTP和SMTPS分别读取 `mail.smtp.from`、`mail.smtps.from` 作为envelope发件覆盖；没有协议专属覆盖时，客户端从邮件From头取得发件邮箱。直接配置这类原生属性时，应与许可发件身份保持一致，应用不会重写显式覆盖值。连接/认证成功只证明SMTP会话可用，不能证明MAIL FROM、收件人或DATA阶段会被服务商接受，也不能证明邮件已到达收件箱。
 
-验证码发送失败对外仍返回503与 `PROTOTYPE_HUB_REVIEW_MAIL_UNAVAILABLE`，不返回邮件服务商原始异常。查看本地 `SmtpNotificationGateway` 的固定 `reason` 排障：`FROM_ADDRESS_INVALID` 检查最终发件邮箱；`AUTHENTICATION` 检查服务商SMTP开关及专用授权凭据；`TLS` 检查证书、信任链与协议端口；`DNS`、`CONNECTION`、`TIMEOUT` 检查网络和有限超时；`DELIVERY` 检查许可发件身份、收件策略与供应商额度；`CLIENT_CONFIGURATION` 检查本地邮件生成配置；`WORKER_REJECTED` 检查有界工作线程的生命周期或负载；`UNKNOWN` 结合安全异常类型继续定位。日志只包含类别、有界异常类型、协议与端口，不包含原始message/cause、邮箱、验证码或凭据。修改私密配置后重新加载资源并重启服务；保留TLS及服务端身份校验，不通过开启SMTP debug或自动重发来排障。
+验证码发送失败对外仍返回503与 `PROTOTYPE_HUB_REVIEW_MAIL_UNAVAILABLE`，不返回邮件服务商原始异常。查看共用 `SmtpMailTransport` 的固定 `reason` 排障：`FROM_ADDRESS_INVALID` 检查最终发件邮箱；`AUTHENTICATION` 检查服务商SMTP开关及专用授权凭据；`TLS` 检查证书、信任链与协议端口；`DNS`、`CONNECTION`、`TIMEOUT` 检查网络和有限超时；`DELIVERY` 检查许可发件身份、收件策略与供应商额度；`CLIENT_CONFIGURATION` 检查本地邮件生成配置；`WORKER_REJECTED` 检查有界工作线程的生命周期或负载；`UNKNOWN` 结合安全异常类型继续定位。日志只包含类别、有界异常类型、协议与端口，不包含原始message/cause、邮箱、验证码或凭据。修改私密配置后重新加载资源并重启服务；保留TLS及服务端身份校验，不通过开启SMTP debug或自动重发来排障。
+
+共用传输返回 `accepted/failed/unknown` 及固定原因，不保留异常 cause。`accepted` 只表示 SMTP 服务商受理，不证明到达收件箱或已读。只有明确发送前的 DNS、连接或工作池拒绝可返回 `knownPreSendRetryable=true`；超时、DATA 后断连、部分发送或无法确定阶段的异常均为 `unknown`，不能自动重发。固定原因另含 `NOT_CONFIGURED`、`BUSINESS_NOT_ALLOWED` 和 `INVALID_MESSAGE`。基础 OTP 将所有非受理结果保持为原有503，失败仍占限额。
+
+SMTP专用工作池的 MBean 为 `org.jetlinks:type=NotificationSmtp,name=shared`，只读 `Active/Queued/Completed/Rejected` 计数，四个工作线程、全局64个等待任务。注册或注销失败不阻断主业务；MBean不暴露收件人、正文、验证码或重发操作。单次传输使用 `notification.smtp.send` Observation，仅记录固定purpose、outcome和reason。
 
 HTTPS终止或开发代理改写Host时，显式设置 `prototype-hub.review.trusted-origin=https://your-platform.example`；本地Vite通常为 `http://localhost:5173`，以浏览器实际地址为准，localhost与127.0.0.1不同。该值只能是单一完整HTTP/HTTPS origin，不含路径、查询、片段或账号；设置后仅接受它，不同时放开后台地址。缺省严格比较请求URI，不为此新增任意Forwarded信任或凭据CORS。
 

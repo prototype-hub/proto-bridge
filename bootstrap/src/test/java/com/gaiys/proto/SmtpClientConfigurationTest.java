@@ -3,9 +3,11 @@ package com.gaiys.proto;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.gaiys.proto.configuration.OptionalMailHealthConfiguration;
+import com.gaiys.proto.notification.BusinessMailPolicy;
+import com.gaiys.proto.notification.SmtpMailTransport;
+import com.gaiys.proto.notification.SmtpWork;
 import com.gaiys.proto.prototypehub.exception.PrototypeHubException;
 import com.gaiys.proto.prototypehub.service.notification.SmtpNotificationGateway;
-import com.gaiys.proto.prototypehub.storage.work.FileWork;
 import io.micrometer.observation.ObservationRegistry;
 import java.io.IOException;
 import java.io.UncheckedIOException;
@@ -33,6 +35,78 @@ import reactor.test.StepVerifier;
 
 /** 从实际主YAML装配Boot邮件客户端；不连接外部SMTP，也不复制另一套默认配置。 */
 class SmtpClientConfigurationTest {
+    @Test
+    void businessUsesSameLoopbackTransportAndLostDataAcknowledgementIsNeverRetryable()
+            throws IOException {
+        try (var mailbox = new LocalReviewMailbox();
+                var work = new SmtpWork()) {
+            configured()
+                    .withPropertyValues(
+                            "spring.mail.host=127.0.0.1",
+                            "spring.mail.port=" + mailbox.port(),
+                            "spring.mail.protocol=smtp",
+                            "spring.mail.username=identity@example.invalid",
+                            "spring.mail.password=",
+                            "spring.mail.properties.mail.smtp.auth=false",
+                            "spring.mail.properties.mail.smtp.starttls.enable=false",
+                            "spring.mail.properties.mail.smtp.starttls.required=false",
+                            "spring.mail.properties.mail.smtp.ssl.enable=false",
+                            "spring.mail.properties.mail.smtp.timeout=300")
+                    .run(
+                            context -> {
+                                assertNull(context.getStartupFailure());
+                                var policies =
+                                        new org.springframework.beans.factory.support
+                                                .DefaultListableBeanFactory();
+                                var transport =
+                                        new SmtpMailTransport(
+                                                context.getBeanProvider(JavaMailSender.class),
+                                                context.getEnvironment(),
+                                                work,
+                                                ObservationRegistry.NOOP,
+                                                policies.getBeanProvider(BusinessMailPolicy.class));
+                                StepVerifier.create(
+                                                transport.sendBusiness(
+                                                        "recipient@example.invalid",
+                                                        "Fixture notice",
+                                                        "Safe event 123456"))
+                                        .expectNext(
+                                                new com.gaiys.proto.notification.MailDeliveryResult(
+                                                        "failed", "BUSINESS_NOT_ALLOWED", false))
+                                        .verifyComplete();
+                                assertEquals(0, mailbox.pendingMessages());
+                                policies.registerSingleton(
+                                        "policy",
+                                        (BusinessMailPolicy) reactor.core.publisher.Mono::empty);
+                                StepVerifier.create(
+                                                transport.sendBusiness(
+                                                        "recipient@example.invalid",
+                                                        "Fixture notice",
+                                                        "Safe event 123456"))
+                                        .expectNext(
+                                                new com.gaiys.proto.notification.MailDeliveryResult(
+                                                        "accepted", "ACCEPTED", false))
+                                        .verifyComplete();
+                                assertEquals(
+                                        "recipient@example.invalid",
+                                        assertDoesNotThrow(mailbox::receive).recipient());
+                                mailbox.pauseDelivery();
+                                StepVerifier.create(
+                                                transport.sendBusiness(
+                                                        "recipient@example.invalid",
+                                                        "Fixture notice",
+                                                        "Safe event 654321"))
+                                        .expectNext(
+                                                new com.gaiys.proto.notification.MailDeliveryResult(
+                                                        "unknown", "TIMEOUT", false))
+                                        .verifyComplete();
+                                assertEquals("654321", assertDoesNotThrow(mailbox::receive).code());
+                                assertEquals(0, mailbox.pendingMessages());
+                                mailbox.deliver();
+                            });
+        }
+    }
+
     private ApplicationContextRunner configured() {
         return new ApplicationContextRunner()
                 .withConfiguration(
@@ -378,7 +452,7 @@ class SmtpClientConfigurationTest {
     void blankFromFallbackSendsThroughRealLoopbackSmtpAndProviderRejectionStaysPrivate()
             throws IOException {
         try (var mailbox = new LocalReviewMailbox();
-                var work = new FileWork()) {
+                var work = new SmtpWork()) {
             configured()
                     .withPropertyValues(
                             "spring.mail.host=127.0.0.1",
@@ -399,10 +473,14 @@ class SmtpClientConfigurationTest {
                                 assertNull(context.getStartupFailure());
                                 var gateway =
                                         new SmtpNotificationGateway(
-                                                context.getBeanProvider(JavaMailSender.class),
-                                                context.getEnvironment(),
-                                                work,
-                                                ObservationRegistry.NOOP);
+                                                new SmtpMailTransport(
+                                                        context.getBeanProvider(
+                                                                JavaMailSender.class),
+                                                        context.getEnvironment(),
+                                                        work,
+                                                        ObservationRegistry.NOOP,
+                                                        context.getBeanProvider(
+                                                                BusinessMailPolicy.class)));
                                 StepVerifier.create(
                                                 gateway.sendVerification(
                                                         "recipient@example.invalid", "123456"))

@@ -28,9 +28,11 @@ Redis 使用专用受信数据库、限制网络与写权限；多实例需要�
 
 Docker Compose 使用 `.env.example` 指定的必要变量插值，不自动读取宿主机本地 YAML。保留 `- "属性路径=值"` 的覆盖方式；同栈容器使用服务名/内部端口，外部模式填写可达的地址和认证，详见 [运维指南](OPERATIONS.md)。
 
-## 邮件验证客户端
+## 共用邮件客户端
 
 标准 `spring.mail.*` 及SMTP/SMTPS传输属性集中在application.yml，默认host为空，不影响无邮件部署；保持application-default.yml中的已有变量分层。可用 `SPRING_MAIL_HOST/PORT/USERNAME/PASSWORD`、`SMTP_FROM`，其他属性按主配置声明的变量或精确属性路径覆盖。默认SMTP587要求认证及STARTTLS，SMTPS需显式选择协议/端口；连接、读、写默认各五秒。发件凭据放环境或私密配置，不提交源码；仅loopback测试允许显式关闭认证/TLS。具体Origin、Cookie、本机身份和超时边界见[运维说明](OPERATIONS.md#邮箱身份与smtp)。
+
+`modules/notification-manager` 持有唯一 `NotificationMailTransport`，OTP 与可选业务邮件复用上述标准客户端和私密配置。基础 OTP 入口仅接受单邮箱及六位验证码；业务入口仅接受单邮箱、最多200字符的无换行主题及最多8192字符的纯文本正文，每次发送必须通过 `BusinessMailPolicy`，未装配策略默认拒绝。策略只负责业务权益，调用方仍负责账号、项目和收件范围。基础版无需高级模块或业务授权即可使用 OTP。
 
 ## 日志与公开展示
 
