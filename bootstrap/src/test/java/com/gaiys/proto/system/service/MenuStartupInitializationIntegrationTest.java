@@ -86,6 +86,7 @@ class MenuStartupInitializationIntegrationTest {
                         "prototype-hub-statistics",
                         "prototype-hub-license",
                         "prototype-hub-search",
+                        "prototype-hub-diagnostics",
                         "615414e79a20b30ea5e0babd4e2ef756",
                         "system-basis",
                         "system-user",
@@ -105,7 +106,7 @@ class MenuStartupInitializationIntegrationTest {
         assertEquals(43, existing.values().stream().mapToInt(row -> row.getButtons().size()).sum());
         assertFalse(
                 Boolean.TRUE.equals(initialization.initializeIfEmpty(unreadable()).block(TIMEOUT)));
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
         assertEquals("原型项目", existing.get("protohub").getName());
         assertEquals("基础配置", existing.get("system-basis").getName());
         assertEquals("用户管理", existing.get("system-user").getName());
@@ -328,7 +329,7 @@ class MenuStartupInitializationIntegrationTest {
         Map<String, MenuEntity> actual =
                 menus.createQuery().fetch().collectMap(MenuEntity::getId).block(TIMEOUT);
         assertNotNull(actual);
-        assertEquals(18, actual.size());
+        assertEquals(19, actual.size());
         assertPackagedButtonPermissions(actual);
         List<MenuEntity> expected;
         try (var input =
@@ -374,7 +375,7 @@ class MenuStartupInitializationIntegrationTest {
         String admin = login("admin");
         JsonNode tree = call("POST", "/menu/_all/tree", admin, Map.of());
         assertEquals(2, tree.size());
-        assertEquals(18, menuCodes(tree).size());
+        assertEquals(19, menuCodes(tree).size());
         assertEquals("system/Log/Access", find(tree, "system-access-log").path("code").asText());
         JsonNode englishTree = call("POST", "/menu/_all/tree", admin, Map.of(), "en-US");
         JsonNode chineseTree = call("POST", "/menu/_all/tree", admin, Map.of(), "zh-CN");
@@ -419,7 +420,7 @@ class MenuStartupInitializationIntegrationTest {
     @Test
     void startupRunnerImportsResourceWithAdministratorAndMemberHttpVisibility() {
         startup.run(new DefaultApplicationArguments());
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
         String admin = login("admin");
         JsonNode administratorTree = call("POST", "/menu/user-own/tree", admin, Map.of());
         Set<String> administratorCodes = menuCodes(administratorTree);
@@ -431,6 +432,7 @@ class MenuStartupInitializationIntegrationTest {
                         "prototype-hub/Statistics",
                         "prototype-hub/License",
                         "prototype-hub/Search",
+                        "prototype-hub/Diagnostics",
                         "system",
                         "system/Basis",
                         "system/User",
@@ -539,7 +541,7 @@ class MenuStartupInitializationIntegrationTest {
                 () -> initialization.initializeIfEmpty(mismatched).block(TIMEOUT));
         assertEquals(0, menus.createQuery().count().block(TIMEOUT));
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
         assertTrue(
                 menus.createQuery()
                         .fetch()
@@ -564,7 +566,7 @@ class MenuStartupInitializationIntegrationTest {
             assertEquals(0, menus.createQuery().count().block(TIMEOUT));
         }
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
     }
 
     @Test
@@ -609,7 +611,7 @@ class MenuStartupInitializationIntegrationTest {
                     .block(TIMEOUT);
         }
         assertTrue(Boolean.TRUE.equals(initialization.initializeIfEmpty().block(TIMEOUT)));
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
     }
 
     @Test
@@ -637,7 +639,7 @@ class MenuStartupInitializationIntegrationTest {
         assertNotNull(result);
         assertNotEquals(result.getT1(), result.getT2());
         assertEquals(1, reads.get());
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
     }
 
     @Test
@@ -905,7 +907,7 @@ class MenuStartupInitializationIntegrationTest {
                         .block(TIMEOUT);
         assertNotNull(outcomes);
         assertNotEquals(outcomes.getT1(), outcomes.getT2());
-        assertEquals(18, menus.createQuery().count().block(TIMEOUT));
+        assertEquals(19, menus.createQuery().count().block(TIMEOUT));
         var parent = menus.findById("131a644480a0c3253a08103fedfe3280").block(TIMEOUT);
         var recycle = menus.findById("prototype-hub-recycle").block(TIMEOUT);
         assertTrue(recycle.getPath().startsWith(parent.getPath()));

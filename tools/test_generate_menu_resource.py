@@ -106,10 +106,10 @@ class MenuResourceLanguageTest(unittest.TestCase):
         roots = json.loads(PACKAGED.read_text())
         rows = flatten(roots)
         self.assertEqual(2, len(roots))
-        self.assertEqual(17, len(rows))
+        self.assertEqual(19, len(rows))
         self.assertEqual({
             "prototype-hub", "prototype-hub/Project", "prototype-hub/Recycle",
-            "prototype-hub/Statistics", "prototype-hub/License", "system", "system/Basis",
+            "prototype-hub/Statistics", "prototype-hub/License", "prototype-hub/Search", "prototype-hub/Diagnostics", "system", "system/Basis",
             "system/User", "system/Department", "system/Role", "system/Menu", "system/Permission",
             "system/Dictionary", "system/Positions", "system/Log", "system/Log/Access", "system/Log/System",
         }, {row["code"] for row in rows.values()})

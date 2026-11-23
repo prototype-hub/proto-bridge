@@ -79,6 +79,14 @@ public class MenuStartupInitializationService {
                 "prototype-hub-license", "prototype-hub/License", "/prototype-hub/license");
     }
 
+    /** 仅补诊断入口，不覆盖定制或禁用菜单，也不扩充已有角色授权。 */
+    public Mono<Boolean> ensureDiagnosticsMenuIfMissing() {
+        return ensureBuiltInMenuIfMissing(
+                "prototype-hub-diagnostics",
+                "prototype-hub/Diagnostics",
+                "/prototype-hub/diagnostics");
+    }
+
     /** 仅补缺失搜索入口，复用版本query动作，不改任何角色授权或定制菜单。 */
     public Mono<Boolean> ensureSearchMenuIfMissing() {
         return ensureBuiltInMenuIfMissing(

@@ -631,3 +631,19 @@ The regular `PagerResult` contains `data`, `total`, `pageIndex` and `pageSize`. 
 Search does not generate public links or replace source authorization. Opening the fixed source rechecks existing preview, material and feedback permissions. Deleted projects/versions and missing or inconsistent parent chains are excluded before count and paging. Changes, removals and membership revocation affect subsequent queries without reindexing.
 
 Material source navigation may include the opaque `materialId` together with its fixed revision and controlled materials tool marker. The workspace uses the direct metadata endpoint to locate that exact material, even outside the current list page. It does not scan all pages, add a synthetic list row or put the keyword/document text in the URL. Missing, deleted, mismatched or revoked sources keep the existing authorization failures.
+
+## Local runtime diagnostics
+
+`GET /prototype-hub/diagnostics` requires `prototype-hub-diagnostics:query` and a currently active `ADMIN` role. Both are rechecked before returning the snapshot. The standard result envelope contains `schemaVersion: 1`, `collectedAt` (Unix milliseconds at collection start), `complete` and five fixed `checks`: `database`, `storage`, `cleanup`, `mail`, `license`. Responses use `Cache-Control: no-store`. If current authorization cannot be revalidated (for example the authentication database is unavailable), the request fails closed rather than returning a partial snapshot.
+
+Each check has `status` (`ok`, `warning`, `error`, `timeout`), a fixed `code`, and typed `data`. A failed/empty probe returns `error / UNAVAILABLE / null`; after three seconds it returns `timeout / TIMEOUT / null`. Probes run independently without retry, so the result is an observation over a short interval rather than a transaction. `complete` means every check supplied data; a warning with data remains complete.
+
+| Check | Allowed data / meaning |
+| --- | --- |
+| database | `projects: {used, limit, remaining, overLimit, canCreate}` from actual capacity usage; retained soft-deleted projects still count. `-1` retains unlimited semantics where supported by the capacity provider. |
+| storage | `writable`, `freeBytes`, `minimumFreeBytes` (10485760), `scope: nearest_existing_parent`; reads the nearest existing storage ancestor without creating or writing a file. This does not verify stored content or directory ownership. |
+| cleanup | `pending` counts all persisted file-cleanup tasks; `due` counts recognized types due at `collectedAt`; `retried` counts tasks with prior failed attempts; `unknown` counts unrecognized types, which remain retained. No retry or deletion is triggered. |
+| mail | `configured`, plus this application's SMTP worker `active`, `queued`, `completed`, `rejected` counts. Configuration presence is not connectivity, authentication, acceptance or delivery proof; the probe never connects or sends. |
+| license | `status`, `trustConfigured`, `capacitySource`, `projectLimit`, `versionLimit`, `advancedModuleAvailable`, `advancedStatus`, `enabledFeatureCount`; no credential document, customer, installation ID, lineage, key ID, fingerprint or feature identifiers. Unknown extension status strings become `unknown`. |
+
+Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`, `MAIL_NOT_CONFIGURED`, `SMTP_BUSY`; normal data uses `OK`. No arbitrary exception text, filename, path, host, recipient, identity or configuration map is returned. The UI exports the already displayed snapshot as JSON and does not collect again for export. This read-only view performs no repair, sends no telemetry, and is not a release/security scan or full backup/integrity assessment.
