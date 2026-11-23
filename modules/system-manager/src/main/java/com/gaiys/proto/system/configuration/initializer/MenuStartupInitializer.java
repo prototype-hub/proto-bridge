@@ -30,6 +30,7 @@ public class MenuStartupInitializer implements ApplicationRunner {
                 .then(initialization.ensureStatisticsMenuIfMissing())
                 .then(initialization.ensureLicenseMenuIfMissing())
                 .then(initialization.ensureSearchMenuIfMissing())
+                .then(initialization.ensureDiagnosticsMenuIfMissing())
                 .block(Duration.ofMinutes(2));
     }
 }

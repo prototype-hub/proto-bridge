@@ -373,6 +373,41 @@
             }
           }
         ]
+      },
+      {
+        "id": "prototype-hub-diagnostics",
+        "parentId": "131a644480a0c3253a08103fedfe3280",
+        "name": "本地运行诊断",
+        "code": "prototype-hub/Diagnostics",
+        "url": "/prototype-hub/diagnostics",
+        "icon": "MedicineBoxOutlined",
+        "sortIndex": 5,
+        "describe": null,
+        "assetType": null,
+        "indirectMenus": [],
+        "options": {
+          "show": true
+        },
+        "i18nMessages": {
+          "name": {
+            "zh_CN": "本地运行诊断",
+            "en_US": "Local diagnostics",
+            "en": "Local diagnostics"
+          }
+        },
+        "owner": "proto",
+        "enabled": true,
+        "accessSupport": "unsupported",
+        "componentCode": "prototype-hub/Diagnostics",
+        "permissions": [
+          {
+            "permission": "prototype-hub-diagnostics",
+            "actions": [
+              "query"
+            ]
+          }
+        ],
+        "buttons": []
       }
     ]
   },

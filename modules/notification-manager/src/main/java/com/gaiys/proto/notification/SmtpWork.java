@@ -48,6 +48,17 @@ public class SmtpWork implements AutoCloseable {
         return Mono.fromCallable(operation).subscribeOn(scheduler);
     }
 
+    /** 当前应用实例的只读计数；不读取可能属于另一上下文的平台MBean。 */
+    public Snapshot snapshot() {
+        return new Snapshot(
+                executor.getActiveCount(),
+                executor.getQueue().size(),
+                executor.getCompletedTaskCount(),
+                rejected.get());
+    }
+
+    public record Snapshot(int active, int queued, long completed, long rejected) {}
+
     @PostConstruct
     void registerMonitor() {
         try {
