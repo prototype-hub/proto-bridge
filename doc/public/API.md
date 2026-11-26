@@ -668,3 +668,23 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 成功记录返回 `id,projectId,versionId,revisionId,pageId`、六个文本字段、可空的 `anchor` 及 `configVersion,createdAt,updatedAt`。创建并发版本为0，更新每次递增；`expectedVersion` 是必填的非负JSON整数。过期并发版本或版本溢出返回409 / `PROTOTYPE_HUB_ELEMENT_DESCRIPTION_CONFLICT`，客户端保留草稿并显式重读。缺失或不在固定范围内返回404 / `PROTOTYPE_HUB_ELEMENT_DESCRIPTION_NOT_FOUND`；字段验证400，未登录401，菜单/角色不足403。
 
 所有写入使用1–128个可打印非空白ASCII字符的 `clientRequestId`。同账号/动作/固定页的原键与完整规范化输入精确重放，不新建、不重复递增；在同一账号/动作/固定页面范围内，同键改变文本、几何、对象或并发版本返回409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。网络结果未知时保留原键和完整payload，由用户显式同键恢复，不把取消HTTP当作回滚。更新/创建键若对应说明已被删除则冲突，不复活记录；成功删除键可重放true，但仍须满足当前EDIT和固定范围授权。删除只移除当前说明，回执保留至版本永久清理。
+
+## 固定修订交付说明书
+
+内部成员可从固定修订的「页面资源」打开会话编辑器，显式选择真实页面及来源，整理标题、前言和每页普通文本，再导出同一草稿。入口不保存文档，不创建审批、回执或历史。菜单query与当前项目READ取交集；项目只读成员也可在当前会话编辑并导出。分享和guest没有入口。
+
+接口根路径为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/delivery-document`：
+
+| 方法与相对路径 | 行为 |
+|---|---|
+| `POST /_assemble` | 核对真实范围与来源版本，返回可编辑正文、真实页面名称/路径及每页来源指纹 |
+| `POST /_export/markdown` | 复核来源后下载 `delivery-document.zip`，内含 `说明书.md` 及相对 `images/` 文件 |
+| `POST /_export/html` | 复核来源后下载单文件 `delivery-document.html`，PNG/JPEG以有界data URI内嵌 |
+
+组装体为 `{locale:'zh'|'en',title,introduction,pages:[{pageId,descriptions:[{id,expectedVersion}],materials:[{id,expectedVersion,includeText}],images:[{id,expectedVersion,caption}],checks:[{id,expectedVersion}]}]}`。页面必须是该固定清单中的非目录HTML页面；一个真实HTML页可以同时包含子页。页面与来源顺序以请求为准。各列表默认空，禁止同页同类重复ID。F13资料属于修订，必须由成员显式关联页面，不按文件名推断。`includeText:true` 只引用已经READY的正文，不触发提取；来源地址只作普通文本，不抓取远端。图片仅支持该修订中用户上传的PNG/JPEG原始图片，不把PDF派生预览或原型自动截图当作来源。checks只引用现有人工视口自测，不产生自动验收或审批结论。
+
+响应为 `{projectId,versionId,revisionId,locale,title,introduction,pages:[{pageId,name,path,body,sourceFingerprint,descriptions,materials,images,checks}]}`。导出体同组装体，但每页必须携带编辑后的 `body` 和组装时的 `sourceFingerprint`。来源指纹绑定真实固定范围、来源内容、版本及F13提取元数据；修改来源选择、includeText或caption后须明确重新组装。重排或移除页面时，保留页的正文和指纹按pageId保持，不按下标迁移。服务端不接受客户端页面名称、文件路径或来源正文冒充真实来源。
+
+限制：1–50个页面，说明/资料/人工记录引用合计至多200次，图片引用至多10次；标题1–120字符，前言至多4000字符，每页正文至多20000字符，图片注释至多500字符。所有普通文本UTF-8合计至多1MiB，图片原始字节合计至多15MiB；同源多次引用分别计数。超限明确拒绝，不截断。HTTP单字段格式、长度或必填校验沿既有DTO机制返回400；跨字段引用总量、UTF-8总量、真实图片及服务端组装正文超限返回413 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_LIMIT`。无效或重复选择返回400 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_INVALID`。被引用来源删除、范围不符、版本或指纹变化、READY正文不可用时返回409 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_SOURCE_CHANGED`，客户端保留草稿供显式重读/重新组装。
+
+导出在文件处理完成后再次核对活跃账号、当前query权限、项目成员与软删除状态、真实来源指纹。下载为private no-store、nosniff附件。Markdown不解释用户HTML/链接语法；HTML只含转义文字与离线图片，并用严格CSP禁止脚本、远端资源、frame和表单提交。不执行原型、不提取DOM、不自动截图，不提供PDF/DOCX、模板或持久化文档管理。
