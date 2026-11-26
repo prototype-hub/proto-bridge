@@ -344,3 +344,10 @@ Only schemaVersion2 credential declarations are interpreted: absolute installati
 Basic search adds no separate business table, automatic text backfill, asynchronous search index or credential fields. Its three queries read `p_copy_entry` with `p_copy_snapshot`, `p_revision_material`, or `p_review_message` with `p_review_thread`, joined to the same active project, logical version and fixed revision. Material search includes its persisted `text_content` alongside filename/source metadata. COUNT and page selection share the project/member predicate; orphaned or mismatched source chains do not produce results. Source-specific permissions are retained: READ for collected copy/material text and EDIT for all feedback search.
 
 The search request does not read original document files, extract missing text, fetch source URLs or populate missing copy snapshots. Existing source backups, retention and deletion remain authoritative, including derived material text in the same row. The default Search menu uses the existing version query action; startup only supplies a missing built-in entry and preserves custom/disabled entries and role grants.
+
+
+## 固定页面区域功能说明
+
+EasyORM仅增补 `p_element_description`、索引 `(revision_id,page_id,created_at,id)` 和 `version_id`，不回填旧页面或改写旧表。每行包含固定 `project_id/version_id/revision_id/page_id`，普通文本 `title/purpose/input_rules/permission_rules/navigation_rules/notes`、可空的JSON编码 `anchor`、独立 `config_version/created_at/updated_at`。几何仅保存根文档快照，不是DOM标识；新修订不会复制说明。软删除阻止访问，恢复后仍属原固定修订；版本30天到期永久清理时，同事务清除说明及归属该版本的持久回执。人工删除说明仍保留回执，防止旧创建键复活记录。
+
+数据库备份和完整业务表核对包含非空说明的全部字段；`element_descriptions` 与 `business_rows_p_element_description` 记录数量/完整行摘要，不输出标题、正文或几何。存储引用导出保持 `formatVersion:4`，新增可选 `elementDescriptionReferencesChecked`：true只证明项目/版本/修订与清单真实叶子页关联已核验，不证明业务说明正确或几何仍可定位；旧报告缺该标记不能作为新增表已核验的证据。

@@ -6,6 +6,8 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_mate
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_viewport_check_table')) IS NOT NULL AS prototype_hub_has_viewport_checks \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL
  AS prototype_hub_has_work_items \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_element_description_table')) IS NOT NULL
+ AS prototype_hub_has_element_descriptions \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_delivery_table')) IS NOT NULL
  AS prototype_hub_has_page_deliveries \gset
 \set prototype_hub_review_thread_table :prototype_hub_table_prefix 'review_thread'
@@ -171,6 +173,20 @@ WITH storage_references AS (
   OR v.project_id IS DISTINCT FROM w.project_id OR r.project_id IS DISTINCT FROM w.project_id
   OR r.version_id IS DISTINCT FROM w.version_id
 \endif
+\if :prototype_hub_has_element_descriptions
+ UNION ALL
+ SELECT d.id FROM :"prototype_hub_element_description_table" d
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=d.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=d.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=d.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM d.project_id OR r.project_id IS DISTINCT FROM d.project_id
+  OR r.version_id IS DISTINCT FROM d.version_id
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',
+   jsonb_build_object('page',d.page_id)),false)
+ -- Plain-text fields and static geometry stay in the private backup, never in this export.
+\endif
 \if :prototype_hub_has_page_deliveries
  UNION ALL
  SELECT d.id FROM :"prototype_hub_page_delivery_table" d
@@ -264,6 +280,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'materialReferencesChecked',:'prototype_hub_has_revision_materials'::boolean,
  'receiptReferencesChecked',:'prototype_hub_has_receipt_revision'::boolean,
  'pageDeliveryReferencesChecked',:'prototype_hub_has_page_deliveries'::boolean,
+ 'elementDescriptionReferencesChecked',:'prototype_hub_has_element_descriptions'::boolean,
  'imageReferencesChecked',(:'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
  'entries',coalesce(json_agg(json_build_object('id',version_id,'projectId',project_id,
@@ -293,7 +310,8 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
 -- A current-only export is useful for diagnosis, but can never authorize repair.
 SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',2,
  'sourceSchema','legacy-current-only','referencesComplete',false,
- 'receiptReferencesChecked',false,'pageDeliveryReferencesChecked',false,'integrityErrors',null,
+ 'receiptReferencesChecked',false,'pageDeliveryReferencesChecked',false,
+ 'elementDescriptionReferencesChecked',false,'integrityErrors',null,
  'entries',coalesce(json_agg(json_build_object('id',id,'projectId',project_id,
  'revisionId',null,'storagePath',storage_path) ORDER BY project_id,id,storage_path)
  FILTER (WHERE storage_path IS NOT NULL),'[]'::json)) FROM :"prototype_hub_version_table";

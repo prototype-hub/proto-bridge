@@ -647,3 +647,24 @@ Each check has `status` (`ok`, `warning`, `error`, `timeout`), a fixed `code`, a
 | license | `status`, `trustConfigured`, `capacitySource`, `projectLimit`, `versionLimit`, `advancedModuleAvailable`, `advancedStatus`, `enabledFeatureCount`; no credential document, customer, installation ID, lineage, key ID, fingerprint or feature identifiers. Unknown extension status strings become `unknown`. |
 
 Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`, `MAIL_NOT_CONFIGURED`, `SMTP_BUSY`; normal data uses `OK`. No arbitrary exception text, filename, path, host, recipient, identity or configuration map is returned. The UI exports the already displayed snapshot as JSON and does not collect again for export. This read-only view performs no repair, sends no telemetry, and is not a release/security scan or full backup/integrity assessment.
+
+
+## 固定页面区域功能说明
+
+内部成员在 `/prototype-hub/versions/{versionId}/element-descriptions` 管理人工说明；菜单 `query` 与当前项目 READ 取交集，全部写入使用菜单 `save` 与当前 EDIT 取交集。分享、guest 和预览资源会话不授予此能力。每次操作重验活跃账号、项目成员及未软删的项目/版本，不接受客户端项目归属或文件路径。
+
+| 方法及路径 | 请求 |
+| --- | --- |
+| `POST /_query` | `revisionId,pageId,keyword?,pageIndex?,pageSize?` |
+| `GET /{id}?revisionId=…&pageId=…` | 按固定范围重读单项，供冲突恢复 |
+| `POST /` | `revisionId,pageId,title,purpose?,inputRules?,permissionRules?,navigationRules?,notes?,anchor?,clientRequestId` |
+| `PUT /{id}` | 与创建相同的完整替换正文，再加 `expectedVersion` |
+| `POST /{id}/_delete` | `revisionId,pageId,expectedVersion,clientRequestId` |
+
+`revisionId` 必须是指定版本的固定修订，`pageId` 必须是不可变清单里的真实叶子页。列表默认每页20项，上限100；`pageIndex` 从0起且最多10000，`keyword` 最长120，按标题字面包含匹配，百分号和下划线不解释为通配符。所有范围/标题条件先于数据库 COUNT/LIMIT。
+
+`title` 必填且最多120字符；`purpose/inputRules/permissionRules/navigationRules` 各最多2000，`notes` 最多4000，省略或null的可选正文规范为空串。全部字段是普通文本，不解释HTML、URL或代码；正文和标题筛选拒绝数据库文本不支持的 NUL（U+0000），保留制表符与换行。可选 `anchor` 完整复用 `root-document-css-px-v1` 点/矩形/椭圆校验，仅表示当时的静态几何；不读取DOM语义、不跨frame、不随新修订迁移，也不赋予访问权限。
+
+成功记录返回 `id,projectId,versionId,revisionId,pageId`、六个文本字段、可空的 `anchor` 及 `configVersion,createdAt,updatedAt`。创建并发版本为0，更新每次递增；`expectedVersion` 是必填的非负JSON整数。过期并发版本或版本溢出返回409 / `PROTOTYPE_HUB_ELEMENT_DESCRIPTION_CONFLICT`，客户端保留草稿并显式重读。缺失或不在固定范围内返回404 / `PROTOTYPE_HUB_ELEMENT_DESCRIPTION_NOT_FOUND`；字段验证400，未登录401，菜单/角色不足403。
+
+所有写入使用1–128个可打印非空白ASCII字符的 `clientRequestId`。同账号/动作/固定页的原键与完整规范化输入精确重放，不新建、不重复递增；在同一账号/动作/固定页面范围内，同键改变文本、几何、对象或并发版本返回409 / `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。网络结果未知时保留原键和完整payload，由用户显式同键恢复，不把取消HTTP当作回滚。更新/创建键若对应说明已被删除则冲突，不复活记录；成功删除键可重放true，但仍须满足当前EDIT和固定范围授权。删除只移除当前说明，回执保留至版本永久清理。

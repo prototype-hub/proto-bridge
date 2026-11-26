@@ -227,3 +227,10 @@ Open **Local diagnostics** under Prototype Management with an active administrat
 Refresh collects five bounded, read-only local observations. A partial result keeps successful sections available; retry a failed probe after checking local service logs, without sending raw logs or configuration to support. `complete` describes collection completeness only. Soft-deleted projects occupy capacity until durable cleanup succeeds. File space/writability is for the nearest existing ancestor and does not prove write access to a future child, integrity or backup recoverability. Cleanup counts may change concurrently; `unknown` is retained for manual classification, never a command to delete files. This page never invokes cleanup or SMTP connection tests. SMTP queue counters belong to this application instance, are approximate concurrent observations, and reset with its process; configured does not mean delivered.
 
 Download exports the same displayed allowlisted JSON. It omits credentials, installation/customer/user IDs, filenames, paths, hosts, recipients, license documents and exception text. Review the preview before sharing even an aggregate snapshot. There is no upload or telemetry endpoint. The browser clears displayed diagnostics after authorization loss; a locally downloaded file cannot be remotely recalled. For connectivity, integrity, restore drills or release approval, follow their separate procedures rather than treating a green diagnostics page as evidence. Rolling back the matching frontend/backend only removes this view and API; existing business data and queue state remain unchanged.
+
+
+## 区域人工功能说明升级与恢复
+
+停止旧写入及永久清理节点，联合备份数据库和私有文件后在隔离副本验证。EasyORM纯新增 `p_element_description` 与两个索引；确认描述同步成功，再配套升级前端。不能混跑不认识新增说明表的旧永久清理逻辑。无新增配置、通知、外发、后台队列或文件迁移；旧版本回滚保留新增表，不做破坏性删表。
+
+恢复演练必须包含至少一条非空说明、完整六字段、可选几何、CAS版本和原请求回执，重启及隔离恢复后核对固定页查询、原键重放与完整行摘要。备份按项目私有资料保护，不在验收输出打印正文。`snapshot-db.sql` / `preflight-db.sql` 纳入表和索引；存储导出通过 `elementDescriptionReferencesChecked:true` 证明固定页引用已核验，缺该标记的旧报告不能冒充新增能力恢复证据。永久清理后核对说明和回执均已删除，而未到期版本保持完整。

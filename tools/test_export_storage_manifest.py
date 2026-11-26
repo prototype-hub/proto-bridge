@@ -10,13 +10,15 @@ import uuid
 
 TOOLS = Path(__file__).resolve().parent
 CONTAINER = os.environ.get('PROTO_STORAGE_TEST_CONTAINER')
+DATABASE_USER = os.environ.get('PROTO_STORAGE_TEST_USER', 'postgres')
+DATABASE_NAME = os.environ.get('PROTO_STORAGE_TEST_DATABASE', 'postgres')
 
 
 @unittest.skipUnless(CONTAINER, 'requires an owned disposable PROTO_STORAGE_TEST_CONTAINER')
 class StorageExportPostgresTest(unittest.TestCase):
     def sql(self, source):
         result = subprocess.run(['docker', 'exec', '-i', CONTAINER, 'psql', '-X', '-qAt',
-                                 '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'],
+                                 '-v', 'ON_ERROR_STOP=1', '-U', DATABASE_USER, '-d', DATABASE_NAME],
                                 input=source, capture_output=True, text=True, timeout=30)
         self.assertEqual(0, result.returncode, result.stderr)
         return result.stdout.strip()
@@ -85,6 +87,7 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertTrue(manifest['receiptReferencesChecked'])
         self.assertTrue(manifest['imageReferencesChecked'])
         self.assertFalse(manifest['pageDeliveryReferencesChecked'])
+        self.assertFalse(manifest['elementDescriptionReferencesChecked'])
         self.assertEqual(0, manifest['integrityErrors'])
         self.assertEqual({'public-message', 'internal-message'},
                          {row['messageId'] for row in manifest['imageEntries']})
@@ -178,6 +181,63 @@ class StorageExportPostgresTest(unittest.TestCase):
                          "UPDATE p_work_item SET project_id=null;"):
             with self.subTest(mutation=mutation):
                 self.assertGreater(self.export(create + mutation)['integrityErrors'], 0)
+
+    def create_element_description(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_share ADD COLUMN token text;
+          ALTER TABLE p_version ADD COLUMN status text;
+          ALTER TABLE p_revision ADD COLUMN manifest_json text;
+          UPDATE p_revision SET manifest_json='{"pages":[{"pageId":"page","path":"index.html","folder":false,"children":[]}]}';
+          CREATE TABLE p_element_description(id text primary key,project_id text,version_id text,
+            revision_id text,page_id text,title text,purpose text,input_rules text,permission_rules text,
+            navigation_rules text,notes text,anchor text,config_version bigint,created_at bigint,updated_at bigint);
+          INSERT INTO p_element_description VALUES('description','project','version','r1','page',
+            'Private object title','Private purpose','Private input','Private permission','Private navigation',
+            'Private notes','{"shape":"point","x":12}',0,100,101);
+          INSERT INTO p_creation_receipt VALUES('description-receipt','version','r1');
+          """)
+
+    def test_element_description_checks_fixed_leaf_scope_without_exporting_text_or_geometry(self):
+        self.create_element_description()
+        manifest = self.export()
+        self.assertTrue(manifest['elementDescriptionReferencesChecked'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertNotIn('Private', json.dumps(manifest))
+        self.assertNotIn('shape', json.dumps(manifest))
+        for mutation in ("UPDATE p_element_description SET project_id='missing';",
+                         "UPDATE p_element_description SET version_id='missing';",
+                         "UPDATE p_element_description SET revision_id='missing';",
+                         "UPDATE p_element_description SET project_id=null;",
+                         "UPDATE p_element_description SET page_id='other';",
+                         "UPDATE p_element_description SET page_id=null;",
+                         "UPDATE p_revision SET manifest_json=replace(manifest_json,'false','true');",
+                         "UPDATE p_revision SET manifest_json=null;"):
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+                self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation))
+
+    def test_element_description_snapshot_hashes_all_text_geometry_scope_and_cas_fields(self):
+        self.create_element_description()
+        before = self.script('snapshot-db.sql')
+        self.assertIn('element_descriptions|1|', before)
+        self.assertIn('business_rows_p_element_description|1|', before)
+        self.assertIn('p_element_description', next(line for line in before.splitlines()
+                                                   if line.startswith('business_table_coverage|')))
+        self.assertNotIn('Private', before)
+        self.assertNotIn('shape', before)
+        preflight = self.script('preflight-db.sql')
+        self.assertIn('p_element_description', preflight)
+        self.assertIn('current_scope_errors|0', preflight)
+        for field, value in (('id', "'other'"), ('project_id', "'other'"), ('version_id', "'other'"),
+                             ('revision_id', "'other'"), ('page_id', "'other'"), ('title', "'changed'"),
+                             ('purpose', "'changed'"), ('input_rules', "'changed'"),
+                             ('permission_rules', "'changed'"), ('navigation_rules', "'changed'"),
+                             ('notes', "'changed'"), ('anchor', "'{}'"),
+                             ('config_version', '1'), ('created_at', '102'), ('updated_at', '103')):
+            with self.subTest(field=field):
+                after = self.script('snapshot-db.sql', 'UPDATE p_element_description SET ' + field + '=' + value + ';')
+                self.assertNotEqual(before, after)
+        self.assertEqual(before, self.script('snapshot-db.sql'))
 
     def test_page_delivery_checks_fixed_leaf_ownership_and_accepts_historical_assignee(self):
         self.create_page_delivery()
