@@ -807,13 +807,14 @@ public class PrototypeReviewThreadService {
                 fields.toArray(String[]::new));
     }
 
-    /** 无锚点沿用已发布指纹；非空位置先于图片摘要并入，不受JSON字段顺序影响。 */
+    /** 旧位置沿用已发布指纹；元素元数据仅非空时并入，图片摘要仍最后追加。 */
     private PrototypeCreationReceiptService.Request threadRequest(
             Scope scope, ReviewThreadCreateRequest input) {
         var request = request(scope, "thread", input.getClientRequestId(), input.getText());
-        return input.getAnchor() == null
+        if (input.getAnchor() != null) request = request.withPayload(input.getAnchor().canonical());
+        return input.getElementTarget() == null
                 ? request
-                : request.withPayload(input.getAnchor().canonical());
+                : request.withPayload(input.getElementTarget().canonical());
     }
 
     private Mono<PrototypeReviewImageService.Stored<ReviewThreadResponse>> newThread(
@@ -833,6 +834,7 @@ public class PrototypeReviewThreadService {
         row.setPageName(scope.page().name());
         row.setPagePath(scope.page().path());
         row.setAnchor(input.getAnchor());
+        row.setElementTarget(input.getElementTarget());
         row.setGuestId(scope.actorId());
         row.setVerificationLevel(scope.level());
         row.setAuthorName(scope.name());
@@ -1263,6 +1265,7 @@ public class PrototypeReviewThreadService {
                 row.getCreateTime(),
                 row.getPublicUpdatedAt(),
                 row.getAnchor(),
+                row.getElementTarget(),
                 actor == null ? null : own && "resolved".equals(row.getState()),
                 actor == null ? null : own ? "own" : "associated");
     }

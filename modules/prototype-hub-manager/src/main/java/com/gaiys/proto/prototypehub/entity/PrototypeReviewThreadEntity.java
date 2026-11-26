@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.entity;
 
 import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
+import com.gaiys.proto.prototypehub.web.info.ReviewElementTarget;
 import io.swagger.v3.oas.annotations.media.Schema;
 import java.sql.JDBCType;
 import javax.persistence.Column;
@@ -67,6 +68,12 @@ public class PrototypeReviewThreadEntity extends GenericEntity<String> {
     @ColumnType(jdbcType = JDBCType.LONGVARCHAR, javaType = String.class)
     @Schema(description = "不可变根文档CSS像素位置快照，历史线程为空")
     private ReviewAnchor anchor;
+
+    @Column(name = "element_target")
+    @JsonCodec
+    @ColumnType(jdbcType = JDBCType.LONGVARCHAR, javaType = String.class)
+    @Schema(description = "不可变DOM元素位置元数据，历史线程为空，不参与授权")
+    private ReviewElementTarget elementTarget;
 
     @Column(name = "guest_id", length = 64, nullable = false)
     @Schema(description = "服务端会话解析的作者标识，不对外公开")
