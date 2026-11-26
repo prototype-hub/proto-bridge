@@ -33,6 +33,652 @@
     });
   };
 
+  // Each sandboxed document owns its DOM. Descending is explicit and uses only direct-window relays.
+  (() => {
+    if (window === top) return;
+    const root = parent === top;
+    const commandType = root
+      ? "PROTOTYPE_REVIEW_ELEMENT_COMMAND"
+      : "PROTOTYPE_REVIEW_ELEMENT_RELAY_COMMAND";
+    const eventType = root
+      ? "PROTOTYPE_REVIEW_ELEMENT_EVENT"
+      : "PROTOTYPE_REVIEW_ELEMENT_RELAY_EVENT";
+    const idPattern = /^[A-Za-z][A-Za-z0-9_.:-]{0,127}$/;
+    const record = (value) =>
+      value && typeof value === "object" && !Array.isArray(value);
+    const keys = (value, allowed) =>
+      Object.keys(value).length === allowed.length &&
+      Object.keys(value).every((key) => allowed.includes(key));
+    const pathValid = (value) => {
+      if (
+        typeof value !== "string" ||
+        !value.length ||
+        value.length > 4096 ||
+        value.split("/")[0].includes(":") ||
+        /[?#\\\x00-\x20\x7f-\uffff]/.test(value)
+      )
+        return false;
+      try {
+        return value.split("/").every((part) => {
+          if (!part || /%(?![\da-f]{2})/i.test(part)) return false;
+          const decoded = decodeURIComponent(part);
+          return (
+            ![".", ".."].includes(decoded) &&
+            !/[/\\\x00-\x1f\x7f]/.test(decoded)
+          );
+        });
+      } catch (_) {
+        return false;
+      }
+    };
+    const targetValid = (target) =>
+      record(target) &&
+      keys(target, [
+        "space",
+        "frames",
+        "elementId",
+        "tagName",
+        "textHint",
+        "viewportWidth",
+        "viewportHeight",
+      ]) &&
+      target.space === "frame-element-v1" &&
+      typeof target.elementId === "string" &&
+      idPattern.test(target.elementId) &&
+      typeof target.tagName === "string" &&
+      /^[a-z][a-z0-9]{0,31}$/.test(target.tagName) &&
+      typeof target.textHint === "string" &&
+      target.textHint.length <= 160 &&
+      !Array.from(target.textHint).some(
+        (value) =>
+          value.charCodeAt(0) < 32 ||
+          (value.length === 1 &&
+            value.charCodeAt(0) >= 0xd800 &&
+            value.charCodeAt(0) <= 0xdfff),
+      ) &&
+      [target.viewportWidth, target.viewportHeight].every(
+        (value) => Number.isInteger(value) && value >= 1 && value <= 16384,
+      ) &&
+      Array.isArray(target.frames) &&
+      target.frames.length <= 4 &&
+      target.frames.every(
+        (frame) =>
+          record(frame) &&
+          keys(frame, ["elementId", "resourcePath"]) &&
+          typeof frame.elementId === "string" &&
+          idPattern.test(frame.elementId) &&
+          pathValid(frame.resourcePath),
+      );
+    const sameLeaf = (a, b) =>
+      [
+        "space",
+        "elementId",
+        "tagName",
+        "textHint",
+        "viewportWidth",
+        "viewportHeight",
+      ].every((key) => a[key] === b[key]);
+    const nonce = () =>
+      Array.from(crypto.getRandomValues(new Uint8Array(16)), (v) =>
+        v.toString(16).padStart(2, "0"),
+      ).join("");
+    const retiredChannels = new Set();
+    let command,
+      child,
+      monitor,
+      picking = false,
+      active = false,
+      candidate,
+      candidates = [],
+      localTarget;
+    const surface = document.createElement("div");
+    surface.dataset.reviewElementSurface = "true";
+    surface.tabIndex = 0;
+    surface.setAttribute("role", "application");
+    surface.setAttribute(
+      "aria-label",
+      "Choose element: arrows, Enter to select, Tab for controls, Escape to cancel / 选择元素：方向键、回车选择、Tab切换操作、Esc取消",
+    );
+    surface.style.cssText =
+      "position:fixed;inset:0;z-index:2147483647;display:none;outline:2px solid #1677ff;touch-action:none;cursor:crosshair";
+    const selection = document.createElement("div");
+    selection.dataset.reviewElementMarker = "true";
+    selection.style.cssText =
+      "position:fixed;pointer-events:none;border:2px solid #1677ff;background:#1677ff26;box-sizing:border-box;display:none;transition:none!important;animation:none!important";
+    const controls = document.createElement("div");
+    controls.dataset.reviewElementControls = "true";
+    controls.style.cssText =
+      "position:absolute;left:8px;top:8px;max-width:calc(100% - 16px);padding:8px;background:#fff;color:#172033;border:1px solid #1677ff;border-radius:6px;font:14px/1.4 system-ui;cursor:default;box-sizing:border-box";
+    const label = document.createElement("div");
+    label.style.cssText =
+      "max-width:360px;overflow-wrap:anywhere;margin-bottom:6px";
+    label.setAttribute("aria-live", "polite");
+    const enter = document.createElement("button");
+    enter.type = "button";
+    enter.textContent = "Enter frame / 进入内嵌页面";
+    const cancel = document.createElement("button");
+    cancel.type = "button";
+    cancel.textContent = "Cancel / 取消";
+    for (const button of [enter, cancel])
+      button.style.cssText =
+        "font:inherit;padding:6px 8px;margin:0 4px 0 0;min-height:44px;cursor:pointer";
+    controls.append(label, enter, cancel);
+    surface.append(selection, controls);
+    document.documentElement.appendChild(surface);
+    const owned = (element) =>
+      element === marker ||
+      surface.contains(element) ||
+      element.closest?.(
+        "[data-review-anchor-surface],[data-inspect-tool-surface]",
+      );
+    const currentPath = () =>
+      command &&
+      !location.search &&
+      !location.hash &&
+      location.pathname.slice(0, command.prefixLength).endsWith("/") &&
+      location.pathname.slice(command.prefixLength) === command.resourcePath;
+    const hint = (element) =>
+      (element.getAttribute("data-label") || element.textContent || "")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 160)
+        .replace(/[\ud800-\udbff]$/, "");
+    const unique = (element) =>
+      idPattern.test(element?.id || "") &&
+      document.querySelectorAll('[id="' + element.id + '"]').length === 1;
+    const visible = (element) => {
+      if (
+        !element?.isConnected ||
+        owned(element) ||
+        element.closest(
+          "head,script,style,link,meta,title,base,noscript,template",
+        )
+      )
+        return false;
+      const rect = element.getBoundingClientRect(),
+        style = getComputedStyle(element);
+      for (let ancestor = element; ancestor; ancestor = ancestor.parentElement)
+        if (Number(getComputedStyle(ancestor).opacity) === 0) return false;
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== "none" &&
+        style.visibility !== "hidden" &&
+        style.visibility !== "collapse"
+      );
+    };
+    const targetFor = (element) => {
+      if (!visible(element) || !unique(element)) return;
+      const target = {
+        space: "frame-element-v1",
+        frames: [],
+        elementId: element.id,
+        tagName: element.tagName.toLowerCase(),
+        textHint: hint(element),
+        viewportWidth: innerWidth,
+        viewportHeight: innerHeight,
+      };
+      return targetValid(target) ? target : undefined;
+    };
+    const framePath = (frame) => {
+      if (
+        !command ||
+        command.depth >= 4 ||
+        frame?.tagName !== "IFRAME" ||
+        !targetFor(frame) ||
+        frame.hasAttribute("srcdoc")
+      )
+        return;
+      try {
+        const raw = frame.getAttribute("src");
+        if (!raw) return;
+        const value = new URL(raw, document.baseURI),
+          own = new URL(location.href),
+          prefix = own.pathname.slice(0, command.prefixLength),
+          path = value.pathname.slice(command.prefixLength);
+        if (
+          prefix.endsWith("/") &&
+          value.origin === own.origin &&
+          value.pathname.startsWith(prefix) &&
+          !value.search &&
+          !value.hash &&
+          pathValid(path)
+        )
+          return path;
+      } catch (_) {}
+    };
+    const send = (status, target) => {
+      if (!command) return;
+      parent.postMessage(
+        {
+          type: eventType,
+          channel: command.channel,
+          generation: command.generation,
+          status,
+          ...(target ? { elementTarget: target } : {}),
+        },
+        root ? platformOrigin : "*",
+      );
+    };
+    const retireChild = () => {
+      if (!child) return;
+      clearTimeout(child.timer);
+      try {
+        const { elementTarget, ...base } = child.command;
+        child.window.postMessage(
+          {
+            ...base,
+            generation: child.command.generation + 1,
+            action: "clear",
+          },
+          "*",
+        );
+      } catch (_) {}
+      child = undefined;
+    };
+    const stop = () => {
+      retireChild();
+      clearInterval(monitor);
+      picking = active = false;
+      candidate = localTarget = undefined;
+      candidates = [];
+      surface.style.display = selection.style.display = "none";
+    };
+    const unavailable = () => {
+      stop();
+      send("unavailable");
+    };
+    const paint = (element) => {
+      candidate = targetFor(element) ? element : undefined;
+      const rect = candidate?.getBoundingClientRect();
+      selection.style.display = rect ? "block" : "none";
+      if (rect)
+        Object.assign(selection.style, {
+          left: rect.x + "px",
+          top: rect.y + "px",
+          width: rect.width + "px",
+          height: rect.height + "px",
+        });
+      enter.disabled = !framePath(candidate);
+      label.textContent = candidate
+        ? (hint(candidate) || candidate.tagName.toLowerCase()) +
+          " · #" +
+          candidate.id
+        : "Choose a visible element with a unique ID / 请选择有唯一ID的可见元素";
+    };
+    const scan = () => {
+      candidates = [];
+      const walker = document.createTreeWalker(
+          document.documentElement,
+          NodeFilter.SHOW_ELEMENT,
+        ),
+        deadline = performance.now() + 100;
+      let element = walker.currentNode,
+        count = 0;
+      while (element && count++ < 2000 && performance.now() < deadline) {
+        if (targetFor(element)) candidates.push(element);
+        element = walker.nextNode();
+      }
+    };
+    const startPicker = (message) => {
+      picking = active = true;
+      surface.style.display = "block";
+      surface.style.pointerEvents = "auto";
+      controls.style.display = "block";
+      scan();
+      paint(candidate?.isConnected ? candidate : candidates[0]);
+      if (message) label.textContent = message;
+      surface.focus({ preventScroll: true });
+    };
+    const finish = () => {
+      const target = targetFor(candidate);
+      if (!picking || !currentPath() || !target) return;
+      stop();
+      send("captured", target);
+    };
+    const childFailed = () => {
+      const wasCapture = command?.action === "capture";
+      retireChild();
+      if (wasCapture && currentPath()) {
+        startPicker(
+          "Cannot enter this frame. Select its outer element or another element / 此内嵌页面不可进入，可手动选择外框或其他元素",
+        );
+      } else unavailable();
+    };
+    const descend = (frame, path, target) => {
+      retireChild();
+      const next = {
+        type: "PROTOTYPE_REVIEW_ELEMENT_RELAY_COMMAND",
+        channel: nonce(),
+        generation: 1,
+        action: target ? "locate" : "capture",
+        resourcePath: path,
+        prefixLength: command.prefixLength,
+        depth: command.depth + 1,
+        ...(target ? { elementTarget: target } : {}),
+      };
+      child = {
+        element: frame,
+        elementId: frame.id,
+        window: frame.contentWindow,
+        command: next,
+        path,
+        started: false,
+      };
+      picking = false;
+      if (!target) surface.style.display = "none";
+      const expectedChild = child;
+      child.timer = setTimeout(() => {
+        if (child === expectedChild) childFailed();
+      }, 2500);
+      try {
+        child.window.postMessage(next, "*");
+      } catch (_) {
+        childFailed();
+      }
+    };
+    const enterFrame = () => {
+      const path = framePath(candidate);
+      if (!picking || !path) return;
+      descend(candidate, path);
+    };
+    const check = () => {
+      if (!active) return;
+      if (!currentPath()) {
+        unavailable();
+        return;
+      }
+      if (child) {
+        if (
+          !visible(child.element) ||
+          !unique(child.element) ||
+          child.element.id !== child.elementId ||
+          framePath(child.element) !== child.path ||
+          child.element.contentWindow !== child.window
+        )
+          unavailable();
+      } else if (command.action === "locate") {
+        const now = targetFor(candidate);
+        if (!now || !sameLeaf(now, localTarget)) unavailable();
+        else paint(candidate);
+      } else if (candidate && !targetFor(candidate)) paint(undefined);
+    };
+    addEventListener("message", (event) => {
+      const c = event.data;
+      if (
+        child &&
+        event.source === child.window &&
+        event.origin === "null" &&
+        record(c) &&
+        c.type === "PROTOTYPE_REVIEW_ELEMENT_RELAY_EVENT" &&
+        c.channel === child.command.channel &&
+        c.generation === child.command.generation &&
+        keys(c, [
+          "type",
+          "channel",
+          "generation",
+          "status",
+          ...(c.status === "captured" ? ["elementTarget"] : []),
+        ])
+      ) {
+        if (
+          ![
+            "capturing",
+            "captured",
+            "cancelled",
+            "located",
+            "unavailable",
+          ].includes(c.status)
+        )
+          return;
+        if (c.status === "capturing" && command.action !== "capture") return;
+        if (
+          c.status === "captured" &&
+          (!child.started ||
+            command.action !== "capture" ||
+            !targetValid(c.elementTarget) ||
+            c.elementTarget.frames.length + command.depth + 1 > 4)
+        )
+          return;
+        if (c.status === "located" && command.action !== "locate") return;
+        clearTimeout(child.timer);
+        child.started = true;
+        if (c.status === "unavailable") {
+          childFailed();
+          return;
+        }
+        if (c.status === "cancelled") {
+          stop();
+          send("cancelled");
+          return;
+        }
+        if (c.status === "captured") {
+          const target = {
+            ...c.elementTarget,
+            frames: [
+              { elementId: child.element.id, resourcePath: child.path },
+              ...c.elementTarget.frames,
+            ],
+          };
+          stop();
+          send("captured", target);
+        } else if (c.status === "located") send("located");
+        return;
+      }
+      if (
+        event.source !== parent ||
+        event.origin !== (root ? platformOrigin : "null") ||
+        !record(c)
+      )
+        return;
+      if (
+        (c.type === "AXURE_INSPECT_MODE" && c.enabled) ||
+        (root &&
+          [
+            "PROTOTYPE_REVIEW_ANCHOR_COMMAND",
+            "PROTOTYPE_INSPECT_TOOL_COMMAND",
+          ].includes(c.type))
+      ) {
+        stop();
+        return;
+      }
+      if (
+        c.type !== commandType ||
+        !keys(c, [
+          "type",
+          "channel",
+          "generation",
+          "action",
+          "resourcePath",
+          "prefixLength",
+          ...(!root ? ["depth"] : []),
+          ...(c.action === "locate" ? ["elementTarget"] : []),
+        ]) ||
+        typeof c.channel !== "string" ||
+        !/^[A-Za-z0-9_-]{1,128}$/.test(c.channel) ||
+        !Number.isSafeInteger(c.generation) ||
+        c.generation < 1 ||
+        !Number.isInteger(c.prefixLength) ||
+        c.prefixLength < 1 ||
+        c.prefixLength > 8192 ||
+        !pathValid(c.resourcePath) ||
+        !["ready", "capture", "locate", "clear"].includes(c.action) ||
+        (!root && (!Number.isInteger(c.depth) || c.depth < 1 || c.depth > 4)) ||
+        (c.action === "locate" && !targetValid(c.elementTarget)) ||
+        retiredChannels.has(c.channel) ||
+        (command &&
+          c.channel === command.channel &&
+          c.generation <= command.generation)
+      )
+        return;
+      stop();
+      if (command && command.channel !== c.channel)
+        retiredChannels.add(command.channel);
+      command = { ...c, depth: root ? 0 : c.depth };
+      if (c.action === "clear") {
+        send("ready");
+        return;
+      }
+      if (!currentPath()) {
+        unavailable();
+        return;
+      }
+      if (c.action === "ready") {
+        send("ready");
+        return;
+      }
+      enabled = false;
+      draw(null);
+      relay({ type: "AXURE_INSPECT_MODE", enabled: false });
+      active = true;
+      monitor = setInterval(check, 150);
+      if (c.action === "capture") {
+        startPicker();
+        send("capturing");
+        return;
+      }
+      const target = c.elementTarget;
+      if (target.frames.length) {
+        const hop = target.frames[0],
+          frame = document.getElementById(hop.elementId);
+        if (
+          command.depth + target.frames.length > 4 ||
+          framePath(frame) !== hop.resourcePath
+        ) {
+          unavailable();
+          return;
+        }
+        frame.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "instant",
+        });
+        paint(frame);
+        surface.style.display = "block";
+        surface.style.pointerEvents = "none";
+        controls.style.display = "none";
+        descend(frame, hop.resourcePath, {
+          ...target,
+          frames: target.frames.slice(1),
+        });
+      } else {
+        const element = document.getElementById(target.elementId),
+          now = targetFor(element);
+        if (!now || !sameLeaf(now, target)) {
+          unavailable();
+          return;
+        }
+        localTarget = now;
+        element.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "instant",
+        });
+        paint(element);
+        surface.style.display = "block";
+        surface.style.pointerEvents = "none";
+        controls.style.display = "none";
+        send("located");
+      }
+    });
+    const point = (event) => {
+      surface.style.pointerEvents = "none";
+      let element = document.elementFromPoint(event.clientX, event.clientY);
+      surface.style.pointerEvents = "auto";
+      while (element && !targetFor(element)) element = element.parentElement;
+      paint(element);
+    };
+    document.addEventListener(
+      "pointermove",
+      (event) => {
+        if (!picking || controls.contains(event.target)) return;
+        event.stopImmediatePropagation();
+        point(event);
+      },
+      true,
+    );
+    document.addEventListener(
+      "click",
+      (event) => {
+        if (!picking || controls.contains(event.target)) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        point(event);
+        finish();
+      },
+      true,
+    );
+    surface.addEventListener("keydown", (event) => {
+      if (!picking) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        stop();
+        send("cancelled");
+      } else if (event.key === "Tab") {
+        event.preventDefault();
+        const focusable = [
+            surface,
+            ...(!enter.disabled ? [enter] : []),
+            cancel,
+          ],
+          index = focusable.indexOf(document.activeElement);
+        focusable[
+          (index + (event.shiftKey ? -1 : 1) + focusable.length) %
+            focusable.length
+        ].focus({ preventScroll: true });
+      } else if (controls.contains(event.target)) return;
+      else if (event.key === "Enter") {
+        event.preventDefault();
+        finish();
+      } else if (
+        ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)
+      ) {
+        event.preventDefault();
+        scan();
+        if (!candidates.length) return;
+        const step = ["ArrowRight", "ArrowDown"].includes(event.key) ? 1 : -1,
+          index = candidates.indexOf(candidate),
+          next =
+            candidates[(index + step + candidates.length) % candidates.length];
+        next.scrollIntoView({
+          block: "center",
+          inline: "nearest",
+          behavior: "instant",
+        });
+        paint(next);
+      }
+    });
+    enter.addEventListener("click", enterFrame);
+    cancel.addEventListener("click", () => {
+      if (picking) {
+        stop();
+        send("cancelled");
+      }
+    });
+    addEventListener(
+      "scroll",
+      () => {
+        if (active && candidate) paint(candidate);
+      },
+      true,
+    );
+    addEventListener("resize", () => {
+      if (active) unavailable();
+    });
+    addEventListener("pagehide", () => {
+      if (active) unavailable();
+    });
+    document.addEventListener(
+      "load",
+      (event) => {
+        if (child && event.target === child.element) childFailed();
+      },
+      true,
+    );
+    addEventListener("hashchange", check);
+    addEventListener("popstate", check);
+  })();
+
   // Geometry belongs only to this root document. It neither reads child DOM nor receives identities.
   if (parent === top && window !== top) {
     let command,

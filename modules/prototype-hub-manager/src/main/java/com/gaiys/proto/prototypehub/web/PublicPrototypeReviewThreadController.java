@@ -79,7 +79,7 @@ public class PublicPrototypeReviewThreadController {
     }
 
     @PostMapping("")
-    @Operation(summary = "创建本人页面纯文本线程，可附根文档位置快照")
+    @Operation(summary = "创建本人页面纯文本线程，可附根文档几何或DOM元素位置")
     public Mono<ReviewThreadResponse> create(
             @PathVariable String token,
             @Validated({Default.class, ReviewPageRequest.Public.class}) @RequestBody

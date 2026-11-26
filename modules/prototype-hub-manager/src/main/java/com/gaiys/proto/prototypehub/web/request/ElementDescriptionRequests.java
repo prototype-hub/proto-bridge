@@ -1,5 +1,7 @@
 package com.gaiys.proto.prototypehub.web.request;
 
+import com.fasterxml.jackson.annotation.JsonSetter;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
 import io.swagger.v3.oas.annotations.media.Schema;
@@ -90,6 +92,13 @@ public final class ElementDescriptionRequests {
 
         @Schema(description = "可选静态根文档几何快照")
         private ReviewAnchor anchor;
+
+        /** 人工说明仍仅支持根文档几何，不能把被忽略的元素位置误认为已保存。 */
+        @JsonSetter("elementTarget")
+        public void rejectElementTarget(JsonNode value) {
+            if (value != null && !value.isNull())
+                throw new IllegalArgumentException("Element descriptions require root geometry");
+        }
 
         @NotBlank
         @Pattern(regexp = "[!-~]{1,128}")

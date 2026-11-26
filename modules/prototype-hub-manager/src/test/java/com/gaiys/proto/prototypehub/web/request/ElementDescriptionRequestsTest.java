@@ -3,12 +3,30 @@ package com.gaiys.proto.prototypehub.web.request;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.validation.Validation;
 import org.junit.jupiter.api.Test;
 
 class ElementDescriptionRequestsTest {
     private final ObjectMapper mapper = new ObjectMapper();
+
+    @Test
+    void refusesNonemptyElementTargetEvenWhenUnknownPropertiesAreIgnored() throws Exception {
+        var webMapper =
+                new ObjectMapper().disable(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES);
+        for (Class<?> type :
+                new Class<?>[] {
+                    ElementDescriptionRequests.Create.class, ElementDescriptionRequests.Update.class
+                }) {
+            assertThrows(
+                    JsonProcessingException.class,
+                    () ->
+                            webMapper.readValue(
+                                    "{\"elementTarget\":{\"space\":\"frame-element-v1\"}}", type));
+            assertNotNull(webMapper.readValue("{\"elementTarget\":null}", type));
+        }
+    }
 
     @Test
     void casAndPaginationDoNotCoerceFractionalOrStringInputs() throws Exception {

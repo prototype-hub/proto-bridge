@@ -208,6 +208,8 @@ p_review_thread新增四个可空内部字段 `assignee_id`（64）、`assignee_
 
 p_review_thread另增加一个可空anchor字段，使用官方EasyORM JsonCodec/ColumnType以文本保存类型化根页面几何JSON快照。旧行和省略/null创建均解释为无锚点。非空值只包含space、shape、CSS整数位置/宽高、文档宽高与视口宽高，不存选择器、frame路径、HTML、运行地址或凭据；它不是DOM证据或授权依据。锚点仅在创建时与线程、首消息、事件及回执原子保存，之后不可编辑或自动迁移修订。
 
+p_review_thread的可空 `element_target` 列使用相同官方JsonCodec/文本类型，保存严格类型化 `frame-element-v1` 元素位置快照：0至4层frame唯一id及包内encoded相对路径、末层唯一id/tag/普通文本提示与视口尺寸。该列与anchor互斥，历史行保持NULL。仅访客初建时与线程、首消息、领域事件及回执同事务保存，之后不可修改、跨修订迁移或用于权限判断。非空值的固定顺序/长度前缀canonical纳入创建回执，省略/null沿用已发布旧指纹；JSON字段重排不改变语义。整库和完整行摘要自动包含新列，永久清理仍沿现线程生命周期，无新表、索引、后台队列或存储文件。
+
 省略/null锚点保持历史创建指纹，非空锚点以固定字段顺序加入语义指纹，再追加可选图片摘要；相同键不能把无位置请求改成有位置请求或改变几何。整行备份、摘要及永久清理沿现有线程图覆盖该列，不新增表、文件路径或存储格式；离线引用清单仍为v3。既有恢复结果不代表非空几何快照已专项验收，恢复副本应同时核对锚点与固定修订/页面的原归属。
 
 p_review_message的单图字段为可空image_path、image_content_type、image_size、image_sha256、image_width、image_height；旧消息全部为null，部分缺失或损坏不构成读取授权。image_path只保存服务端生成的相对路径 `projects/{projectId}/review-images/{randomAttemptId}/image`，attempt为43字符随机值，不使用原文件名；实际格式、字节数、SHA-256和宽高来自验证后的原始PNG/JPEG。图片独立于不可变revision/site，不加入已发布manifest，不改变原型包hash或质量报告。

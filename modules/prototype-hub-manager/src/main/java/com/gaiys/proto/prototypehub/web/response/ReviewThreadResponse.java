@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.web.response;
 
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.gaiys.proto.prototypehub.web.info.ReviewAnchor;
+import com.gaiys.proto.prototypehub.web.info.ReviewElementTarget;
 import io.swagger.v3.oas.annotations.media.Schema;
 
 /** 页面评审的显式投影视图，不公开作者ID、邮箱或凭据。 */
@@ -21,6 +22,7 @@ public record ReviewThreadResponse(
         @Schema(description = "创建Unix毫秒") long createdAt,
         @Schema(description = "最近公开更新Unix毫秒，不含内部备注") long updatedAt,
         @Schema(description = "不可变根文档CSS像素位置快照，历史或未指定时为空") ReviewAnchor anchor,
+        @Schema(description = "不可变DOM元素位置元数据，历史或未指定时为空") ReviewElementTarget elementTarget,
         @JsonInclude(JsonInclude.Include.NON_NULL) @Schema(description = "当前访客是否可显式重开；成员省略")
                 Boolean canReopen,
         @JsonInclude(JsonInclude.Include.NON_NULL)
