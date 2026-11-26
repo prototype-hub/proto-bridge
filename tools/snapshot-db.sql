@@ -87,7 +87,13 @@ SELECT 'version_deletion_state',count(*),md5(coalesce(jsonb_agg(
  jsonb_build_array(id,project_id,deleted_time) ORDER BY id)::text,'[]')) FROM :"prototype_hub_version_table";
 \endif
 
--- Work item references are private durable page metadata; emit hashes, never URLs or notes.
+-- Internal page metadata is private and durable; emit full-row hashes, never text or geometry.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_element_description_table')) IS NOT NULL AS prototype_hub_has_element_descriptions \gset
+\if :prototype_hub_has_element_descriptions
+SELECT 'element_descriptions',count(*),md5(coalesce(jsonb_agg(to_jsonb(d) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_element_description_table" d;
+\endif
+
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL AS prototype_hub_has_work_items \gset
 \if :prototype_hub_has_work_items
 SELECT 'work_items',count(*),md5(coalesce(jsonb_agg(to_jsonb(w) ORDER BY id)::text,'[]'))
@@ -112,11 +118,11 @@ SELECT 'share_visits',count(*),md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::
 -- Missing old-schema tables remain visible in the coverage list; this is not a current-release pass.
 SELECT 'business_table_coverage',count(*),string_agg(table_name,',' ORDER BY table_name)
  FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
- :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT format('SELECT %L,count(*),md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,''[]'')) FROM %I.%I r;',
  'business_rows_'||table_name,current_schema(),table_name)
  FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
- :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table') ORDER BY table_name
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table') ORDER BY table_name
 \gexec
 
 -- Plain-text manual observations remain private; emit a complete-row digest only.

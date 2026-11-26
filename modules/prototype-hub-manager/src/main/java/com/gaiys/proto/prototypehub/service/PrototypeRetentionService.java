@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
@@ -54,6 +55,7 @@ public class PrototypeRetentionService {
     private final PrototypeStatisticsService statistics;
     private final PrototypeReviewThreadService reviewThreads;
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
+    private final ReactiveRepository<PrototypeElementDescriptionEntity, String> elementDescriptions;
     private final ReactiveRepository<PrototypePageDeliveryEntity, String> pageDeliveries;
     private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
@@ -431,6 +433,11 @@ public class PrototypeRetentionService {
                         copySnapshots
                                 .createDelete()
                                 .where(PrototypeCopySnapshotEntity::getVersionId, id)
+                                .execute())
+                .then(
+                        elementDescriptions
+                                .createDelete()
+                                .where(PrototypeElementDescriptionEntity::getVersionId, id)
                                 .execute())
                 .then(reviewThreads.purgeVersion(id))
                 .then(review.purgeVersion(id))

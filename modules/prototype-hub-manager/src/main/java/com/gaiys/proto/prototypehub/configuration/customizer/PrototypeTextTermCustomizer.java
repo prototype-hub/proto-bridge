@@ -3,6 +3,7 @@ package com.gaiys.proto.prototypehub.configuration.customizer;
 import com.gaiys.proto.prototypehub.configuration.builder.PrototypeTextTermFragmentBuilder;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
@@ -72,6 +73,11 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
         }
         if (PrototypeVersionEntity.class.isAssignableFrom(entityType)) {
             table.getColumn("versionName")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
+        }
+        if (PrototypeElementDescriptionEntity.class.isAssignableFrom(entityType)) {
+            table.getColumn("title")
                     .orElseThrow()
                     .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
         }
