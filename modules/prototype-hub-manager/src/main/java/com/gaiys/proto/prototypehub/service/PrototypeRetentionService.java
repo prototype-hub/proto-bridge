@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeDemoScriptEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
@@ -62,6 +63,7 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
+    private final ReactiveRepository<PrototypeDemoScriptEntity, String> demoScripts;
 
     private final PrototypeRevisionMaterialService materials;
 
@@ -418,10 +420,15 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return revisionApprovals
+        return demoScripts
                 .createDelete()
-                .where(PrototypeRevisionApprovalEntity::getVersionId, id)
+                .where(PrototypeDemoScriptEntity::getVersionId, id)
                 .execute()
+                .then(
+                        revisionApprovals
+                                .createDelete()
+                                .where(PrototypeRevisionApprovalEntity::getVersionId, id)
+                                .execute())
                 .then(statistics.purgeVersion(id))
                 .then(materials.purgeVersion(id))
                 .then(
@@ -492,10 +499,18 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                revisionApprovals
+                                demoScripts
                                         .createDelete()
-                                        .where(PrototypeRevisionApprovalEntity::getProjectId, id)
+                                        .where(PrototypeDemoScriptEntity::getProjectId, id)
                                         .execute()
+                                        .then(
+                                                revisionApprovals
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeRevisionApprovalEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(statistics.purgeProject(id))
                                         .then(materials.purgeProject(id))
                                         .then(

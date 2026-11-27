@@ -32,3 +32,4 @@
 \set prototype_hub_viewport_check_table :prototype_hub_table_prefix 'viewport_check'
 \set prototype_hub_revision_material_table :prototype_hub_table_prefix 'revision_material'
 \set prototype_hub_revision_approval_table :prototype_hub_table_prefix 'revision_approval'
+\set prototype_hub_demo_script_table :prototype_hub_table_prefix 'demo_script'

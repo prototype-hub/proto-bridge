@@ -3,6 +3,7 @@
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_approval_table')) IS NOT NULL AS prototype_hub_has_revision_approvals \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_demo_script_table')) IS NOT NULL AS prototype_hub_has_demo_scripts \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_material_table')) IS NOT NULL AS prototype_hub_has_revision_materials \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_viewport_check_table')) IS NOT NULL AS prototype_hub_has_viewport_checks \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_work_item_table')) IS NOT NULL
@@ -230,6 +231,39 @@ WITH storage_references AS (
    jsonb_build_object('page',d.page_id,'path',d.page_path)),false)
  -- A removed/disabled assignee remains legitimate historical metadata.
 \endif
+\if :prototype_hub_has_demo_scripts
+ UNION ALL
+ SELECT d.id FROM :"prototype_hub_demo_script_table" d
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=d.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=d.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=d.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM d.project_id OR r.project_id IS DISTINCT FROM d.project_id
+  OR r.version_id IS DISTINCT FROM d.version_id
+  OR d.share_enabled IS NULL OR d.config_version IS NULL
+  OR d.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR jsonb_typeof(d.steps::jsonb) IS DISTINCT FROM 'array'
+  OR CASE WHEN jsonb_typeof(d.steps::jsonb)='array'
+   THEN jsonb_array_length(d.steps::jsonb) NOT BETWEEN 1 AND 50 ELSE true END
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.steps::jsonb)='array'
+   THEN d.steps::jsonb ELSE '[]'::jsonb END) step
+   WHERE jsonb_typeof(step) IS DISTINCT FROM 'object'
+    OR jsonb_typeof(step->'id') IS DISTINCT FROM 'string'
+    OR NOT coalesce(step->>'id' ~ '^[A-Za-z0-9_-]{1,64}$',false)
+    OR jsonb_typeof(step->'pageId') IS DISTINCT FROM 'string'
+    OR length(step->>'pageId') NOT BETWEEN 1 AND 128
+    OR jsonb_typeof(step->'narration') IS DISTINCT FROM 'string'
+    OR length(step->>'narration')>2000
+    OR (SELECT count(*) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(step)='object'
+     THEN step ELSE '{}'::jsonb END))<>3
+    OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+     '$.pages.** ? (@.pageId == $page && @.folder == false)',
+     jsonb_build_object('page',step->>'pageId')),false))
+  OR (SELECT count(*)<>count(DISTINCT step->>'id')
+   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(d.steps::jsonb)='array'
+    THEN d.steps::jsonb ELSE '[]'::jsonb END) step)
+ -- An openable parent is a valid page; narration and all other script text stay private.
+\endif
 \if :prototype_hub_has_viewport_checks
  UNION ALL
  SELECT w.id FROM :"prototype_hub_viewport_check_table" w
@@ -311,6 +345,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'pageDeliveryReferencesChecked',:'prototype_hub_has_page_deliveries'::boolean,
  'approvalReferencesChecked',:'prototype_hub_has_revision_approvals'::boolean,
  'elementDescriptionReferencesChecked',:'prototype_hub_has_element_descriptions'::boolean,
+ 'demoScriptReferencesChecked',:'prototype_hub_has_demo_scripts'::boolean,
  'imageReferencesChecked',(:'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
  'entries',coalesce(json_agg(json_build_object('id',version_id,'projectId',project_id,
@@ -341,7 +376,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
 SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',2,
  'sourceSchema','legacy-current-only','referencesComplete',false,
  'receiptReferencesChecked',false,'pageDeliveryReferencesChecked',false,'approvalReferencesChecked',false,
- 'elementDescriptionReferencesChecked',false,'integrityErrors',null,
+ 'elementDescriptionReferencesChecked',false,'demoScriptReferencesChecked',false,'integrityErrors',null,
  'entries',coalesce(json_agg(json_build_object('id',id,'projectId',project_id,
  'revisionId',null,'storagePath',storage_path) ORDER BY project_id,id,storage_path)
  FILTER (WHERE storage_path IS NOT NULL),'[]'::json)) FROM :"prototype_hub_version_table";

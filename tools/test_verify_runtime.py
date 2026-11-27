@@ -31,6 +31,90 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_demo_fixture_uses_real_parent_and_child_pages_then_reorders_and_disables(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            pages = [{'pageId': 'parent', 'folder': False, 'children': [
+                {'pageId': 'child', 'folder': False, 'children': []}]}]
+            rows = {}
+            counter = 0
+            api = unittest.mock.Mock()
+            def respond(method, path, payload=None):
+                nonlocal counter
+                if path.endswith('/pages'):
+                    return pages
+                if path.endswith('/_delete'):
+                    return True
+                if method == 'POST':
+                    counter += 1
+                    identity = 'script-' + str(counter)
+                    rows[identity] = dict(payload, id=identity, configVersion=0)
+                else:
+                    identity = path.rsplit('/', 1)[1]
+                    rows[identity] = dict(payload, id=identity, configVersion=rows[identity]['configVersion'] + 1)
+                return copy.deepcopy(rows[identity])
+            api.request.side_effect = respond
+            fixture = check.create_demo_script_fixture(api, 'version', 'fixed', {'token': 'capability'})
+            original = fixture['operations'][0][2]
+            self.assertEqual(['parent', 'child', 'parent'], [step['pageId'] for step in original['steps']])
+            self.assertEqual(['revisit', 'first', 'second'], [step['id'] for step in fixture['row']['steps']])
+            self.assertEqual(2, fixture['row']['configVersion'])
+            self.assertFalse(fixture['row']['shareEnabled'])
+            self.assertTrue(fixture['shared']['shareEnabled'])
+            self.assertEqual(3, len({payload['clientRequestId'] for _, _, payload in fixture['operations']}))
+            api.request.side_effect = lambda *args: [{'pageId': 'directory', 'folder': True}]
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'two actual openable'):
+                check.create_demo_script_fixture(api, 'version', 'fixed', {})
+
+    def test_demo_restore_checks_full_rows_current_keys_and_exact_public_projections(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            path = '/fixed/demo-scripts'
+            row = {'id': 'private', 'projectId': 'project', 'versionId': 'version', 'revisionId': 'fixed',
+                   'title': 'Private demo', 'objective': 'Original goal', 'prerequisites': '', 'resetNote': '',
+                   'steps': [{'id': 'a', 'pageId': 'page', 'narration': 'First'},
+                             {'id': 'b', 'pageId': 'page', 'narration': 'Repeat'}],
+                   'shareEnabled': False, 'configVersion': 2, 'createdAt': 1, 'updatedAt': 3}
+            shared = dict(row, id='shared', title='Shared demo', shareEnabled=True, configVersion=0, createdAt=2)
+            fixture = {'path': path, 'row': row, 'shared': shared,
+                       'operations': [('POST', path, {'clientRequestId': 'original-private'})],
+                       'sharedPayload': {'clientRequestId': 'original-shared'},
+                       'deleted': {'id': 'deleted'}, 'deletedPayload': {'clientRequestId': 'deleted-create'},
+                       'delete': {'clientRequestId': 'original-delete', 'expectedVersion': 0},
+                       'grant': {'token': 'share-token', 'accessKey': 'grant-key'}}
+            summary_fields = ('id', 'projectId', 'versionId', 'revisionId', 'title', 'shareEnabled',
+                              'configVersion', 'createdAt', 'updatedAt')
+            public_fields = ('id', 'revisionId', 'title', 'objective', 'prerequisites', 'resetNote', 'steps')
+            def run(*, changed_row=False, leak_summary=False, leak_public=False, reordered=False):
+                api = unittest.mock.Mock(origin='http://127.0.0.1:1')
+                internal = copy.deepcopy(row)
+                if changed_row: internal['steps'].reverse()
+                summaries = [{field: item[field] for field in summary_fields} for item in (shared, row)]
+                if leak_summary: summaries[0]['steps'] = shared['steps']
+                def respond(method, target, payload=None, expected=200):
+                    if target.endswith('/_query'): return {'total': 2, 'data': summaries}
+                    if expected != 200: return {}
+                    if target.endswith('/_delete'): return True
+                    return copy.deepcopy(shared if target.endswith('/shared') or payload == fixture['sharedPayload'] else internal)
+                api.request.side_effect = respond
+                anonymous = unittest.mock.Mock()
+                public_summary = {field: shared[field] for field in ('id', 'revisionId', 'title')}
+                context = {field: copy.deepcopy(shared[field]) for field in public_fields}
+                if leak_public: context['configVersion'] = 0
+                if reordered: context['steps'].reverse()
+                anonymous.request.side_effect = [{'total': 1, 'data': [public_summary]}, context, {}]
+                with patch.object(runtime, 'Api', return_value=anonymous):
+                    check.verify_demo_script_fixture(api, fixture)
+                self.assertEqual('grant-key', anonymous.request.call_args_list[0].args[2]['accessKey'])
+            run()
+            for changes in ({'changed_row': True}, {'leak_summary': True}, {'leak_public': True}, {'reordered': True}):
+                with self.subTest(changes=changes), self.assertRaises(runtime.VerificationFailure):
+                    run(**changes)
+
     def test_approval_fixture_uses_four_actions_and_original_keys_after_withdraw_and_revoke(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'
@@ -90,9 +174,10 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(28, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(29, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_approval', runtime.BUSINESS_TABLES)
+        self.assertIn('p_demo_script', runtime.BUSINESS_TABLES)
         self.assertIn('p_element_description', runtime.BUSINESS_TABLES)
         self.assertIn('p_viewport_check', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_material', runtime.BUSINESS_TABLES)
@@ -163,6 +248,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
             fixture = {'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
+                       'demoScripts': {'shared': {'id': 'demo'}},
                        'copyProject': {'id': 'foreign-project'}, 'copyVersion': {'revisionId': 'foreign-revision'},
                        'copy': [{'context': {'snapshotId': 'snapshot'}, 'entries': {'data': [{'id': 'entry'}]}},
                                 {'context': {'snapshotId': 'empty'}}], 'visits': {'recentId': 'visit'},
@@ -180,11 +266,11 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                     return baseline if not mutation or no_change else baseline + '-changed'
                 if name == 'export-storage-manifest.sql':
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
-                                       'referencesComplete': True})
+                                       'referencesComplete': True, 'demoScriptReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(14, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(19, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
                 with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 4 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)
@@ -230,7 +316,8 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_new_business_payloads_and_visit_tickets_are_registered_for_redaction(self):
         values = {key: 'private-' + key for key in ('visitTicket', 'clientRequestId', 'businessTerm',
-                  'note', 'actorName', 'requirementUrl', 'evidenceReference')}
+                  'note', 'actorName', 'requirementUrl', 'evidenceReference', 'title', 'objective',
+                  'prerequisites', 'resetNote', 'narration')}
         seen = set()
         runtime.Api('http://127.0.0.1:1', seen).remember_secrets(values)
         self.assertEqual(set(values.values()), seen)

@@ -365,3 +365,15 @@ EasyORM仅新增 `p_revision_approval`，不改写旧修订或回填“已批准
 新增表加入整库备份、恢复与完整行摘要图；`tools/snapshot-db.sql` 的 `revision_approvals` 和 `business_rows_p_revision_approval` 只输出数量/整行摘要，不输出姓名或备注。存储引用导出保持原formatVersion4/sourceSchema语义，新增可选 `approvalReferencesChecked`；true表示新表固定范围、决策结果及同范围有效指针被检查，不证明人工批准的业务正确性。缺标记的旧报告不覆盖新增表。预检也检查这些引用，不要求历史作者仍活跃。
 
 软删除保留记录并阻断访问；现有保留期内恢复可读原历史。到期版本/项目永久清理同事务删除正式决策和原范围回执；发布不pin资源，不构成永久归档承诺。回滚保留新表，不得让不认识该表的旧清理或恢复工具继续写入/清理此数据图。
+
+## 固定修订演示脚本数据图
+
+EasyORM纯新增 `p_demo_script`，恰有13列：`id/project_id/version_id/revision_id/title/objective/prerequisites/reset_note/steps/share_enabled/config_version/created_at/updated_at`。正文遵循API字段上限，optional文本规范为空串，步骤用既有JsonCodec/LONGVARCHAR持久化typed有序 `List<DemoScriptStep>`；顺序就是数组顺序，同一页面可有多个稳定步骤ID。脚本不产生新文件、逻辑版本或额度项，不改写旧表/原始HTML，不向新修订继承。
+
+索引 `(revision_id,created_at,id)` 和 `(revision_id,share_enabled,created_at,id)` 对应内部/公开稳定分页，另有version_id/project_id清理索引。列表SQL不读取objective、prerequisites、resetNote或steps；公开投影单独限定三个摘要/七个全文字段。分享开放的是完整正文，没有额外隐藏内部正文或作者历史。每次公开读取仍由现有分享授权拥有者校验，脚本不会创建grant或链接。
+
+写入在锁外解析同一不可变清单验证真实非目录页面；账号→项目→版本锁定后刷新身份、重验菜单save与项目EDIT及精确修订。CAS写入和持久回执同一事务。回执以 `demo-script-create/update/delete`、精确revision及原键区分请求，resource_id保留逻辑版本、revision_id保留固定修订，指纹包含规范化正文和有序步骤，原键不入库。创建ID为回执派生摘要而非原始请求键；重放返回当前记录，删除后旧创建/更新键不能复活记录。
+
+软删除阻断脚本访问但保留数据，保留期内恢复仍属原修订。现有版本/项目到期永久清理在同事务删除脚本及版本回执，孤儿项目清理也包含脚本；脚本不pin旧文件，不承诺超出现有保留期归档。
+
+整库备份和表清单包含新表，`tools/snapshot-db.sql` 的 `demo_scripts` 及 `business_rows_p_demo_script` 保存计数/全行摘要，JSON正文或顺序变化也会改变摘要，不输出标题或正文。预检和存储引用导出验证精确范围、步骤结构/唯一ID及所有真实非目录页关联；formatVersion仍为4、sourceSchema保持不变，新增可选 `demoScriptReferencesChecked` 仅在新表存在并执行检查时为true。缺标记的旧报告不能证明脚本图已覆盖，标记也不证明人工讲解业务正确。无新文件引用，因此不改变文件修复的授权条件。

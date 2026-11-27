@@ -88,6 +88,7 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertTrue(manifest['imageReferencesChecked'])
         self.assertFalse(manifest['pageDeliveryReferencesChecked'])
         self.assertFalse(manifest['elementDescriptionReferencesChecked'])
+        self.assertFalse(manifest['demoScriptReferencesChecked'])
         self.assertEqual(0, manifest['integrityErrors'])
         self.assertEqual({'public-message', 'internal-message'},
                          {row['messageId'] for row in manifest['imageEntries']})
@@ -215,6 +216,72 @@ class StorageExportPostgresTest(unittest.TestCase):
             with self.subTest(mutation=mutation):
                 self.assertGreater(self.export(mutation)['integrityErrors'], 0)
                 self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation))
+
+    def create_demo_script(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_share ADD COLUMN token text;
+          ALTER TABLE p_version ADD COLUMN status text;
+          ALTER TABLE p_revision ADD COLUMN manifest_json text;
+          UPDATE p_revision SET manifest_json='{"pages":[{"pageId":"parent","path":"index.html","folder":false,"children":[{"pageId":"child","path":"child.html","folder":false,"children":[]}]},{"pageId":"directory","folder":true,"children":[]}]}';
+          CREATE TABLE p_demo_script(id text primary key,project_id text,version_id text,
+            revision_id text,title text,objective text,prerequisites text,reset_note text,steps text,
+            share_enabled boolean,config_version bigint,created_at bigint,updated_at bigint);
+          INSERT INTO p_demo_script VALUES('script','project','version','r1','Private demo title',
+            'Private demo objective','Private prerequisites','Private reset guidance',
+            '[{"id":"first","pageId":"parent","narration":"Private first narration"},{"id":"child","pageId":"child","narration":"Private child narration"},{"id":"revisit","pageId":"parent","narration":"Private repeat narration"}]',
+            true,2,100,101);
+          INSERT INTO p_creation_receipt VALUES('demo-receipt','version','r1');
+          """)
+
+    def test_demo_scripts_check_parent_pages_repeat_visits_shape_and_fixed_scope(self):
+        self.create_demo_script()
+        manifest = self.export()
+        self.assertEqual(4, manifest['formatVersion'])
+        self.assertTrue(manifest['demoScriptReferencesChecked'])
+        self.assertTrue(manifest['referencesComplete'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertNotIn('Private', json.dumps(manifest))
+        self.assertNotIn('narration', json.dumps(manifest))
+        mutations = ["project_id='missing'", "version_id='missing'", "revision_id='missing'",
+                     "project_id=null", "share_enabled=null", "config_version=-1",
+                     "config_version=9007199254740992",
+                     "steps='null'", "steps='{}'", "steps='\"scalar\"'", "steps='[]'",
+                     "steps='[null]'", "steps='[false]'", "steps='[[]]'",
+                     "steps=jsonb_set(steps::jsonb,'{0,pageId}','\"missing\"')::text",
+                     "steps=jsonb_set(steps::jsonb,'{0,pageId}','\"directory\"')::text",
+                     "steps=jsonb_set(steps::jsonb,'{1,id}',steps::jsonb->0->'id')::text",
+                     "steps=jsonb_set(steps::jsonb,'{0,id}','1')::text",
+                     "steps=jsonb_set(steps::jsonb,'{0,pageId}','false')::text",
+                     "steps=jsonb_set(steps::jsonb,'{0,narration}','null')::text",
+                     "steps=jsonb_set(steps::jsonb,'{0,unknown}','true')::text",
+                     "steps=(steps::jsonb #- '{0,narration}')::text"]
+        for assignment in mutations:
+            with self.subTest(assignment=assignment):
+                mutation = 'UPDATE p_demo_script SET ' + assignment + ';'
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+                self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation))
+        self.assertGreater(self.export('UPDATE p_revision SET manifest_json=null;')['integrityErrors'], 0)
+        self.assertEqual(0, self.export('UPDATE p_demo_script SET share_enabled=false;')['integrityErrors'])
+
+    def test_demo_script_snapshot_hashes_thirteen_fields_and_step_order_without_text(self):
+        self.create_demo_script()
+        before = self.script('snapshot-db.sql')
+        self.assertIn('demo_scripts|1|', before)
+        self.assertIn('business_rows_p_demo_script|1|', before)
+        self.assertNotIn('Private', before)
+        self.assertNotIn('narration', before)
+        self.assertIn('p_demo_script', self.script('preflight-db.sql'))
+        fields = [('id', "'other'"), ('project_id', "'other'"), ('version_id', "'other'"),
+                  ('revision_id', "'other'"), ('title', "'changed'"), ('objective', "'changed'"),
+                  ('prerequisites', "'changed'"), ('reset_note', "'changed'"),
+                  ('steps', "jsonb_set(steps::jsonb,'{0,narration}','\"changed\"')::text"),
+                  ('share_enabled', 'false'), ('config_version', '3'), ('created_at', '102'), ('updated_at', '103')]
+        self.assertEqual(13, len(fields))
+        for field, value in fields:
+            with self.subTest(field=field):
+                self.assertNotEqual(before, self.script('snapshot-db.sql', 'UPDATE p_demo_script SET ' + field + '=' + value + ';'))
+        self.assertNotEqual(before, self.script('snapshot-db.sql', "UPDATE p_demo_script SET steps=jsonb_build_array(steps::jsonb->2,steps::jsonb->0,steps::jsonb->1)::text;"))
+        self.assertEqual(before, self.script('snapshot-db.sql'))
 
     def test_element_description_snapshot_hashes_all_text_geometry_scope_and_cas_fields(self):
         self.create_element_description()

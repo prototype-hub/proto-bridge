@@ -710,3 +710,25 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 公开只读入口是 POST `/prototype-hub/public/shares/{token}/approval/context`，严格请求 `{revisionId,accessKey}`，逐次复用现有分享固定快照读取授权，重验链接启用/撤销/到期、授权代次、密码验证所得凭据、项目/版本/修订归属。关闭反馈或没有访客身份时仍可按分享读取权查询；不创建身份、Cookie或其他行。响应只有 `{revisionId,approved,published,approvedAt,publishedAt}`，无效时间为null，不含作者、备注、内部范围或历史。无公开写入口，凭据不得放进URL、原型iframe或浏览器持久存储。
 
 发布仅是平台内对已存在固定内容的正式标记，不部署、不生成公开链接、不改变访问权限、配额、逻辑版本数或原型文件。不主动延长保留期：软删后按原权限不可读，保留期内恢复带回原记录；版本永久清理时历史与回执同图清理，不暗中切到最新修订。
+
+## 固定修订任务演示脚本
+
+脚本入口为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/demo-scripts`。它记录演示目标、前置条件、人工重置指引及有序页面讲解；用户显式切换步骤，脚本不执行代码、点击、输入、计时、业务重置或批准/发布。固定修订被替换后，旧脚本仍只属于原修订，不复制到新修订。
+
+| 请求 | 输入与结果 |
+| --- | --- |
+| `POST /_query` | `{pageIndex?:0,pageSize?:20}`，页号0–10000、每页1–100；创建时间倒序、ID升序，数据库同条件计数/分页；摘要恰为 `id/projectId/versionId/revisionId/title/shareEnabled/configVersion/createdAt/updatedAt`，SQL不读取正文或步骤 |
+| `GET /{id}` | 精确范围完整脚本；在摘要九字段之外返回 `objective/prerequisites/resetNote/steps`，可用于显式冲突刷新 |
+| `POST` | 完整字段与 `clientRequestId`；返回完整当前脚本，初始 `configVersion:0` |
+| `PUT /{id}` | 完整字段、`expectedVersion`、`clientRequestId`；CAS完整替换，版本递增 |
+| `POST /{id}/_delete` | `{expectedVersion,clientRequestId}`；删除成功返回true，回执保留至所属版本永久清理 |
+
+读取要求版本 `query` 与当前项目 READ；全部写入（包括删除）要求版本 `save` 与项目 EDIT。仅有save动作的当前编辑者可以保存而不能调用GET/query。现有项目权限服务拥有范围校验，不新增全局菜单动作或资产权限类型。分享凭据不能调用内部入口；外项目/已撤成员范围隐藏为404，当前查看者写入为403。
+
+字段 `title` 必填非空、最长120；`objective` 必填、最长2000。可选 `prerequisites/resetNote` 最长2000，省略/null规范为空串。步骤是1–50个非null对象的有序数组，每项只有 `{id,pageId,narration}`：id为 `[A-Za-z0-9_-]{1,64}`，脚本内唯一，重排时保留；pageId为最长128的真实非目录清单页面标识，包括可打开且有子节点的父页。同页可以用不同步骤ID重复访问；可选讲解最长2000，省略/null为空串。无额外order字段。所有文本均作为普通文字，拒绝NUL；必填文本也拒绝仅Unicode分隔符/BOM的内容。字符串/布尔/整数拒绝隐式强制转换，顶层及步骤未知字段拒绝。分页与CAS只接收精确JSON整数；CAS范围0–9007199254740991，最大值不可再递增。
+
+`shareEnabled` 为严格非null布尔值，创建或完整替换时省略均为false。编辑者显式设为true，表示将目标、前置条件、重置指引和每步讲解的**全部正文**开放给现有同修订分享读者；没有隐藏内部子段，也不会创建链接、授予新权限、通知或建立访客身份。关闭只影响后续读取，不能收回访客已经读到的文字。
+
+公开只读入口为 `/prototype-hub/public/shares/{token}/demo-scripts`：`POST /_query` 请求 `{revisionId,accessKey,pageIndex?,pageSize?}`，返回已开放脚本的PagerResult，每条恰为 `{id,revisionId,title}`；`POST /{id}/context` 请求 `{revisionId,accessKey}`，恰返回 `{id,revisionId,title,objective,prerequisites,resetNote,steps}`。每次新读取沿现有分享精确快照授权验证，并在数据库计数/分页/详情前加同范围及shareEnabled条件。fixed与已解析精确修订的latest授权均可读，不重新跟随current；密码、过期、暂停、撤销规则保持既有分享语义，与评论开关或批准状态无关。无公开写入接口、平台认证头、guest/session/访问量写入，也不返回actor、CAS、回执、存储路径、完整清单或凭据。
+
+写入请求键是1–128个可打印ASCII非空白字符。请求指纹包含固定范围、目标、CAS、规范化正文/布尔值及有序步骤三元组。未知结果必须以原键和原完整payload显式重试；abort不代表已回滚。相同原键返回当前脚本，旧开放请求不能重新开启后来关闭的脚本；改payload复用原键或过期CAS为409。已删除脚本的旧创建/更新键为409，不复活记录；原删除键可在重验当前身份与范围后返回true。正常成员功能不依赖批准。
