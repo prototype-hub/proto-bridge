@@ -353,3 +353,15 @@ The search request does not read original document files, extract missing text, 
 EasyORM仅增补 `p_element_description`、索引 `(revision_id,page_id,created_at,id)` 和 `version_id`，不回填旧页面或改写旧表。每行包含固定 `project_id/version_id/revision_id/page_id`，普通文本 `title/purpose/input_rules/permission_rules/navigation_rules/notes`、可空的JSON编码 `anchor`、独立 `config_version/created_at/updated_at`。几何仅保存根文档快照，不是DOM标识；新修订不会复制说明。软删除阻止访问，恢复后仍属原固定修订；版本30天到期永久清理时，同事务清除说明及归属该版本的持久回执。人工删除说明仍保留回执，防止旧创建键复活记录。
 
 数据库备份和完整业务表核对包含非空说明的全部字段；`element_descriptions` 与 `business_rows_p_element_description` 记录数量/完整行摘要，不输出标题、正文或几何。存储引用导出保持 `formatVersion:4`，新增可选 `elementDescriptionReferencesChecked`：true只证明项目/版本/修订与清单真实叶子页关联已核验，不证明业务说明正确或几何仍可定位；旧报告缺该标记不能作为新增表已核验的证据。
+
+## 固定修订正式决策
+
+EasyORM仅新增 `p_revision_approval`，不改写旧修订或回填“已批准”。每次显式正式动作只追加一行：`id/project_id/version_id/revision_id/config_version/action/approved/published/approval_id/publication_id/actor_id/actor_name/note/create_time`。最新序号表示当前状态，空表/无该修订行表示未批准、未发布。`approval_id/publication_id` 只指向相同项目、版本、修订内的有效批准/发布历史，撤销或撤下只改变新行的结果指针，旧行不修改。
+
+唯一索引 `(revision_id,config_version)` 防重复序号；`(version_id,revision_id,config_version)` 服务固定范围最新行和历史分页；project_id索引服务永久清理。当前活跃账号→项目→版本的既有锁序串行化同版本写入，锁内重验账号、动作、项目权限、固定修订与CAS，单条决策和既有创建回执同一事务。回执resource_id为逻辑版本、revision_id为固定修订，不储存原始请求键或内容；旧发布键重放返回当前状态，不能恢复已撤下的发布。
+
+原 `p_revision` 已含完整不可变内容摘要及存储引用，正式发布不再复制HTML、创建逻辑版本或重新计额。批准和发布不跨修订继承；作者停用或撤员不抹除已存姓名快照。没有外部工作流、通知、访客新身份或审批阶段数据。
+
+新增表加入整库备份、恢复与完整行摘要图；`tools/snapshot-db.sql` 的 `revision_approvals` 和 `business_rows_p_revision_approval` 只输出数量/整行摘要，不输出姓名或备注。存储引用导出保持原formatVersion4/sourceSchema语义，新增可选 `approvalReferencesChecked`；true表示新表固定范围、决策结果及同范围有效指针被检查，不证明人工批准的业务正确性。缺标记的旧报告不覆盖新增表。预检也检查这些引用，不要求历史作者仍活跃。
+
+软删除保留记录并阻断访问；现有保留期内恢复可读原历史。到期版本/项目永久清理同事务删除正式决策和原范围回执；发布不pin资源，不构成永久归档承诺。回滚保留新表，不得让不认识该表的旧清理或恢复工具继续写入/清理此数据图。

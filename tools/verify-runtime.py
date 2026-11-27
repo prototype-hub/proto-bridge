@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -246,7 +246,7 @@ class Api:
             for key, item in value.items():
                 if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken',
                            'invitationToken', 'email', 'displayName', 'company', 'text', 'summary',
-                           'authorName', 'authorCompany', 'visitTicket', 'clientRequestId',
+                           'authorName', 'authorCompany', 'actorName', 'visitTicket', 'clientRequestId',
                            'businessTerm', 'note', 'requirementUrl', 'evidenceReference') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
@@ -1716,12 +1716,51 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             hashes[label] = hashlib.sha256(content).hexdigest()
         return hashes
 
+    def create_approval_fixture(self, api, version_id, revision_id):
+        path = ('/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id + '/approval')
+        initial = api.request('GET', path)
+        require(initial['configVersion'] == 0 and not initial['approved'] and not initial['published'],
+                'Approval fixture must start without a formal decision')
+        operations = []
+        transitions = (('approve', True, False), ('publish', True, True), ('withdraw', True, False),
+                       ('revoke', False, False), ('approve', True, False), ('publish', True, True))
+        for index, (action, approved, published) in enumerate(transitions):
+            payload = {'action': action, 'expectedVersion': index, 'clientRequestId': uuid.uuid4().hex,
+                       'note': 'Original formal decision ' + str(index + 1)}
+            state = api.request('POST', path + '/_act', payload)
+            require(state['versionId'] == version_id and state['revisionId'] == revision_id and
+                    state['configVersion'] == index + 1 and state['approved'] is approved and
+                    state['published'] is published and state['revision'] == initial['revision'],
+                    'Approval action changed its exact revision summary or resulting state')
+            operations.append(payload)
+            # A completed request returns current state, even after its decision was withdrawn/revoked.
+            if action in ('withdraw', 'revoke'):
+                original = operations[1 if action == 'withdraw' else 0]
+                require(api.request('POST', path + '/_act', original) == state,
+                        'Original approval key revived a withdrawn publication or revoked approval')
+        history = api.request('POST', path + '/_history', {'pageIndex': 0, 'pageSize': 100})
+        require(history['total'] == len(operations) and len(history['data']) == len(operations) and
+                [row['configVersion'] for row in history['data']] == list(range(len(operations), 0, -1)) and
+                [row['action'] for row in history['data']] == [row[0] for row in reversed(transitions)],
+                'Approval fixture has incomplete or reordered immutable decision history')
+        return {'path': path, 'operations': operations, 'state': state, 'history': history}
+
+    def verify_approval_fixture(self, api, fixture):
+        require(api.request('GET', fixture['path']) == fixture['state'],
+                'Restored approval lost its full state or immutable revision summary')
+        for payload in fixture['operations']:
+            require(api.request('POST', fixture['path'] + '/_act', payload) == fixture['state'],
+                    'Original approval key did not return the current full state')
+        require(api.request('POST', fixture['path'] + '/_history', {'pageIndex': 0, 'pageSize': 100}) ==
+                fixture['history'], 'Original approval replay changed immutable decision history')
+
     def create_current_graph(self, api, project, version, current, member, review):
         """Establish durable current-version rows through the existing product APIs."""
         fixture = {'project': project, 'version': version, 'current': current,
                    'member': member, 'review': review}
         discussion = review['discussion']
         base = discussion['base']
+        fixture['approval'] = self.create_approval_fixture(api, version['id'], base['revisionId'])
         path = '/api/prototype-hub/versions/' + version['id'] + '/work-items'
         payload = dict(base, url='https://example.invalid/restore-work-item',
                        note='Original private work item', clientRequestId=uuid.uuid4().hex)
@@ -1851,6 +1890,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
 
     def verify_current_graph(self, api, fixture, database):
         """Recheck the same persisted fixture on source, restart, replica and restored roots."""
+        self.verify_approval_fixture(api, fixture['approval'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -1930,6 +1970,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                 'Restored statistics differ from current database events')
         self.report['currentGraph'] = {'businessTables': len(BUSINESS_TABLES),
             'nonemptyWorkItemAnchorAssignment': True, 'nonemptyPageDeliveryPreserved': True,
+            'formalDecisionHistoryAndCurrentStatePreserved': True,
+            'originalApprovalKeysPreserved': len(fixture['approval']['operations']),
             'manualViewportCheckPreserved': True, 'activeAndRevokedAssociationsPreserved': True,
             'fixedCopyStates': [item['state'] for item in fixture['copy']],
             'staticManualOccurrencesAndReceiptsPreserved': True, 'readWriteAndForeignScopeChecked': True,
@@ -2307,7 +2349,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

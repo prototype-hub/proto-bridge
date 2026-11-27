@@ -694,3 +694,19 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 限制：1–50个页面，说明/资料/人工记录引用合计至多200次，图片引用至多10次；标题1–120字符，前言至多4000字符，每页正文至多20000字符，图片注释至多500字符。所有普通文本UTF-8合计至多1MiB，图片原始字节合计至多15MiB；同源多次引用分别计数。超限明确拒绝，不截断。HTTP单字段格式、长度或必填校验沿既有DTO机制返回400；跨字段引用总量、UTF-8总量、真实图片及服务端组装正文超限返回413 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_LIMIT`。无效或重复选择返回400 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_INVALID`。被引用来源删除、范围不符、版本或指纹变化、READY正文不可用时返回409 `PROTOTYPE_HUB_DELIVERY_DOCUMENT_SOURCE_CHANGED`，客户端保留草稿供显式重读/重新组装。
 
 导出在文件处理完成后再次核对活跃账号、当前query权限、项目成员与软删除状态、真实来源指纹。下载为private no-store、nosniff附件。Markdown不解释用户HTML/链接语法；HTML只含转义文字与离线图片，并用严格CSP禁止脚本、远端资源、frame和表单提交。不执行原型、不提取DOM、不自动截图，不提供PDF/DOCX、模板或持久化文档管理。
+
+## 固定修订正式批准与发布
+
+内部入口固定为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/approval`，不会解析或移动“当前修订”指针。GET 返回当前状态；POST `/_act` 执行显式动作；POST `/_history` 在同一固定范围内按决策序号倒序做数据库计数与分页。读取需要版本 `query` 与当前项目 READ，写入需要版本 `save` 与当前项目 EDIT；当前所有者、编辑成员及既有有效管理员例外沿用项目权限，查看成员只读。访客不能使用内部动作。
+
+动作请求只有 `{action,expectedVersion,clientRequestId,note}`。action 严格为 `approve/revoke/publish/withdraw`，expectedVersion 为必填0–9007199254740991的JSON整数，拒绝小数、字符串、布尔或溢出。clientRequestId 为1–128个非空白可打印ASCII字符，note 可省略/null（规范为空串），最多2000字符，保留换行并只按普通文本处理。拒绝未知属性及非字符串文本，不接受调用者注入的身份、项目、摘要、时间或URL。历史请求为 `{pageIndex:0,pageSize:20}`，页号范围0–10000，每页1–100；两者必须为JSON整数。
+
+初始状态为 `{configVersion:0,approved:false,published:false,approval:null,publication:null}`。approve 只能批准尚未批准的修订；publish 只能发布已批准且尚未发布的修订；withdraw 撤下发布并保留批准；revoke 撤销批准且同时使当前发布失效。每次新成功动作增加一个序号和一条不可变历史。重复新键、非法状态转换、陈旧CAS或序号超限返回409 `PROTOTYPE_HUB_APPROVAL_CONFLICT`，客户端保留备注并明确刷新。浏览、上传完成、线程解决和页面人工交付状态都不会自动批准或发布。
+
+状态返回 `{projectId,versionId,revisionId,configVersion,approved,published,approval,publication,revision}`。approval/publication 为当前有效决策摘要 `{id,action,actorId,actorName,createTime,note}` 或null；revision 为原不可变快照的 `{versionName,description,entryFile,manifestSha256,fileCount,totalBytes,createTime}`，不返回存储路径或完整清单。历史返回标准 PagerResult，每条包含 `id/projectId/versionId/revisionId/configVersion/action/approved/published/approvalId/publicationId/actorId/actorName/createTime/note`。历史发布可结合响应的同一修订摘要与显式固定修订预览查看，不跟随新修订。
+
+未知提交结果须保留原键、固定范围和完整输入，由用户显式重试原动作；HTTP取消不表示事务回滚。相同账号/固定修订/原键与规范化输入重放，先重新核验当前账号、动作及项目权限，再返回**当前**状态，不新增历史、不复活旧发布。JSON属性顺序不参与指纹，null和省略备注都规范为空串；备注其他字符保持原样。同键改变动作、CAS或备注返回既有409 `PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT`。普通字段约束为400 `BAD_REQUEST`，JSON类型/未知字段沿WebFlux为400 `HTTP_400`，其他授权/不存在错误沿原项目和修订接口规则。
+
+公开只读入口是 POST `/prototype-hub/public/shares/{token}/approval/context`，严格请求 `{revisionId,accessKey}`，逐次复用现有分享固定快照读取授权，重验链接启用/撤销/到期、授权代次、密码验证所得凭据、项目/版本/修订归属。关闭反馈或没有访客身份时仍可按分享读取权查询；不创建身份、Cookie或其他行。响应只有 `{revisionId,approved,published,approvedAt,publishedAt}`，无效时间为null，不含作者、备注、内部范围或历史。无公开写入口，凭据不得放进URL、原型iframe或浏览器持久存储。
+
+发布仅是平台内对已存在固定内容的正式标记，不部署、不生成公开链接、不改变访问权限、配额、逻辑版本数或原型文件。不主动延长保留期：软删后按原权限不可读，保留期内恢复带回原记录；版本永久清理时历史与回执同图清理，不暗中切到最新修订。

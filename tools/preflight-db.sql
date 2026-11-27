@@ -3,10 +3,10 @@
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
+ AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -235,4 +235,34 @@ WITH current_scope_errors AS (
 \endif
 )
 SELECT 'current_scope_errors',count(*) FROM current_scope_errors;
+\endif
+
+-- Approval history shares the fixed revision lifecycle; removed actors remain valid historical snapshots.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_revision_approval_table')) IS NOT NULL AS prototype_hub_has_revision_approvals \gset
+\if :prototype_hub_has_revision_approvals
+SELECT a.id AS invalid_revision_approval FROM :"prototype_hub_revision_approval_table" a
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=a.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=a.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=a.revision_id
+ LEFT JOIN :"prototype_hub_revision_approval_table" ap ON ap.id=a.approval_id
+ LEFT JOIN :"prototype_hub_revision_approval_table" pub ON pub.id=a.publication_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+ OR v.project_id IS DISTINCT FROM a.project_id OR r.project_id IS DISTINCT FROM a.project_id
+ OR r.version_id IS DISTINCT FROM a.version_id
+ OR a.config_version IS NULL OR a.config_version NOT BETWEEN 1 AND 9007199254740991
+ OR a.action IS NULL OR a.action NOT IN ('approve','revoke','publish','withdraw')
+ OR a.approved IS NULL OR a.published IS NULL OR (a.published AND NOT a.approved)
+ OR (a.approved IS DISTINCT FROM (a.approval_id IS NOT NULL))
+ OR (a.published IS DISTINCT FROM (a.publication_id IS NOT NULL))
+ OR (a.approval_id IS NOT NULL AND (ap.id IS NULL OR ap.action<>'approve'
+  OR ap.project_id IS DISTINCT FROM a.project_id OR ap.version_id IS DISTINCT FROM a.version_id
+  OR ap.revision_id IS DISTINCT FROM a.revision_id OR ap.config_version>a.config_version))
+ OR (a.publication_id IS NOT NULL AND (pub.id IS NULL OR pub.action<>'publish'
+  OR pub.project_id IS DISTINCT FROM a.project_id OR pub.version_id IS DISTINCT FROM a.version_id
+  OR pub.revision_id IS DISTINCT FROM a.revision_id OR pub.config_version>a.config_version
+  OR pub.approval_id IS DISTINCT FROM a.approval_id))
+ OR (a.action='approve' AND (NOT a.approved OR a.published OR a.approval_id IS DISTINCT FROM a.id))
+ OR (a.action='revoke' AND (a.approved OR a.published))
+ OR (a.action='publish' AND (NOT a.approved OR NOT a.published OR a.publication_id IS DISTINCT FROM a.id))
+ OR (a.action='withdraw' AND (NOT a.approved OR a.published));
 \endif
