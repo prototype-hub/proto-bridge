@@ -2,6 +2,7 @@ package com.gaiys.proto;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.gaiys.proto.prototypehub.entity.PrototypeComponentCodeMappingEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageRelationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageTraceContextEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageTraceDecisionEntity;
@@ -265,7 +266,8 @@ class EasyormSchemaIntegrationTest {
     void organizationUpgradeFromOldFortyFiveTablesKeepsCoverAndExistingDeliveryRows()
             throws Exception {
         // Reconstruct the original 45-table F11 fixture before replaying its unchanged upgrade.
-        execute("DROP TABLE p_page_relation, p_page_trace_context, p_page_trace_decision");
+        execute(
+                "DROP TABLE p_component_code_mapping, p_page_relation, p_page_trace_context, p_page_trace_decision");
         execute("DROP TABLE p_project_tag, p_project_favorite");
         execute(
                 "ALTER TABLE p_project DROP COLUMN group_name, DROP COLUMN archived_time, DROP COLUMN organization_version");
@@ -323,13 +325,15 @@ class EasyormSchemaIntegrationTest {
             synchronize(PrototypePageRelationEntity.class);
             synchronize(PrototypePageTraceContextEntity.class);
             synchronize(PrototypePageTraceDecisionEntity.class);
+            synchronize(PrototypeComponentCodeMappingEntity.class);
         }
     }
 
     @Test
     void pageTraceabilityUpgradeFromFortySevenTablesPreservesSourcesAndPersistedMetadata()
             throws Exception {
-        execute("DROP TABLE p_page_relation, p_page_trace_context, p_page_trace_decision");
+        execute(
+                "DROP TABLE p_component_code_mapping, p_page_relation, p_page_trace_context, p_page_trace_decision");
         execute(
                 "INSERT INTO p_element_description(id,project_id,version_id,revision_id,page_id,title,purpose,input_rules,permission_rules,navigation_rules,notes,config_version,created_at,updated_at) VALUES ('old-trace-source','trace-project','trace-version','trace-revision','trace-page','Retained source','Purpose','','','','',3,1,2)");
         String sourceBefore =
@@ -382,6 +386,69 @@ class EasyormSchemaIntegrationTest {
                     List.of("p_page_relation", "p_page_trace_context", "p_page_trace_decision"))
                 execute("DELETE FROM " + table + " WHERE id LIKE 'trace-%'");
             execute("DELETE FROM p_element_description WHERE id='old-trace-source'");
+            synchronize(PrototypeComponentCodeMappingEntity.class);
+        }
+    }
+
+    @Test
+    void codeMappingUpgradeFromFiftyTablesPreservesSourcesReceiptsAndNonemptyCards()
+            throws Exception {
+        execute("DROP TABLE p_component_code_mapping");
+        execute(
+                "INSERT INTO p_element_description(id,project_id,version_id,revision_id,page_id,title,purpose,input_rules,permission_rules,navigation_rules,notes,config_version,created_at,updated_at) VALUES ('old-code-source','code-project','code-version','code-revision','code-page','Retained description','Purpose','','','','',3,1,2)");
+        execute(
+                "INSERT INTO p_creation_receipt(id,fingerprint,resource_id,revision_id,create_time) VALUES ('old-code-receipt','original-fingerprint','code-version','code-revision',1)");
+        var previous = new HashMap<String, String>();
+        for (String table : List.of("p_element_description", "p_creation_receipt"))
+            previous.put(
+                    table,
+                    scalar(
+                            "SELECT row_to_json(t)::text FROM "
+                                    + table
+                                    + " t WHERE id LIKE 'old-code-%'"));
+        try {
+            assertEquals(
+                    "50",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            synchronize(PrototypeComponentCodeMappingEntity.class);
+            assertEquals(
+                    "51",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            for (var entry : previous.entrySet())
+                assertEquals(
+                        entry.getValue(),
+                        scalar(
+                                "SELECT row_to_json(t)::text FROM "
+                                        + entry.getKey()
+                                        + " t WHERE id LIKE 'old-code-%'"));
+            execute(
+                    "INSERT INTO p_component_code_mapping(id,project_id,version_id,revision_id,page_id,alias,repository_path,repository_url,documentation_url,snippet,framework,framework_version,description_id,description_version,config_version,created_at,updated_at) VALUES ('code-card','code-project','code-version','code-revision','code-page','Component','src/Card.vue','https://example.invalid/repo','','<script>\n  text only\n</script>','Vue','3','old-code-source',2,4,1,2)");
+            String cardBefore =
+                    scalar(
+                            "SELECT row_to_json(t)::text FROM p_component_code_mapping t WHERE id='code-card'");
+            synchronize(PrototypeComponentCodeMappingEntity.class);
+            assertEquals(
+                    cardBefore,
+                    scalar(
+                            "SELECT row_to_json(t)::text FROM p_component_code_mapping t WHERE id='code-card'"));
+            assertEquals(
+                    "2",
+                    scalar(
+                            "SELECT count(*)::text FROM pg_indexes WHERE schemaname='public' AND tablename='p_component_code_mapping' AND (indexdef LIKE '%(revision_id, page_id, created_at, id)%' OR indexdef LIKE '%(version_id)%')"));
+            // Aliases and paths are labels, not natural keys; explicit new imports may coexist.
+            execute(
+                    "INSERT INTO p_component_code_mapping SELECT 'code-second',project_id,version_id,revision_id,page_id,alias,repository_path,repository_url,documentation_url,snippet,framework,framework_version,null,null,config_version,created_at,updated_at FROM p_component_code_mapping WHERE id='code-card'");
+            assertEquals(
+                    "2",
+                    scalar(
+                            "SELECT count(*)::text FROM p_component_code_mapping WHERE id LIKE 'code-%'"));
+        } finally {
+            synchronize(PrototypeComponentCodeMappingEntity.class);
+            execute("DELETE FROM p_component_code_mapping WHERE id LIKE 'code-%'");
+            execute("DELETE FROM p_element_description WHERE id='old-code-source'");
+            execute("DELETE FROM p_creation_receipt WHERE id='old-code-receipt'");
         }
     }
 

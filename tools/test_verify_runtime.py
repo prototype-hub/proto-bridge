@@ -31,6 +31,49 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_code_mapping_restore_checks_private_text_sources_and_exact_deleted_batch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            fields = {'alias': 'Card', 'repositoryPath': 'src/Private.vue', 'repositoryUrl': '',
+                      'documentationUrl': '', 'snippet': '<script>\n  plain text\n</script>',
+                      'framework': 'Vue', 'frameworkVersion': '3'}
+            row = dict(fields, id='code-card', configVersion=2,
+                       description={'id': 'source', 'expectedVersion': 0, 'status': 'changed',
+                                    'currentVersion': 1, 'title': 'Current description'})
+            result = {'items': [{'id': 'code-card', 'status': 'current', 'card': row},
+                                {'id': 'removed-card', 'status': 'missing', 'card': None}]}
+            fixture = {'path': '/code', 'rows': [row], 'result': result, 'payload': {'clientRequestId': 'original-import'},
+                       'update': {'clientRequestId': 'original-update'}, 'delete': {'clientRequestId': 'original-delete'},
+                       'deletedId': 'removed-card'}
+            current = copy.deepcopy(row)
+            api = unittest.mock.Mock()
+            package = {'format': 'prototype-hub-code-mapping-cards', 'schemaVersion': 1, 'cards': [fields]}
+            def respond(method, path, payload=None, **kwargs):
+                if kwargs.get('expected') == 404: return None
+                if path.endswith('/_query'): return {'total': 1, 'data': [current]}
+                if path.endswith('/_import'): return result
+                if path.endswith('/_delete'): return True
+                if path.endswith('/_export'):
+                    return json.dumps(package).encode(), {'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff'}
+                return current
+            api.request.side_effect = respond
+            check.verify_code_mapping_fixture(api, fixture)
+            self.assertTrue(check.report['codeMappings']['originalImportReadsExactCurrentMissingBatch'])
+            self.assertIn(unittest.mock.call('POST', '/code/_import', fixture['payload']), api.request.call_args_list)
+            for field, value in [('snippet', 'Altered'), ('repositoryPath', 'other.vue'),
+                                 ('configVersion', 0), ('description', None)]:
+                current[field] = value
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'Restored code mapping'):
+                    check.verify_code_mapping_fixture(api, fixture)
+                current = copy.deepcopy(row)
+            result['items'][1] = {'id': 'removed-card', 'status': 'current', 'card': row}
+            # The stored expected envelope is independent of the server response under test.
+            fixture['result'] = {'items': [{'id': 'code-card', 'status': 'current', 'card': row},
+                                          {'id': 'removed-card', 'status': 'missing', 'card': None}]}
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'exact current/missing batch'):
+                check.verify_code_mapping_fixture(api, fixture)
+
     def test_page_traceability_restore_keeps_full_rows_and_original_key_current_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
@@ -269,12 +312,13 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(34, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(35, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_project_tag', runtime.BUSINESS_TABLES)
         self.assertIn('p_project_favorite', runtime.BUSINESS_TABLES)
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_approval', runtime.BUSINESS_TABLES)
         self.assertIn('p_demo_script', runtime.BUSINESS_TABLES)
+        self.assertIn('p_component_code_mapping', runtime.BUSINESS_TABLES)
         self.assertIn('p_element_description', runtime.BUSINESS_TABLES)
         self.assertIn('p_viewport_check', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_material', runtime.BUSINESS_TABLES)
@@ -344,7 +388,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar = Path(temporary) / 'fixture.jar'
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
-            fixture = {'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
+            fixture = {'codeMappings': {'rows': [{'id': 'code-card'}]}, 'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
                        'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
                        'project': {'id': 'organization-project'}, 'organization': {'member': {'id': 'reader'}},
                        'demoScripts': {'shared': {'id': 'demo'}},
@@ -366,11 +410,12 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                 if name == 'export-storage-manifest.sql':
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
                                        'referencesComplete': True, 'demoScriptReferencesChecked': True,
-                                       'organizationReferencesChecked': True, 'pageTraceabilityReferencesChecked': True})
+                                       'organizationReferencesChecked': True, 'pageTraceabilityReferencesChecked': True,
+                                       'codeMappingReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(32, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(35, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
                 with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 10 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)

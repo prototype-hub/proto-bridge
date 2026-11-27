@@ -774,3 +774,31 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 引用为`{kind,id,expectedVersion}`，kind仅work-item/material/description/check；工作项、说明、验收须同页，资料须同修订且手工挂页。Context含固定范围/pageId/entry/references/configVersion/createdAt/updatedAt；每项引用另有status(current/changed/missing)、currentVersion及当前授权title，缺失均为null。新添/改绑须匹配来源当前版本；既存指针允许保留changed/missing并继续独立编辑，需手工重连或移除。不自动重绑、不阻止原来源删除、不还原旧来源正文。
 
 写入在当前用户→项目→版本锁内重验身份/权限，CAS与回执原子提交。clientRequestId为1～128可打印ASCII；未知结果以原键及完全相同输入重试，返回当前记录，已删除记录不能被旧键复活；同键异参沿既有幂等冲突。严格拒绝未知字段、错误标量、NUL和非法安全整数。`PROTOTYPE_HUB_PAGE_TRACE_CONFLICT`为409 CAS冲突，`PROTOTYPE_HUB_PAGE_TRACE_SOURCE_CHANGED`为409来源版本不匹配，`PROTOTYPE_HUB_PAGE_TRACE_INVALID`为400非法关系/引用，其他沿既有404/权限错误。
+
+## 固定页面组件代码映射卡
+
+成员在固定修订的真实非目录页面维护人工代码卡，包括有子节点的可打开父页；不识别DOM组件、不迁移修订、不读取路径或抓取私库、不执行代码。基础路径为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/pages/{pageId}/code-mappings`。读取/导出要求当前 `prototype-hub-version.query ∩ 项目READ`，写入/导入要求 `save ∩ EDIT`；每次及原键重放重新核验当前身份/范围。无访客、分享或匿名入口。
+
+| 方法与路径后缀 | 请求 | 结果 |
+| --- | --- | --- |
+| `POST /_query` | `{keyword?,pageIndex?,pageSize?}` | `{data,total,pageIndex,pageSize}`，按alias字面包含在数据库COUNT/分页，`createdAt DESC,id ASC` |
+| `GET /{id}` | 无body | 当前完整卡，同范围不存在404 |
+| `POST` | 七文本字段、`description`、`clientRequestId` | 新卡，configVersion=0 |
+| `PUT /{id}` | 创建字段及`expectedVersion` | 七文本与说明指针完整替换，CAS+1 |
+| `POST /{id}/_delete` | `{expectedVersion,clientRequestId}` | `true`，只删本卡，不改F27或代码文件 |
+| `POST /_export` | `{ids}`，同页唯一1–50项，保留选择顺序 | 原始UTF-8 JSON附件 |
+| `POST /_import` | 卡包format/schemaVersion、`cards`及`clientRequestId` | `{items:[{id,status,card}]}`，一次事务只新增 |
+
+七文本字段全部必须是JSON字符串：`alias`（非空白1–120）、`repositoryPath`（非空白1–2048）、`repositoryUrl/documentationUrl`（0–2048）、`snippet`（0–16000）、`framework/frameworkVersion`（各0–120）。可选内容用空串；长度按Java/JavaScript UTF-16单元，拒NUL，不隐式trim。片段原样保存换行缩进，仅展示/复制普通文本；路径不当文件操作或IDE协议。非空链接仅严格http(s)、有合法主机/端口，无凭据、控制字符、空白或反斜线混淆，服务器不请求链接。
+
+`description`明确为null或仅`{id,expectedVersion}`，最多关联一条同页F27。新关联在锁内校验来源/版本；原指针可保留changed/missing而编辑独立卡正文，确认当前、重绑或清空须用户显式提交。读返回指针及`status:current|changed|missing`、`currentVersion/title`（缺失时null）；不返回说明正文或anchor，按既有固定页说明GET查看/定位。来源更新/删除不删代码卡，不从其他页找同ID标题。
+
+所有请求及嵌套对象严格字段白名单，标量不强制转换。分页默认0/20、范围0–10000/1–50；keyword≤120。CAS和来源版本为JSON整数0–9007199254740991，最大值不可再递增。`clientRequestId`必填、1–128个非空白可打印ASCII。写入沿账号→项目→版本锁序，锁内重授权；CAS与持久回执同事务。原键异payload409，原创建/更新键返回当前卡、已删卡409而不复活；删除重放仍true。
+
+可迁移文件仅`{format:"prototype-hub-code-mapping-cards",schemaVersion:1,cards:[七文本字段]}`，1–50张、紧凑JSON UTF-8≤1048576字节；超限413不截断。导出任一卡不存在/跨范围整次404；不含内部卡/项目/版本/修订/页/F27标识、时间、作者、回执、anchor或说明正文。选出的路径/片段/链接仍可能含私有内容，不表示已脱敏。附件固定`code-mapping-cards.json`，`application/json;charset=UTF-8`、`Cache-Control:private,no-store`、`X-Content-Type-Options:nosniff`。
+
+导入先在当前页本地预览文件/粘贴JSON并逐字段校验，未知格式/字段/错误标量均拒绝。文件原字节0<size≤1MiB；提交的typed JSON请求在每卡七文本外明确加`description:null|指针`，仅从目标页重新选择关联，不从文件迁移内部ID。服务器重验1–50张及可迁移文本投影的UTF-8预算；不声称校验从未收到的原文件空白字节。任一卡非法、来源变动或撤权，整批卡及回执0写入；没有覆盖、别名去重或部分成功。
+
+首次导入结果顺序对应输入卡；原键重试仅返回该请求派生卡的当前状态：仍存在为`status:current,card:当前卡`，后来已删为`status:missing,card:null`。此status只代表卡存在，与description.status独立；不会返回当前页其他卡或重建已删卡。明确以新key重新导入会新增一批；未知结果必须冻结原payload/key精确重试。
+
+格式/字段错误400；精确页面/卡/新说明不存在404；CAS冲突`PROTOTYPE_HUB_CODE_MAPPING_CONFLICT`、新来源变化`PROTOTYPE_HUB_CODE_MAPPING_DESCRIPTION_CHANGED`及幂等冲突409；文本包超限`PROTOTYPE_HUB_CODE_MAPPING_TOO_LARGE`为413。客户端保留同身份草稿，显式重读/比较再决定，不能自动确认来源或覆盖服务端。

@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_tag', 'p_project_favorite', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -1910,6 +1910,79 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'missingAndChangedStatesRetainedWithoutRebinding': True, 'fullRelationDecisionAndActorsRetained': True,
             'manualEntryRetained': True, 'originalKeysReadCurrentState': len(fixture['operations'])}
 
+    def create_code_mapping_fixture(self, api, version_id, revision_id, page_id):
+        """Persist private text, stale/missing F27 pointers and one exact import batch."""
+        path = ('/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id +
+                '/pages/' + page_id + '/code-mappings')
+        source_path = '/api/prototype-hub/versions/' + version_id + '/element-descriptions'
+        scope = {'revisionId': revision_id, 'pageId': page_id}
+        descriptions = []
+        for title in ('Code source to change', 'Code source to remove'):
+            payload = dict(scope, title=title, purpose='Ordinary manual description', clientRequestId=uuid.uuid4().hex)
+            descriptions.append((api.request('POST', source_path, payload), payload))
+        text = {'alias': 'Original component', 'repositoryPath': 'src/private/Original.vue',
+                'repositoryUrl': 'https://example.invalid/private-repository',
+                'documentationUrl': 'https://example.invalid/component-guide',
+                'snippet': '<script>\n  notExecuted()\n</script>\n', 'framework': 'Vue', 'frameworkVersion': '3'}
+        drafts = [dict(text, alias='Component ' + str(index), description=(
+            {'id': descriptions[index][0]['id'], 'expectedVersion': descriptions[index][0]['configVersion']}
+            if index < 2 else None)) for index in range(3)]
+        payload = {'clientRequestId': uuid.uuid4().hex, 'format': 'prototype-hub-code-mapping-cards',
+                   'schemaVersion': 1, 'cards': drafts}
+        imported = api.request('POST', path + '/_import', payload)
+        require(len(imported['items']) == 3 and all(item['status'] == 'current' for item in imported['items']),
+                'Code mapping fixture did not atomically import its exact three cards')
+        cards = [item['card'] for item in imported['items']]
+        update = dict(drafts[0], snippet='Current snippet\n  preserves indentation\n',
+                      expectedVersion=cards[0]['configVersion'], clientRequestId=uuid.uuid4().hex)
+        api.request('PUT', path + '/' + cards[0]['id'], update)
+        source, original = descriptions[0]
+        api.request('PUT', source_path + '/' + source['id'], dict(original, title='Changed code source',
+            expectedVersion=source['configVersion'], clientRequestId=uuid.uuid4().hex))
+        source = descriptions[1][0]
+        api.request('POST', source_path + '/' + source['id'] + '/_delete',
+                    dict(scope, expectedVersion=source['configVersion'], clientRequestId=uuid.uuid4().hex))
+        delete = {'expectedVersion': cards[2]['configVersion'], 'clientRequestId': uuid.uuid4().hex}
+        api.request('POST', path + '/' + cards[2]['id'] + '/_delete', delete)
+        rows = [api.request('GET', path + '/' + card['id']) for card in cards[:2]]
+        require([row['description']['status'] for row in rows] == ['changed', 'missing'],
+                'Code mapping fixture lost its independent changed/missing description pointers')
+        expected = {'items': [{'id': row['id'], 'status': 'current', 'card': row} for row in rows] +
+                    [{'id': cards[2]['id'], 'status': 'missing', 'card': None}]}
+        require(api.request('POST', path + '/_import', payload) == expected,
+                'Original import key did not read only its exact current/missing cards')
+        return {'path': path, 'payload': payload, 'rows': rows, 'result': expected,
+                'update': update, 'deletedId': cards[2]['id'], 'delete': delete}
+
+    def verify_code_mapping_fixture(self, api, fixture):
+        path = fixture['path']
+        for row in fixture['rows']:
+            require(api.request('GET', path + '/' + row['id']) == row,
+                    'Restored code mapping changed private text, fixed scope, source pointer or CAS')
+        page = api.request('POST', path + '/_query', {'pageSize': 50})
+        require(page['total'] == len(fixture['rows']) and
+                {row['id'] for row in page['data']} == {row['id'] for row in fixture['rows']},
+                'Restored code mapping list omitted cards or resurrected the deleted import item')
+        require(api.request('POST', path + '/_import', fixture['payload']) == fixture['result'],
+                'Restored code mapping import replay did not return its exact current/missing batch')
+        require(api.request('PUT', path + '/' + fixture['rows'][0]['id'], fixture['update']) == fixture['rows'][0],
+                'Restored original code mapping update key changed current card state')
+        require(api.request('POST', path + '/' + fixture['deletedId'] + '/_delete', fixture['delete']) is True,
+                'Restored original code mapping delete key did not retain its result')
+        api.request('GET', path + '/' + fixture['deletedId'], expected=404)
+        content, headers = api.request('POST', path + '/_export',
+            {'ids': [row['id'] for row in fixture['rows']]}, raw=True)
+        package = json.loads(content)
+        fields = ('alias', 'repositoryPath', 'repositoryUrl', 'documentationUrl', 'snippet', 'framework', 'frameworkVersion')
+        require(package == {'format': 'prototype-hub-code-mapping-cards', 'schemaVersion': 1,
+                'cards': [{field: row[field] for field in fields} for row in fixture['rows']]},
+                'Restored code mapping export changed selected text or leaked internal metadata')
+        require('no-store' in headers.get('Cache-Control', '') and
+                headers.get('X-Content-Type-Options') == 'nosniff', 'Code mapping attachment lost safe response headers')
+        self.report['codeMappings'] = {'nonemptyPrivateTextAndSourceVersionsRetained': True,
+            'originalImportReadsExactCurrentMissingBatch': True, 'deletedCardNeverResurrects': True,
+            'originalUpdateAndDeleteKeysRetained': True, 'portableExportFields': len(fields)}
+
     def create_organization_fixture(self, api, project, member):
         path = '/api/prototype-hub/projects/' + project['id']
         original = api.request('GET', path)
@@ -2100,6 +2173,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
                               'oldId': rows[0], 'oldRestoreId': rows[1], 'recentId': rows[2]}
         fixture['pageTraceability'] = self.create_page_traceability_fixture(
             api, version['id'], base['revisionId'], base['pageId'], fixture['workItem']['row'], fixture['viewportCheck']['row'])
+        fixture['codeMappings'] = self.create_code_mapping_fixture(api, version['id'], base['revisionId'], base['pageId'])
         self.current_restore_fixture = fixture
         return fixture
 
@@ -2109,6 +2183,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         self.verify_demo_script_fixture(api, fixture['demoScripts'])
         self.verify_organization_fixture(api, fixture['organization'])
         self.verify_page_traceability_fixture(api, fixture['pageTraceability'])
+        self.verify_code_mapping_fixture(api, fixture['codeMappings'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2226,14 +2301,15 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
         require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
                 clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True and
-                clean.get('pageTraceabilityReferencesChecked') is True,
+                clean.get('pageTraceabilityReferencesChecked') is True and clean.get('codeMappingReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
         before = self.sql_script(database, 'snapshot-db.sql')
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
-        variables = {'trace_relation': fixture['pageTraceability']['relation']['id'],
+        variables = {'code_mapping': fixture['codeMappings']['rows'][0]['id'],
+                     'trace_relation': fixture['pageTraceability']['relation']['id'],
                      'trace_context': fixture['pageTraceability']['context']['id'],
                      'trace_decision': fixture['pageTraceability']['decision']['id'],
                      'association': fixture['associations']['active']['id'],
@@ -2287,7 +2363,10 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_project_favorite SET user_id='missing-fixture-user' WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
             "UPDATE p_project_favorite SET config_version=0 WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
             "UPDATE p_project SET organization_version=-1 WHERE id=:'organization_project';",
-            "UPDATE p_project SET archived_time=-1 WHERE id=:'organization_project';")
+            "UPDATE p_project SET archived_time=-1 WHERE id=:'organization_project';",
+            "UPDATE p_component_code_mapping SET project_id=:'foreign_project' WHERE id=:'code_mapping';",
+            "UPDATE p_component_code_mapping SET page_id='missing-page' WHERE id=:'code_mapping';",
+            "UPDATE p_component_code_mapping SET description_version=-1 WHERE id=:'code_mapping';")
         for index, mutation in enumerate(mutations, 1):
             case = 'SQL negative case ' + str(index)
             require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
@@ -2593,7 +2672,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

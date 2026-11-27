@@ -38,3 +38,4 @@
 \set prototype_hub_page_relation_table :prototype_hub_table_prefix 'page_relation'
 \set prototype_hub_page_trace_context_table :prototype_hub_table_prefix 'page_trace_context'
 \set prototype_hub_page_trace_decision_table :prototype_hub_table_prefix 'page_trace_decision'
+\set prototype_hub_code_mapping_table :prototype_hub_table_prefix 'component_code_mapping'
