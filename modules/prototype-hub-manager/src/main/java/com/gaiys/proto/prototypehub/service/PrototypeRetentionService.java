@@ -10,6 +10,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeRevisionApprovalEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
@@ -57,6 +58,7 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeWorkItemEntity, String> workItems;
     private final ReactiveRepository<PrototypeElementDescriptionEntity, String> elementDescriptions;
     private final ReactiveRepository<PrototypePageDeliveryEntity, String> pageDeliveries;
+    private final ReactiveRepository<PrototypeRevisionApprovalEntity, String> revisionApprovals;
     private final ReactiveRepository<PrototypeCopyEntryEntity, String> copyEntries;
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
@@ -416,8 +418,11 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return statistics
-                .purgeVersion(id)
+        return revisionApprovals
+                .createDelete()
+                .where(PrototypeRevisionApprovalEntity::getVersionId, id)
+                .execute()
+                .then(statistics.purgeVersion(id))
                 .then(materials.purgeVersion(id))
                 .then(
                         viewportChecks
@@ -487,8 +492,11 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                statistics
-                                        .purgeProject(id)
+                                revisionApprovals
+                                        .createDelete()
+                                        .where(PrototypeRevisionApprovalEntity::getProjectId, id)
+                                        .execute()
+                                        .then(statistics.purgeProject(id))
                                         .then(materials.purgeProject(id))
                                         .then(
                                                 viewportChecks

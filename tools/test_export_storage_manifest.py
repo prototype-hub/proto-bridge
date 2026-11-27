@@ -320,5 +320,44 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertEqual('legacy-current-only', manifest['sourceSchema'])
 
 
+
+    def create_revision_approval(self):
+        self.sql(self.prefix() + """
+          CREATE TABLE p_revision_approval(id text primary key,project_id text,version_id text,
+            revision_id text,config_version bigint,action text,approved boolean,published boolean,
+            approval_id text,publication_id text,actor_id text,actor_name text,note text,create_time bigint);
+          INSERT INTO p_revision_approval VALUES
+            ('approval','project','version','r1',1,'approve',true,false,'approval',null,'old-user','Historical name','Private approval note',11),
+            ('publication','project','version','r1',2,'publish',true,true,'approval','publication','old-user','Historical name','Private release note',12);
+        """)
+
+    def test_approval_scope_and_historical_pointers_are_checked_without_exporting_private_text(self):
+        self.create_revision_approval()
+        result = self.export()
+        self.assertEqual(0, result['integrityErrors'])
+        self.assertTrue(result['approvalReferencesChecked'])
+        self.assertNotIn('Private approval note', json.dumps(result))
+        self.assertNotIn('Historical name', json.dumps(result))
+        for mutation in ("UPDATE p_revision_approval SET revision_id='missing';",
+                         "UPDATE p_revision_approval SET project_id='missing';",
+                         "UPDATE p_revision_approval SET approval_id='missing' WHERE id='publication';",
+                         "UPDATE p_revision_approval SET publication_id='approval' WHERE id='publication';",
+                         "UPDATE p_revision_approval SET approved=false WHERE id='publication';"):
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+
+    def test_approval_snapshot_hashes_full_rows_without_printing_private_content(self):
+        self.create_revision_approval()
+        before = self.script('snapshot-db.sql')
+        self.assertIn('business_rows_p_revision_approval|2|', before)
+        self.assertIn('revision_approvals|2|', before)
+        self.assertNotIn('Private approval note', before)
+        for field, value in (('note', "'changed'"), ('actor_name', "'Renamed'"),
+                             ('create_time', '99'), ('publication_id', "'other'")):
+            after = self.script('snapshot-db.sql', 'UPDATE p_revision_approval SET ' + field + '=' + value + ';')
+            self.assertNotEqual(next(line for line in before.splitlines() if line.startswith('revision_approvals|')),
+                                next(line for line in after.splitlines() if line.startswith('revision_approvals|')))
+
+
 if __name__ == '__main__':
     unittest.main()

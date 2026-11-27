@@ -31,10 +31,68 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_approval_fixture_uses_four_actions_and_original_keys_after_withdraw_and_revoke(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            initial = {'versionId': 'version', 'revisionId': 'fixed', 'configVersion': 0,
+                       'approved': False, 'published': False, 'revision': {'manifestSha256': 'a' * 64}}
+            transitions = [('approve', True, False), ('publish', True, True), ('withdraw', True, False),
+                           ('revoke', False, False), ('approve', True, False), ('publish', True, True)]
+            states = [dict(initial, configVersion=index + 1, approved=approved, published=published)
+                      for index, (_, approved, published) in enumerate(transitions)]
+            history = {'total': 6, 'data': [{'configVersion': index + 1, 'action': item[0]}
+                                           for index, item in reversed(list(enumerate(transitions)))]}
+            api = unittest.mock.Mock()
+            api.request.side_effect = [initial, states[0], states[1], states[2], states[2],
+                                       states[3], states[3], states[4], states[5], history]
+            fixture = check.create_approval_fixture(api, 'version', 'fixed')
+            self.assertEqual(states[-1], fixture['state'])
+            self.assertEqual(history, fixture['history'])
+            calls = api.request.call_args_list
+            self.assertEqual(calls[2], calls[4])
+            self.assertEqual(calls[1], calls[6])
+            self.assertEqual(list(range(6)), [p['expectedVersion'] for p in fixture['operations']])
+            self.assertEqual(6, len({p['clientRequestId'] for p in fixture['operations']}))
+            self.assertTrue(all('/versions/version/revisions/fixed/approval' in call.args[1] for call in calls))
+            api.request.side_effect = [initial, states[0], states[1], states[2], states[1]]
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'revived'):
+                check.create_approval_fixture(api, 'version', 'fixed')
+
+    def test_approval_restore_rejects_changed_state_summary_audit_and_old_key_history_append(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            state = {'revisionId': 'fixed', 'configVersion': 6, 'approved': True, 'published': True,
+                     'revision': {'manifestSha256': 'a' * 64},
+                     'approval': {'actorName': 'Original member', 'note': 'Original note'}}
+            history = {'total': 6, 'data': [{'id': 'original-decision', 'note': 'Original note'}]}
+            fixture = {'path': '/fixed/approval', 'state': state, 'history': history,
+                       'operations': [{'clientRequestId': 'original-key', 'expectedVersion': 0, 'action': 'approve'}]}
+            api = unittest.mock.Mock()
+            api.request.side_effect = [copy.deepcopy(state), copy.deepcopy(state), copy.deepcopy(history)]
+            check.verify_approval_fixture(api, fixture)
+            self.assertEqual(fixture['operations'][0], api.request.call_args_list[1].args[2])
+            for changed in (dict(state, revision={'manifestSha256': 'b' * 64}), dict(state, published=False),
+                            dict(state, approval={'actorName': 'Renamed member', 'note': 'Original note'})):
+                with self.subTest(changed=changed):
+                    api.request.side_effect = [changed]
+                    with self.assertRaises(runtime.VerificationFailure):
+                        check.verify_approval_fixture(api, fixture)
+            api.request.side_effect = [state, dict(state, configVersion=1)]
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'current full state'):
+                check.verify_approval_fixture(api, fixture)
+            api.request.side_effect = [state, state, dict(history, total=7)]
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'immutable decision history'):
+                check.verify_approval_fixture(api, fixture)
+
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(27, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(28, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
+        self.assertIn('p_revision_approval', runtime.BUSINESS_TABLES)
         self.assertIn('p_element_description', runtime.BUSINESS_TABLES)
         self.assertIn('p_viewport_check', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_material', runtime.BUSINESS_TABLES)
@@ -172,7 +230,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_new_business_payloads_and_visit_tickets_are_registered_for_redaction(self):
         values = {key: 'private-' + key for key in ('visitTicket', 'clientRequestId', 'businessTerm',
-                  'note', 'requirementUrl', 'evidenceReference')}
+                  'note', 'actorName', 'requirementUrl', 'evidenceReference')}
         seen = set()
         runtime.Api('http://127.0.0.1:1', seen).remember_secrets(values)
         self.assertEqual(set(values.values()), seen)
