@@ -68,6 +68,89 @@ class StorageExportPostgresTest(unittest.TestCase):
     def export(self, mutation=''):
         return json.loads(self.script('export-storage-manifest.sql', mutation))
 
+    def create_page_traceability(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_share ADD COLUMN token text;
+          ALTER TABLE p_version ADD COLUMN status text;
+          ALTER TABLE p_revision ADD COLUMN manifest_json text;
+          UPDATE p_revision SET manifest_json='{"pages":[{"pageId":"parent","path":"index.html","folder":false,"children":[{"pageId":"child","path":"child.html","folder":false,"children":[]}]}]}';
+          CREATE TABLE p_page_relation(id text,project_id text,version_id text,revision_id text,
+            from_page_id text,to_page_id text,label text,note text,config_version bigint,created_at bigint,updated_at bigint);
+          CREATE TABLE p_page_trace_context(id text,project_id text,version_id text,revision_id text,
+            page_id text,entry boolean,source_refs text,config_version bigint,created_at bigint,updated_at bigint);
+          CREATE TABLE p_page_trace_decision(id text,project_id text,version_id text,revision_id text,
+            page_id text,title text,decision text,rationale text,author_id text,updated_by text,
+            config_version bigint,created_at bigint,updated_at bigint);
+          INSERT INTO p_page_relation VALUES('relation','project','version','r1','parent','child',
+            'Private relationship','Private relationship note',1,100,101);
+          INSERT INTO p_page_trace_context VALUES('context','project','version','r1','parent',true,
+            '[{"kind":"work-item","id":"deleted-source","expectedVersion":1},{"kind":"material","id":"changed-source","expectedVersion":2}]',2,100,102);
+          INSERT INTO p_page_trace_decision VALUES('decision','project','version','r1','parent',
+            'Private change title','Private decision','Private rationale','removed-author','removed-updater',3,100,103);
+        """)
+
+    def test_page_traceability_checks_full_fixed_scope_and_accepts_missing_historical_sources(self):
+        self.create_page_traceability()
+        result = self.export()
+        self.assertTrue(result['pageTraceabilityReferencesChecked'])
+        self.assertTrue(result['referencesComplete'])
+        self.assertEqual(0, result['integrityErrors'])
+        for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision'):
+            for assignment in ("project_id='missing'", "version_id='missing'", "revision_id='missing'",
+                               'config_version=-1', 'created_at=-1', 'updated_at=99'):
+                mutation = 'UPDATE ' + table + ' SET ' + assignment + ';'
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0, mutation)
+                self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
+        for mutation in ("UPDATE p_page_relation SET from_page_id='missing';",
+                         "UPDATE p_page_relation SET to_page_id='parent';",
+                         "UPDATE p_page_relation SET label='';",
+                         "UPDATE p_page_trace_context SET page_id='missing';",
+                         "UPDATE p_page_trace_context SET entry=null;",
+                         "UPDATE p_page_trace_decision SET page_id='missing';",
+                         "UPDATE p_page_trace_decision SET decision='';",
+                         "UPDATE p_page_trace_decision SET rationale='';",
+                         "UPDATE p_page_trace_decision SET author_id='';"):
+            self.assertGreater(self.export(mutation)['integrityErrors'], 0, mutation)
+        self.assertEqual(0, self.export("UPDATE p_page_trace_context SET entry=false,source_refs='[]';")['integrityErrors'])
+
+    def test_page_traceability_source_shape_versions_duplicates_and_limit_fail_closed(self):
+        self.create_page_traceability()
+        for value in ('{}', '[{}]', '[{"kind":"unknown","id":"id","expectedVersion":0}]',
+                      '[{"kind":"material","id":"id","expectedVersion":-1}]',
+                      '[{"kind":"material","id":"id","expectedVersion":1.5}]',
+                      '[{"kind":"material","id":"id","expectedVersion":9007199254740992}]',
+                      '[{"kind":"material","id":"id","expectedVersion":"1"}]',
+                      '[{"kind":"material","id":"id","expectedVersion":1,"extra":true}]',
+                      '[{"kind":"material","id":"id","expectedVersion":1},{"kind":"material","id":"id","expectedVersion":2}]'):
+            self.assertGreater(self.export("UPDATE p_page_trace_context SET source_refs='" + value + "';")['integrityErrors'], 0, value)
+        self.assertGreater(self.export("UPDATE p_page_trace_context SET source_refs=(SELECT jsonb_agg(jsonb_build_object('kind','material','id','source-'||i,'expectedVersion',0))::text FROM generate_series(1,41) i);")['integrityErrors'], 0)
+        self.assertGreater(self.export("INSERT INTO p_page_trace_context SELECT 'duplicate',project_id,version_id,revision_id,page_id,entry,source_refs,config_version,created_at,updated_at FROM p_page_trace_context;")['integrityErrors'], 0)
+
+    def test_partial_page_traceability_graph_never_claims_complete_reference_coverage(self):
+        self.sql(self.prefix() + 'ALTER TABLE p_revision ADD COLUMN manifest_json text; CREATE TABLE p_page_trace_context(id text,project_id text,version_id text,revision_id text,page_id text,entry boolean,source_refs text,config_version bigint,created_at bigint,updated_at bigint);')
+        # Partial presence is itself corruption, even with no new rows.
+        result = self.export()
+        self.assertFalse(result['pageTraceabilityReferencesChecked'])
+        self.assertFalse(result['referencesComplete'])
+        self.assertGreater(result['integrityErrors'], 0)
+
+    def test_page_traceability_snapshot_hashes_all_private_rows_and_pointer_order(self):
+        self.create_page_traceability()
+        before = self.script('snapshot-db.sql')
+        for private in ('Private relationship', 'Private change title', 'deleted-source', 'removed-author'):
+            self.assertNotIn(private, before)
+        for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision'):
+            self.assertIn('business_rows_' + table + '|1|', before)
+            self.assertIn(table, self.script('preflight-db.sql'))
+        mutations = ("UPDATE p_page_relation SET note='Different';",
+                     "UPDATE p_page_relation SET from_page_id='child',to_page_id='parent';",
+                     "UPDATE p_page_trace_context SET source_refs=jsonb_build_array(source_refs::jsonb->1,source_refs::jsonb->0)::text;",
+                     "UPDATE p_page_trace_context SET source_refs=jsonb_set(source_refs::jsonb,'{0,expectedVersion}','4')::text;",
+                     "UPDATE p_page_trace_decision SET updated_by='another-historical-actor';",
+                     "UPDATE p_page_trace_decision SET rationale='Different rationale';")
+        for mutation in mutations:
+            self.assertNotEqual(before, self.script('snapshot-db.sql', mutation), mutation)
+
     def create_page_delivery(self):
         self.sql(self.prefix() + """
           ALTER TABLE p_revision ADD COLUMN manifest_json text;

@@ -2,6 +2,9 @@ package com.gaiys.proto;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import com.gaiys.proto.prototypehub.entity.PrototypePageRelationEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageTraceContextEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageTraceDecisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
@@ -261,6 +264,8 @@ class EasyormSchemaIntegrationTest {
     @Test
     void organizationUpgradeFromOldFortyFiveTablesKeepsCoverAndExistingDeliveryRows()
             throws Exception {
+        // Reconstruct the original 45-table F11 fixture before replaying its unchanged upgrade.
+        execute("DROP TABLE p_page_relation, p_page_trace_context, p_page_trace_decision");
         execute("DROP TABLE p_project_tag, p_project_favorite");
         execute(
                 "ALTER TABLE p_project DROP COLUMN group_name, DROP COLUMN archived_time, DROP COLUMN organization_version");
@@ -315,6 +320,68 @@ class EasyormSchemaIntegrationTest {
                             "p_demo_script",
                             "p_project"))
                 execute("DELETE FROM " + table + " WHERE id LIKE 'old-org-%'");
+            synchronize(PrototypePageRelationEntity.class);
+            synchronize(PrototypePageTraceContextEntity.class);
+            synchronize(PrototypePageTraceDecisionEntity.class);
+        }
+    }
+
+    @Test
+    void pageTraceabilityUpgradeFromFortySevenTablesPreservesSourcesAndPersistedMetadata()
+            throws Exception {
+        execute("DROP TABLE p_page_relation, p_page_trace_context, p_page_trace_decision");
+        execute(
+                "INSERT INTO p_element_description(id,project_id,version_id,revision_id,page_id,title,purpose,input_rules,permission_rules,navigation_rules,notes,config_version,created_at,updated_at) VALUES ('old-trace-source','trace-project','trace-version','trace-revision','trace-page','Retained source','Purpose','','','','',3,1,2)");
+        String sourceBefore =
+                scalar(
+                        "SELECT row_to_json(t)::text FROM p_element_description t WHERE id='old-trace-source'");
+        var types =
+                List.of(
+                        PrototypePageRelationEntity.class,
+                        PrototypePageTraceContextEntity.class,
+                        PrototypePageTraceDecisionEntity.class);
+        try {
+            assertEquals(
+                    "47",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            for (var type : types) synchronize(type);
+            assertEquals(
+                    "50",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            assertEquals(
+                    sourceBefore,
+                    scalar(
+                            "SELECT row_to_json(t)::text FROM p_element_description t WHERE id='old-trace-source'"));
+            execute(
+                    "INSERT INTO p_page_relation(id,project_id,version_id,revision_id,from_page_id,to_page_id,label,note,config_version,created_at,updated_at) VALUES ('trace-edge','trace-project','trace-version','trace-revision','trace-page','trace-other','Manual relation','Preserve',2,1,2)");
+            execute(
+                    "INSERT INTO p_page_trace_context(id,project_id,version_id,revision_id,page_id,entry,source_refs,config_version,created_at,updated_at) VALUES ('trace-context','trace-project','trace-version','trace-revision','trace-page',true,'[{\"kind\":\"description\",\"id\":\"old-trace-source\",\"expectedVersion\":3}]',4,1,2)");
+            execute(
+                    "INSERT INTO p_page_trace_decision(id,project_id,version_id,revision_id,page_id,title,decision,rationale,author_id,updated_by,config_version,created_at,updated_at) VALUES ('trace-decision','trace-project','trace-version','trace-revision','trace-page','Decision','Proceed','Reviewed','author','editor',3,1,2)");
+            var snapshots = new HashMap<String, String>();
+            for (String table :
+                    List.of("p_page_relation", "p_page_trace_context", "p_page_trace_decision"))
+                snapshots.put(table, scalar("SELECT row_to_json(t)::text FROM " + table + " t"));
+            for (var type : types) synchronize(type);
+            for (var snapshot : snapshots.entrySet())
+                assertEquals(
+                        snapshot.getValue(),
+                        scalar("SELECT row_to_json(t)::text FROM " + snapshot.getKey() + " t"));
+            var duplicate =
+                    assertThrows(
+                            SQLException.class,
+                            () ->
+                                    execute(
+                                            "INSERT INTO p_page_trace_context(id,project_id,version_id,revision_id,page_id,entry,source_refs,config_version,created_at,updated_at) SELECT 'trace-duplicate',project_id,version_id,revision_id,page_id,entry,source_refs,config_version,created_at,updated_at FROM p_page_trace_context WHERE id='trace-context'"));
+            assertEquals("23505", duplicate.getSQLState());
+        } finally {
+            for (var type : types) synchronize(type);
+            for (String table :
+                    List.of("p_page_relation", "p_page_trace_context", "p_page_trace_decision"))
+                execute("DELETE FROM " + table + " WHERE id LIKE 'trace-%'");
+            execute("DELETE FROM p_element_description WHERE id='old-trace-source'");
         }
     }
 

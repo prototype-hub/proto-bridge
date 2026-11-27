@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_tag', 'p_project_favorite', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -1837,6 +1837,79 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'originalKeysReadCurrentDisabledState': True, 'deletedCreateNeverResurrects': True,
             'internalSummaryFields': 9, 'publicSummaryFields': 3, 'publicContextFields': 7}
 
+    def create_page_traceability_fixture(self, api, version_id, revision_id, page_id, work, check):
+        """Keep typed source pointers, stale/missing states, decisions and original keys durable."""
+        path = '/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id + '/page-traceability'
+        pages = api.request('GET', path.rsplit('/', 1)[0] + '/pages')
+        available, pending = [], list(pages)
+        while pending:
+            page = pending.pop(0)
+            if page.get('pageId') and not page.get('folder'):
+                available.append(page['pageId'])
+            pending.extend(page.get('children') or [])
+        target = next(item for item in available if item != page_id)
+        relation_payload = {'fromPageId': page_id, 'toPageId': target, 'label': 'Original manual relation',
+                            'note': 'Original private relation note', 'clientRequestId': uuid.uuid4().hex}
+        relation = api.request('POST', path + '/relations', relation_payload)
+        relation_update = dict(relation_payload, label='Current manual relation', expectedVersion=relation['configVersion'],
+                               clientRequestId=uuid.uuid4().hex)
+        relation = api.request('PUT', path + '/relations/' + relation['id'], relation_update)
+        decision_path = path + '/pages/' + page_id + '/decisions'
+        decision_payload = {'title': 'Original human change', 'decision': 'Keep the manually chosen route',
+                            'rationale': 'An explicit human choice, not approval', 'clientRequestId': uuid.uuid4().hex}
+        decision = api.request('POST', decision_path, decision_payload)
+        decision_update = dict(decision_payload, rationale='Current human rationale', expectedVersion=decision['configVersion'],
+                               clientRequestId=uuid.uuid4().hex)
+        decision = api.request('PUT', decision_path + '/' + decision['id'], decision_update)
+        source_path = '/api/prototype-hub/versions/' + version_id + '/element-descriptions'
+        description_payload = {'revisionId': revision_id, 'pageId': page_id, 'title': 'Original referenced description',
+                               'purpose': 'Original referenced purpose', 'clientRequestId': uuid.uuid4().hex}
+        description = api.request('POST', source_path, description_payload)
+        material_path = path.rsplit('/', 1)[0] + '/materials'
+        material = api.request('POST', material_path + '/links', {'sourceName': 'Original referenced document link',
+            'sourceUrl': 'https://example.invalid/manual-document', 'clientRequestId': uuid.uuid4().hex})
+        references = [{'kind': kind, 'id': row['id'], 'expectedVersion': row['configVersion']}
+                      for kind, row in [('work-item', work), ('material', material), ('description', description), ('check', check)]]
+        context_path = path + '/pages/' + page_id + '/context'
+        context_payload = {'entry': True, 'references': references, 'expectedVersion': -1, 'clientRequestId': uuid.uuid4().hex}
+        context = api.request('PUT', context_path, context_payload)
+        require([row['status'] for row in context['references']] == ['current'] * 4,
+                'Initial four-kind page source pointers are not current')
+        api.request('PUT', source_path + '/' + description['id'], dict(description_payload,
+            title='Current referenced description', expectedVersion=description['configVersion'], clientRequestId=uuid.uuid4().hex))
+        api.request('POST', material_path + '/' + material['id'] + '/_delete',
+                    {'expectedVersion': material['configVersion'], 'clientRequestId': uuid.uuid4().hex})
+        context_update = dict(context_payload, expectedVersion=context['configVersion'], clientRequestId=uuid.uuid4().hex)
+        context = api.request('PUT', context_path, context_update)
+        require([row['status'] for row in context['references']] == ['current', 'missing', 'changed', 'current'],
+                'Page tracing did not preserve independent missing/changed source states')
+        operations = [('POST', path + '/relations', relation_payload, 'relation'),
+                      ('PUT', path + '/relations/' + relation['id'], relation_update, 'relation'),
+                      ('POST', decision_path, decision_payload, 'decision'),
+                      ('PUT', decision_path + '/' + decision['id'], decision_update, 'decision'),
+                      ('PUT', context_path, context_payload, 'context'), ('PUT', context_path, context_update, 'context')]
+        return {'path': path, 'pageId': page_id, 'relation': relation, 'decision': decision,
+                'context': context, 'operations': operations, 'missingSourceId': material['id']}
+
+    def verify_page_traceability_fixture(self, api, fixture):
+        path, page = fixture['path'], fixture['pageId']
+        expected = {'relation': fixture['relation'], 'decision': fixture['decision'], 'context': fixture['context']}
+        for name, endpoint in [('relation', path + '/relations/' + fixture['relation']['id']),
+                               ('decision', path + '/pages/' + page + '/decisions/' + fixture['decision']['id']),
+                               ('context', path + '/pages/' + page + '/context')]:
+            require(api.request('GET', endpoint) == expected[name],
+                    'Restored page tracing changed full private state, pointers, actor or versions: ' + name)
+        for method, endpoint, payload, name in fixture['operations']:
+            require(api.request(method, endpoint, payload) == expected[name],
+                    'Original page tracing key did not return current state: ' + name)
+        entries = api.request('POST', path + '/entries/_query', {'pageSize': 100})
+        require(entries['total'] == 1 and entries['data'][0]['pageId'] == page,
+                'Restored manual entry declaration lost its scoped database row')
+        api.request('GET', path + '/pages/' + page + '/sources/material/' + fixture['missingSourceId'], expected=404)
+        self.report['pageTraceability'] = {'fourTypedSourcePointersRetained': True,
+            'missingAndChangedStatesRetainedWithoutRebinding': True, 'fullRelationDecisionAndActorsRetained': True,
+            'manualEntryRetained': True, 'originalKeysReadCurrentState': len(fixture['operations'])}
+
     def create_organization_fixture(self, api, project, member):
         path = '/api/prototype-hub/projects/' + project['id']
         original = api.request('GET', path)
@@ -2025,6 +2098,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         require(len(rows) == 3, 'Current fixture did not record exactly three initial visits')
         fixture['visits'] = {'path': visit_path, 'grant': grant, 'recentTicket': tickets[2],
                               'oldId': rows[0], 'oldRestoreId': rows[1], 'recentId': rows[2]}
+        fixture['pageTraceability'] = self.create_page_traceability_fixture(
+            api, version['id'], base['revisionId'], base['pageId'], fixture['workItem']['row'], fixture['viewportCheck']['row'])
         self.current_restore_fixture = fixture
         return fixture
 
@@ -2033,6 +2108,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         self.verify_approval_fixture(api, fixture['approval'])
         self.verify_demo_script_fixture(api, fixture['demoScripts'])
         self.verify_organization_fixture(api, fixture['organization'])
+        self.verify_page_traceability_fixture(api, fixture['pageTraceability'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2149,14 +2225,18 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require(not self.processes, 'SQL mutation checks require stopped owned writers')
         clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
         require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
-                clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True,
+                clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True and
+                clean.get('pageTraceabilityReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
         before = self.sql_script(database, 'snapshot-db.sql')
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
-        variables = {'association': fixture['associations']['active']['id'],
+        variables = {'trace_relation': fixture['pageTraceability']['relation']['id'],
+                     'trace_context': fixture['pageTraceability']['context']['id'],
+                     'trace_decision': fixture['pageTraceability']['decision']['id'],
+                     'association': fixture['associations']['active']['id'],
                      'organization_project': fixture['project']['id'],
                      'favorite_user': fixture['organization']['member']['id'],
                      'demo': fixture['demoScripts']['shared']['id'],
@@ -2176,6 +2256,12 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     database, 'preflight-db.sql', valid_invalidation, variables).splitlines(),
                 'Diagnostics confused legitimate audit invalidation with broken ownership')
         mutations = (
+            "UPDATE p_page_relation SET to_page_id=from_page_id WHERE id=:'trace_relation';",
+            "UPDATE p_page_relation SET revision_id=:'foreign_revision' WHERE id=:'trace_relation';",
+            "UPDATE p_page_trace_context SET source_refs='{}' WHERE id=:'trace_context';",
+            "UPDATE p_page_trace_context SET page_id='missing-page' WHERE id=:'trace_context';",
+            "UPDATE p_page_trace_decision SET project_id=:'foreign_project' WHERE id=:'trace_decision';",
+            "UPDATE p_page_trace_decision SET rationale='' WHERE id=:'trace_decision';",
             "UPDATE p_review_association SET target_guest_id='missing-fixture-guest' WHERE id=:'association';",
             "UPDATE p_review_guest SET project_id=:'foreign_project' WHERE id=:'target';",
             "UPDATE p_creation_receipt SET revision_id=:'foreign_revision' WHERE resource_id=:'thread';",
@@ -2507,7 +2593,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

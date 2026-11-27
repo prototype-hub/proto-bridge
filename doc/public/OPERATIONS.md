@@ -272,3 +272,9 @@ Stop old writers and cleanup nodes before the paired upgrade. Back up the whole 
 A restored archived project still supports its ordinary reads/edits/shares and occupies quota. Soft-delete/recover must retain group/tags/archive and each account's private favorite/version. Check two different users and ADMIN separately after recovery. Original mutation keys must return current state; an old favorite=true retry must not reverse a later false. Do not reset counters or receipts to resolve409; refresh current state and explicitly decide whether to submit a new edit.
 
 Rollback keeps the new columns/tables and all rows. Do not run old permanent-cleanup or export tools that omit the organization relations. The storage manifest remains format4 with the organization reference check identified explicitly; exports must not print group/tag/cover text or preference bodies. Validate restart and whole-database restore with a nonempty organization fixture before treating a deployment as verified.
+
+## 页面追踪元数据备份与诊断
+
+关系、人工入口、来源ID/版本及人工决策不产生文件，导出仍formatVersion4。三表完整存在时`pageTraceabilityReferencesChecked=true`；历史完全无三表时false；部分存在时`referencesComplete=false`且完整性错误非零，即使空表也不能授权修复。缺列/坏JSON等SQL错误同样失败关闭。覆盖字段不证明实际备份恢复完成。
+
+`preflight-db.sql`核固定project/version/revision/page、内容父页、CAS/时间、引用形状/安全整数/重复/上限；来源更新或删除的指针是合法历史状态，不强制来源行存在。`snapshot-db.sql`摘要三表完整行及source_refs顺序，不打印人工内容/历史作者。运行验证器同步当前BUSINESS_TABLES。停写同窗口保存整库、两文件根及外置配置，恢复前后核全部行/文件，再以授权API核入口、current/changed/missing、决策及原请求键。永久清理包含三表及原版本回执；软删保留，不以分页当前100条边冒称全包图。

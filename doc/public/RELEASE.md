@@ -55,7 +55,7 @@ python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --fro
 
 工具仅创建和销毁自身隔离资源，覆盖独立 JAR 运行、重启、双进程容量竞争、联合恢复及可选真实浏览器流程。报告与实际 JAR 和原创 HTML 样本摘要绑定，不能据此推断其他产物、数据库版本或真实 Axure 包也已通过。浏览器环境、原型样本、反向代理、镜像、许可证与当前漏洞库检查仍按实际发行范围分别验收；运行验证不替代 `release-audit`。
 
-联合恢复对账要求当前全部24张 `p_*` 业务表及既有系统表；发现缺表或未审阅的新业务表即失败。备份前通过现有接口建立非空工作项、人工视口自测、几何锚点、责任分派、活动/撤销人工授权、访问事件及静态/人工文案，文案覆盖READY、EMPTY和LIMIT_EXCEEDED。停写后整库与两套文件根同窗口备份，在新数据库启动应用前比较逐行完整内容摘要、完整创建回执、运维SQL快照和全部文件hash；恢复后再检查当前权限、固定范围、原请求键及访问票据去重。诊断脚本的正向和回滚负向检查不能代替这次完整进程报告，列表和文档也不代表已经验收。
+联合恢复对账要求当前全部34张 `p_*` 业务表及既有系统表；发现缺表或未审阅的新业务表即失败。备份前通过现有接口建立非空工作项、人工视口自测、几何锚点、责任分派、活动/撤销人工授权、访问事件及静态/人工文案，文案覆盖READY、EMPTY和LIMIT_EXCEEDED。停写后整库与两套文件根同窗口备份，在新数据库启动应用前比较逐行完整内容摘要、完整创建回执、运维SQL快照和全部文件hash；恢复后再检查当前权限、固定范围、原请求键及访问票据去重。诊断脚本的正向和回滚负向检查不能代替这次完整进程报告，列表和文档也不代表已经验收。
 
 该入口验证当前产物冷启动和当前数据联合恢复，不包含旧JAR到当前版本的schema升级，也不读取生产备份。发行还须从干净源码按锁文件重新安装、构建并执行适用门禁，分别保留实际成功、失败和未执行项；构建成功或恢复通过不能覆盖许可证、漏洞库、素材权属及目标部署的缺口。
 
@@ -84,3 +84,9 @@ python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --fro
 Pair the project organization frontend with its backend and current operational tools. Preserve the published project GET array, omitted archive filter meaning all, existing version/recycle query behavior and unchanged cover create/update contract. New UI explicitly requests active projects. Organization save uses existing project save+EDIT; private favorites use query+READ, including viewers, without new grants or global menus.
 
 Before release, retain evidence for real scoped distinct option/count/page queries beyond200 names, private two-account preferences, save-only editors, CAS/original-key current-state replay, additive old-schema preservation and nonempty restart/whole-database restore. Keep exact candidate JAR/dist hashes and distinguish database tests from actual paired UI/runtime and deployment evidence. Do not describe existing test source or a successful compile as a completed runtime exercise.
+
+## 页面关系与追踪交付检查
+
+核验三张增表的固定范围、真实内容父页、DB COUNT/稳定分页、四类已有来源ID/版本与changed/missing；人工入口不改HTML入口，人工决策不构成正式批准。写路径验证query/READ和save/EDIT交集、锁后撤权、CAS一赢家、原键当前与删除不复活；来源详情不泄露其他页/修订。
+
+由预览“页面资料”进入工作区，完成中英桌面/390px关系维护、引用查看/手工重连移除、决策和固定页返回，核键盘焦点、草稿及未知结果原键恢复。使用最终JAR/dist和真实后端，保留准确制品摘要；fixture浏览器或定向测试不代表全套门禁/目标部署。运行验证器非空图包括有序source_refs、changed/missing及原键；旧schema增表升级另用恢复副本核验。
