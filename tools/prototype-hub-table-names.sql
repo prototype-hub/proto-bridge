@@ -35,3 +35,6 @@
 \set prototype_hub_demo_script_table :prototype_hub_table_prefix 'demo_script'
 \set prototype_hub_project_tag_table :prototype_hub_table_prefix 'project_tag'
 \set prototype_hub_project_favorite_table :prototype_hub_table_prefix 'project_favorite'
+\set prototype_hub_page_relation_table :prototype_hub_table_prefix 'page_relation'
+\set prototype_hub_page_trace_context_table :prototype_hub_table_prefix 'page_trace_context'
+\set prototype_hub_page_trace_decision_table :prototype_hub_table_prefix 'page_trace_decision'

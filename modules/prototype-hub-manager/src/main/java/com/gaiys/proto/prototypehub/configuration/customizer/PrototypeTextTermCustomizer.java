@@ -4,6 +4,7 @@ import com.gaiys.proto.prototypehub.configuration.builder.PrototypeTextTermFragm
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageRelationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
@@ -87,6 +88,11 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
         }
         if (PrototypeElementDescriptionEntity.class.isAssignableFrom(entityType)) {
             table.getColumn("title")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
+        }
+        if (PrototypePageRelationEntity.class.isAssignableFrom(entityType)) {
+            table.getColumn("label")
                     .orElseThrow()
                     .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
         }

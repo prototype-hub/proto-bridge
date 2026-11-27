@@ -31,6 +31,43 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_page_traceability_restore_keeps_full_rows_and_original_key_current_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            relation = {'id': 'edge', 'fromPageId': 'page', 'toPageId': 'target', 'note': 'Private', 'configVersion': 2}
+            decision = {'id': 'choice', 'authorId': 'original', 'updatedBy': 'updater', 'rationale': 'Private reason', 'configVersion': 1}
+            context = {'id': 'context', 'pageId': 'page', 'entry': True, 'configVersion': 3,
+                       'references': [{'kind': 'material', 'id': 'missing', 'expectedVersion': 0,
+                                       'status': 'missing', 'currentVersion': None, 'title': None},
+                                      {'kind': 'description', 'id': 'changed', 'expectedVersion': 1,
+                                       'status': 'changed', 'currentVersion': 2, 'title': 'Current source'}]}
+            fixture = {'path': '/trace', 'pageId': 'page', 'relation': relation, 'decision': decision,
+                       'context': context, 'missingSourceId': 'missing', 'operations': [
+                           ('POST', '/create', {'clientRequestId': 'original-edge'}, 'relation'),
+                           ('PUT', '/context', {'clientRequestId': 'original-context'}, 'context')]}
+            current = {'relation': relation, 'decision': decision, 'context': context}
+            api = unittest.mock.Mock()
+            def respond(method, path, payload=None, **kwargs):
+                if kwargs.get('expected') == 404: return None
+                if path.endswith('/entries/_query'): return {'total': 1, 'data': [{'pageId': 'page'}]}
+                if path.endswith('/choice'): return current['decision']
+                if path.endswith('/context'): return current['context']
+                return current['relation']
+            api.request.side_effect = respond
+            check.verify_page_traceability_fixture(api, fixture)
+            self.assertEqual(2, check.report['pageTraceability']['originalKeysReadCurrentState'])
+            self.assertIn(unittest.mock.call('POST', '/create', fixture['operations'][0][2]), api.request.call_args_list)
+            for name, field, value in [('relation', 'toPageId', 'other'), ('relation', 'configVersion', 0),
+                                       ('decision', 'authorId', 'other'), ('decision', 'rationale', ''),
+                                       ('context', 'entry', False), ('context', 'configVersion', 4),
+                                       ('context', 'references', list(reversed(context['references'])))]:
+                with self.subTest(name=name, field=field):
+                    current[name] = dict(fixture[name], **{field: value})
+                    with self.assertRaisesRegex(runtime.VerificationFailure, 'Restored page tracing'):
+                        check.verify_page_traceability_fixture(api, fixture)
+                    current[name] = fixture[name]
+
     def test_organization_fixture_keeps_cover_archive_labels_and_two_independent_favorite_versions(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'
@@ -232,7 +269,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(31, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(34, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_project_tag', runtime.BUSINESS_TABLES)
         self.assertIn('p_project_favorite', runtime.BUSINESS_TABLES)
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
@@ -307,7 +344,8 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar = Path(temporary) / 'fixture.jar'
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
-            fixture = {'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
+            fixture = {'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
+                       'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
                        'project': {'id': 'organization-project'}, 'organization': {'member': {'id': 'reader'}},
                        'demoScripts': {'shared': {'id': 'demo'}},
                        'copyProject': {'id': 'foreign-project'}, 'copyVersion': {'revisionId': 'foreign-revision'},
@@ -328,13 +366,13 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                 if name == 'export-storage-manifest.sql':
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
                                        'referencesComplete': True, 'demoScriptReferencesChecked': True,
-                                       'organizationReferencesChecked': True})
+                                       'organizationReferencesChecked': True, 'pageTraceabilityReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(26, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(32, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
-                with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 4 did not change'):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 10 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)
 
     def test_restored_associated_write_preserves_authorship_history_replay_and_denial_scopes(self):

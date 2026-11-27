@@ -1,5 +1,13 @@
 -- Read-only: run against a restored copy; select the actual migration stage explicitly.
 \ir prototype-hub-table-names.sql
+-- Page tracing is optional for historical schemas, but partial graphs fail closed.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_relation_table')) IS NOT NULL AS prototype_hub_has_page_relations,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_context_table')) IS NOT NULL AS prototype_hub_has_page_trace_contexts,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_decision_table')) IS NOT NULL AS prototype_hub_has_page_trace_decisions \gset
+SELECT (:'prototype_hub_has_page_relations'::boolean AND :'prototype_hub_has_page_trace_contexts'::boolean
+ AND :'prototype_hub_has_page_trace_decisions'::boolean) AS prototype_hub_has_page_traceability,
+ (:'prototype_hub_has_page_relations'::boolean OR :'prototype_hub_has_page_trace_contexts'::boolean
+ OR :'prototype_hub_has_page_trace_decisions'::boolean) AS prototype_hub_has_page_traceability_parts \gset
 -- Organization data adds no storage files. Check its complete optional graph before claiming coverage.
 SELECT count(*)=3 AS prototype_hub_has_organization_columns,
  count(*)>0 AS prototype_hub_has_any_organization_columns FROM information_schema.columns
@@ -16,10 +24,10 @@ SELECT (:'prototype_hub_has_organization_columns'::boolean AND :'prototype_hub_h
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
+ AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -270,6 +278,81 @@ WITH current_scope_errors AS (
   OR f.created_at IS NULL OR f.created_at<0 OR f.updated_at IS NULL OR f.updated_at<f.created_at
   OR EXISTS(SELECT 1 FROM :"prototype_hub_project_favorite_table" other
    WHERE other.id<>f.id AND other.project_id=f.project_id AND other.user_id=f.user_id)
+\endif
+ UNION ALL
+ SELECT null::varchar WHERE :'prototype_hub_has_page_traceability_parts'::boolean
+  AND NOT :'prototype_hub_has_page_traceability'::boolean
+\if :prototype_hub_has_page_relations
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_relation_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.from_page_id)),false)
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.to_page_id)),false)
+  OR t.from_page_id=t.to_page_id OR t.label IS NULL OR btrim(t.label)='' OR length(t.label)>120
+  OR t.note IS NULL OR length(t.note)>2000
+\endif
+\if :prototype_hub_has_page_trace_contexts
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_trace_context_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.entry IS NULL OR jsonb_typeof(t.source_refs::jsonb) IS DISTINCT FROM 'array'
+  OR CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+   THEN jsonb_array_length(t.source_refs::jsonb)>40 ELSE true END
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+   THEN t.source_refs::jsonb ELSE '[]'::jsonb END) ref
+   WHERE jsonb_typeof(ref) IS DISTINCT FROM 'object'
+    OR jsonb_typeof(ref->'kind') IS DISTINCT FROM 'string'
+    OR ref->>'kind' NOT IN ('work-item','material','description','check')
+    OR jsonb_typeof(ref->'id') IS DISTINCT FROM 'string' OR length(ref->>'id') NOT BETWEEN 1 AND 128
+    OR jsonb_typeof(ref->'expectedVersion') IS DISTINCT FROM 'number'
+    OR NOT coalesce((ref->>'expectedVersion') ~ '^[0-9]+$',false)
+    OR CASE WHEN (ref->>'expectedVersion') ~ '^[0-9]+$'
+     THEN (ref->>'expectedVersion')::numeric>9007199254740991 ELSE true END
+    OR (SELECT count(*) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(ref)='object'
+     THEN ref ELSE '{}'::jsonb END))<>3)
+  OR (SELECT count(*)<>count(DISTINCT (ref->>'kind',ref->>'id'))
+   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+    THEN t.source_refs::jsonb ELSE '[]'::jsonb END) ref)
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_page_trace_context_table" other
+   WHERE other.id<>t.id AND other.revision_id=t.revision_id AND other.page_id=t.page_id)
+ -- Source deletion/updates are valid historical pointer states, not graph corruption.
+\endif
+\if :prototype_hub_has_page_trace_decisions
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_trace_decision_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.title IS NULL OR btrim(t.title)='' OR length(t.title)>120
+  OR t.decision IS NULL OR btrim(t.decision)='' OR length(t.decision)>2000
+  OR t.rationale IS NULL OR btrim(t.rationale)='' OR length(t.rationale)>2000
+  OR nullif(t.author_id,'') IS NULL OR nullif(t.updated_by,'') IS NULL
+ -- Historical actor IDs survive account removal; they never authorize later access.
 \endif
 \if :prototype_hub_has_demo_scripts
  UNION ALL

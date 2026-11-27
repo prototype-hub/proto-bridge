@@ -8,6 +8,9 @@ import com.gaiys.proto.prototypehub.entity.PrototypeDemoScriptEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageRelationEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageTraceContextEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypePageTraceDecisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
@@ -68,6 +71,9 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
     private final ReactiveRepository<PrototypeDemoScriptEntity, String> demoScripts;
+    private final ReactiveRepository<PrototypePageRelationEntity, String> pageRelations;
+    private final ReactiveRepository<PrototypePageTraceContextEntity, String> pageTraceContexts;
+    private final ReactiveRepository<PrototypePageTraceDecisionEntity, String> pageTraceDecisions;
 
     private final PrototypeRevisionMaterialService materials;
 
@@ -424,10 +430,25 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return demoScripts
+        return pageRelations
                 .createDelete()
-                .where(PrototypeDemoScriptEntity::getVersionId, id)
+                .where(PrototypePageRelationEntity::getVersionId, id)
                 .execute()
+                .then(
+                        pageTraceContexts
+                                .createDelete()
+                                .where(PrototypePageTraceContextEntity::getVersionId, id)
+                                .execute())
+                .then(
+                        pageTraceDecisions
+                                .createDelete()
+                                .where(PrototypePageTraceDecisionEntity::getVersionId, id)
+                                .execute())
+                .then(
+                        demoScripts
+                                .createDelete()
+                                .where(PrototypeDemoScriptEntity::getVersionId, id)
+                                .execute())
                 .then(
                         revisionApprovals
                                 .createDelete()
@@ -503,10 +524,34 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                demoScripts
+                                pageRelations
                                         .createDelete()
-                                        .where(PrototypeDemoScriptEntity::getProjectId, id)
+                                        .where(PrototypePageRelationEntity::getProjectId, id)
                                         .execute()
+                                        .then(
+                                                pageTraceContexts
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypePageTraceContextEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                pageTraceDecisions
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypePageTraceDecisionEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                demoScripts
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeDemoScriptEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 revisionApprovals
                                                         .createDelete()

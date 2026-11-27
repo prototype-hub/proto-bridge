@@ -750,3 +750,27 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 公开只读入口为 `/prototype-hub/public/shares/{token}/demo-scripts`：`POST /_query` 请求 `{revisionId,accessKey,pageIndex?,pageSize?}`，返回已开放脚本的PagerResult，每条恰为 `{id,revisionId,title}`；`POST /{id}/context` 请求 `{revisionId,accessKey}`，恰返回 `{id,revisionId,title,objective,prerequisites,resetNote,steps}`。每次新读取沿现有分享精确快照授权验证，并在数据库计数/分页/详情前加同范围及shareEnabled条件。fixed与已解析精确修订的latest授权均可读，不重新跟随current；密码、过期、暂停、撤销规则保持既有分享语义，与评论开关或批准状态无关。无公开写入接口、平台认证头、guest/session/访问量写入，也不返回actor、CAS、回执、存储路径、完整清单或凭据。
 
 写入请求键是1–128个可打印ASCII非空白字符。请求指纹包含固定范围、目标、CAS、规范化正文/布尔值及有序步骤三元组。未知结果必须以原键和原完整payload显式重试；abort不代表已回滚。相同原键返回当前脚本，旧开放请求不能重新开启后来关闭的脚本；改payload复用原键或过期CAS为409。已删除脚本的旧创建/更新键为409，不复活记录；原删除键可在重验当前身份与范围后返回true。正常成员功能不依赖批准。
+
+## 固定修订页面关系与追踪
+
+内部入口 `B=/prototype-hub/versions/{versionId}/revisions/{revisionId}/page-traceability`。读要求当前有效成员的 `prototype-hub-version.query ∩ 项目READ`，写要求 `save ∩ EDIT`；分享、预览capability及访客不授权访问。页面均为同一固定修订的真实内容页，允许内容页带子页；不自动跳当前修订，不修改HTML。
+
+| 方法/后缀 | 输入与结果 |
+| --- | --- |
+| POST `/relations/_query` | 可选pageId、direction(all/incoming/outgoing)、keyword(名称字面包含)及分页；返回数据库分页Relation。省略pageId查该固定修订。 |
+| GET `/relations/{id}` | 读取精确范围连线。 |
+| POST `/relations`；PUT `/relations/{id}` | fromPageId、toPageId、label(必填≤120)、note(≤2000)、clientRequestId；PUT另带expectedVersion。两端不同，可有多条同端点人工命名关系。 |
+| POST `/relations/{id}/_delete` | expectedVersion、clientRequestId，返回true。 |
+| GET/PUT `/pages/{pageId}/context` | PUT完整替换entry、references及expectedVersion/clientRequestId；最多40项唯一(kind,id)。未保存version=-1，清空后仍保留行及版本。 |
+| POST `/entries/_query` | 分页读取人工entry=true的pageId/configVersion/updatedAt，不改变HTML入口。 |
+| POST `/pages/{pageId}/sources/_query` | kind及分页；返回kind/id/title/configVersion候选。 |
+| GET `/pages/{pageId}/sources/{kind}/{id}` | 精确授权纯文本title/configVersion/fields；缺失404，不获取外部网址。 |
+| POST `/pages/{pageId}/decisions/_query`；GET `/pages/{pageId}/decisions/{id}` | 分页或精确读取人工决策。 |
+| POST `/pages/{pageId}/decisions`；PUT `/pages/{pageId}/decisions/{id}` | title(必填≤120)、decision/rationale(必填各≤2000)、clientRequestId；PUT另带expectedVersion。作者及时间由服务端设置。 |
+| POST `/pages/{pageId}/decisions/{id}/_delete` | expectedVersion、clientRequestId，返回true。 |
+
+分页pageIndex为0～10000、pageSize为1～100，沿createdAt/id稳定排序；入口按updatedAt/id排序。关系图只画本次返回的最多100条边，保留可访问列表，不提供全包无界图。Relation含id/projectId/versionId/revisionId/fromPageId/toPageId/label/note/configVersion/createdAt/updatedAt。Decision保留固定范围及并发时间字段，另含pageId/title/decision/rationale/authorId/updatedBy；人工决策不是正式批准或发布。
+
+引用为`{kind,id,expectedVersion}`，kind仅work-item/material/description/check；工作项、说明、验收须同页，资料须同修订且手工挂页。Context含固定范围/pageId/entry/references/configVersion/createdAt/updatedAt；每项引用另有status(current/changed/missing)、currentVersion及当前授权title，缺失均为null。新添/改绑须匹配来源当前版本；既存指针允许保留changed/missing并继续独立编辑，需手工重连或移除。不自动重绑、不阻止原来源删除、不还原旧来源正文。
+
+写入在当前用户→项目→版本锁内重验身份/权限，CAS与回执原子提交。clientRequestId为1～128可打印ASCII；未知结果以原键及完全相同输入重试，返回当前记录，已删除记录不能被旧键复活；同键异参沿既有幂等冲突。严格拒绝未知字段、错误标量、NUL和非法安全整数。`PROTOTYPE_HUB_PAGE_TRACE_CONFLICT`为409 CAS冲突，`PROTOTYPE_HUB_PAGE_TRACE_SOURCE_CHANGED`为409来源版本不匹配，`PROTOTYPE_HUB_PAGE_TRACE_INVALID`为400非法关系/引用，其他沿既有404/权限错误。

@@ -387,3 +387,13 @@ EasyORM纯新增 `p_demo_script`，恰有13列：`id/project_id/version_id/revis
 软删除阻断脚本访问但保留数据，保留期内恢复仍属原修订。现有版本/项目到期永久清理在同事务删除脚本及版本回执，孤儿项目清理也包含脚本；脚本不pin旧文件，不承诺超出现有保留期归档。
 
 整库备份和表清单包含新表，`tools/snapshot-db.sql` 的 `demo_scripts` 及 `business_rows_p_demo_script` 保存计数/全行摘要，JSON正文或顺序变化也会改变摘要，不输出标题或正文。预检和存储引用导出验证精确范围、步骤结构/唯一ID及所有真实非目录页关联；formatVersion仍为4、sourceSchema保持不变，新增可选 `demoScriptReferencesChecked` 仅在新表存在并执行检查时为true。缺标记的旧报告不能证明脚本图已覆盖，标记也不证明人工讲解业务正确。无新文件引用，因此不改变文件修复的授权条件。
+
+## 固定修订页面关系与追踪持久化
+
+EasyORM仅增三个元数据表及索引，不重写原表/文件。`p_page_relation`保存固定project/version/revision的from_page_id、to_page_id、label、note、config_version和created_at/updated_at；入/出向索引含revision/page/created_at/id，另有version/project清理索引。
+
+`p_page_trace_context`保存固定revision/page、entry、source_refs(JSON编码有序`{kind,id,expectedVersion}`列表)、config_version和时间；revision_id/page_id唯一，有entry查询及清理索引。Java/API字段仍为references，SQL列source_refs避开保留字。未保存版本-1，首次保存0；清空仍保留行及计数。最多40个唯一指针，不存正文/来源历史快照。来源后续更新/删除是合法changed/missing，不当损坏图清理或自动重绑。
+
+`p_page_trace_decision`保存固定页的title、decision、rationale、author_id、updated_by、config_version及时间；按revision/page/created_at/id分页，另有清理索引。历史作者ID在账号删除后保留，不授予访问权。三表仍按当前成员/动作范围访问，无guest授权。
+
+三表及版本归属回执随软删/恢复保留，永久版本图与孤项目图在同一数据库事务删除。不增文件、配额、后台任务或保留期。旧库恢复副本验证增表、原行/文件不变、非空重启及整库/两文件根同窗口恢复。回滚代码须保留三表/回执并停止旧清理器，不用遗漏数据的旧导出恢复工具；需要数据回退时恢复同窗口整库与文件。

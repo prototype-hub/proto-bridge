@@ -2,6 +2,14 @@
 -- unmigrated legacy projection; never audit history from current-version rows only.
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
+-- Page tracing is optional for historical schemas, but partial graphs fail closed.
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_relation_table')) IS NOT NULL AS prototype_hub_has_page_relations,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_context_table')) IS NOT NULL AS prototype_hub_has_page_trace_contexts,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_decision_table')) IS NOT NULL AS prototype_hub_has_page_trace_decisions \gset
+SELECT (:'prototype_hub_has_page_relations'::boolean AND :'prototype_hub_has_page_trace_contexts'::boolean
+ AND :'prototype_hub_has_page_trace_decisions'::boolean) AS prototype_hub_has_page_traceability,
+ (:'prototype_hub_has_page_relations'::boolean OR :'prototype_hub_has_page_trace_contexts'::boolean
+ OR :'prototype_hub_has_page_trace_decisions'::boolean) AS prototype_hub_has_page_traceability_parts \gset
 -- Organization data adds no storage files. Check its complete optional graph before claiming coverage.
 SELECT count(*)=3 AS prototype_hub_has_organization_columns,
  count(*)>0 AS prototype_hub_has_any_organization_columns FROM information_schema.columns
@@ -281,6 +289,81 @@ WITH storage_references AS (
   OR EXISTS(SELECT 1 FROM :"prototype_hub_project_favorite_table" other
    WHERE other.id<>f.id AND other.project_id=f.project_id AND other.user_id=f.user_id)
 \endif
+ UNION ALL
+ SELECT null::varchar WHERE :'prototype_hub_has_page_traceability_parts'::boolean
+  AND NOT :'prototype_hub_has_page_traceability'::boolean
+\if :prototype_hub_has_page_relations
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_relation_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.from_page_id)),false)
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.to_page_id)),false)
+  OR t.from_page_id=t.to_page_id OR t.label IS NULL OR btrim(t.label)='' OR length(t.label)>120
+  OR t.note IS NULL OR length(t.note)>2000
+\endif
+\if :prototype_hub_has_page_trace_contexts
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_trace_context_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.entry IS NULL OR jsonb_typeof(t.source_refs::jsonb) IS DISTINCT FROM 'array'
+  OR CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+   THEN jsonb_array_length(t.source_refs::jsonb)>40 ELSE true END
+  OR EXISTS(SELECT 1 FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+   THEN t.source_refs::jsonb ELSE '[]'::jsonb END) ref
+   WHERE jsonb_typeof(ref) IS DISTINCT FROM 'object'
+    OR jsonb_typeof(ref->'kind') IS DISTINCT FROM 'string'
+    OR ref->>'kind' NOT IN ('work-item','material','description','check')
+    OR jsonb_typeof(ref->'id') IS DISTINCT FROM 'string' OR length(ref->>'id') NOT BETWEEN 1 AND 128
+    OR jsonb_typeof(ref->'expectedVersion') IS DISTINCT FROM 'number'
+    OR NOT coalesce((ref->>'expectedVersion') ~ '^[0-9]+$',false)
+    OR CASE WHEN (ref->>'expectedVersion') ~ '^[0-9]+$'
+     THEN (ref->>'expectedVersion')::numeric>9007199254740991 ELSE true END
+    OR (SELECT count(*) FROM jsonb_object_keys(CASE WHEN jsonb_typeof(ref)='object'
+     THEN ref ELSE '{}'::jsonb END))<>3)
+  OR (SELECT count(*)<>count(DISTINCT (ref->>'kind',ref->>'id'))
+   FROM jsonb_array_elements(CASE WHEN jsonb_typeof(t.source_refs::jsonb)='array'
+    THEN t.source_refs::jsonb ELSE '[]'::jsonb END) ref)
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_page_trace_context_table" other
+   WHERE other.id<>t.id AND other.revision_id=t.revision_id AND other.page_id=t.page_id)
+ -- Source deletion/updates are valid historical pointer states, not graph corruption.
+\endif
+\if :prototype_hub_has_page_trace_decisions
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_page_trace_decision_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.title IS NULL OR btrim(t.title)='' OR length(t.title)>120
+  OR t.decision IS NULL OR btrim(t.decision)='' OR length(t.decision)>2000
+  OR t.rationale IS NULL OR btrim(t.rationale)='' OR length(t.rationale)>2000
+  OR nullif(t.author_id,'') IS NULL OR nullif(t.updated_by,'') IS NULL
+ -- Historical actor IDs survive account removal; they never authorize later access.
+\endif
 \if :prototype_hub_has_demo_scripts
  UNION ALL
  SELECT d.id FROM :"prototype_hub_demo_script_table" d
@@ -390,7 +473,8 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'referencesComplete',(:'prototype_hub_has_receipt_revision'::boolean
   AND :'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean
   AND :'prototype_hub_has_revision_materials'::boolean
-  AND (NOT :'prototype_hub_has_organization_parts'::boolean OR :'prototype_hub_has_organization'::boolean)),
+  AND (NOT :'prototype_hub_has_organization_parts'::boolean OR :'prototype_hub_has_organization'::boolean)
+  AND (NOT :'prototype_hub_has_page_traceability_parts'::boolean OR :'prototype_hub_has_page_traceability'::boolean)),
  'materialReferencesChecked',:'prototype_hub_has_revision_materials'::boolean,
  'receiptReferencesChecked',:'prototype_hub_has_receipt_revision'::boolean,
  'pageDeliveryReferencesChecked',:'prototype_hub_has_page_deliveries'::boolean,
@@ -398,6 +482,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'elementDescriptionReferencesChecked',:'prototype_hub_has_element_descriptions'::boolean,
  'demoScriptReferencesChecked',:'prototype_hub_has_demo_scripts'::boolean,
  'organizationReferencesChecked',:'prototype_hub_has_organization'::boolean,
+ 'pageTraceabilityReferencesChecked',:'prototype_hub_has_page_traceability'::boolean,
  'imageReferencesChecked',(:'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
  'entries',coalesce(json_agg(json_build_object('id',version_id,'projectId',project_id,
@@ -429,7 +514,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'sourceSchema','legacy-current-only','referencesComplete',false,
  'receiptReferencesChecked',false,'pageDeliveryReferencesChecked',false,'approvalReferencesChecked',false,
  'elementDescriptionReferencesChecked',false,'demoScriptReferencesChecked',false,
- 'organizationReferencesChecked',false,'integrityErrors',null,
+ 'organizationReferencesChecked',false,'pageTraceabilityReferencesChecked',false,'integrityErrors',null,
  'entries',coalesce(json_agg(json_build_object('id',id,'projectId',project_id,
  'revisionId',null,'storagePath',storage_path) ORDER BY project_id,id,storage_path)
  FILTER (WHERE storage_path IS NOT NULL),'[]'::json)) FROM :"prototype_hub_version_table";
