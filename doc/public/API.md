@@ -38,6 +38,24 @@ API 文档由运行实例的 `/v3/api-docs`、`/swagger-ui.html` 提供，是否
 
 分页响应保留原有项目角色、能力及版本修订信息；版本 `revisionCount` 仅对本页最多 100 个版本作一次分组统计，不读取修订文件清单。发布过的 `GET /prototype-hub/projects`、`GET /prototype-hub/versions?projectId=…` 继续返回数组，供既有调用方兼容；需要有界查询的新调用方应使用分页入口。
 
+## Project organization and private favorites
+
+Project responses retain existing fields and add `groupName` (empty when unset), `tags` (deterministic name order), `archivedTime` (nullable Unix milliseconds), `organizationVersion`, `favorite` and `favoriteVersion`. Private fields always describe the current account, including ADMIN. List pages are enriched with bounded relation queries; published array GET stays an array containing all nondeleted projects.
+
+`POST /prototype-hub/projects/_query` additionally accepts `archived?:boolean|null` (omitted/null all, false active, true archived), `groupName?:string|null` (omitted/null all; empty ungrouped), exact `tag?:string|null`, and `favoriteOnly?:boolean|null` (true only). These filters and current READ scope apply identically before COUNT/page. New UI requests active explicitly; version/recycle endpoints reject project-only filters. Published client `total/rePaging` hints remain ignored and never alter the true total or requested out-of-range page.
+
+| Endpoint | Body and permission |
+| --- | --- |
+| `POST /prototype-hub/projects/_organization/options` | `{kind:'group'|'tag',keyword?,pageIndex?:0,pageSize?:20}`; project query + current READ; distinct nonblank names from accessible nondeleted projects, literal case-sensitive keyword, name ascending, real database total/page; independent of list filters |
+| `PUT /prototype-hub/projects/{id}/_organization` | `{groupName?,tags,archived,expectedVersion,clientRequestId}`; project save + current EDIT; full shared replacement, without copying name/description/cover; save-only editors may write |
+| `PUT /prototype-hub/projects/{id}/_favorite` | `{favorite,expectedVersion,clientRequestId}`; project query + current READ; private desired state, including viewers; no target user |
+
+Options use page index0..10000 and size1..100. Shared group names have at most64 characters, tags at most32 each and at most10 submitted entries. Unicode whitespace ends are removed (`Character.isWhitespace`, `isSpaceChar`, BOM); blank groups clear, blank tags disappear, exact duplicates collapse, NUL is rejected, and no case/NFKC folding occurs. Tags have no stored presentation order or detached catalog. New mutation/options inputs reject unknown fields and wrong scalar types. JSON booleans are strict; counters are exact integers0..9007199254740991 and cannot increment at maximum. Missing legacy organization/personal state reads version0.
+
+Each mutation uses its original printable ASCII1..128 `clientRequestId`. A retry must keep its original normalized payload, expectedVersion and key. Current identity/action/project access is rechecked before replay; identical original requests return the current state without restoring obsolete labels/archive/favorite values. A reused key with different content or a new stale CAS request returns409. Do not generate a fresh key or automatically retry an unknown write. Favorite=false rows preserve their independent version; personal writes do not alter project updatedAt or shared organizationVersion.
+
+Archive is organization only: existing reads, edits, previews, shares, feedback, statistics and retained-root quota remain unchanged. Soft deletion/recovery preserves organization and favorites; permanent project/account cleanup removes applicable relations. Cover continues using existing `ProjectRequest.cover`; the backend never fetches that URL.
+
 ## 固定修订资料与人工来源
 
 内部成员可在 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/materials` 管理固定修订资料。查询和下载要求版本 `query` 动作与当前项目 READ；新增、维护、删除要求版本 `save` 与项目 EDIT。分享凭据和 guest 身份不能访问该入口，替换当前修订也不会移动旧资料。

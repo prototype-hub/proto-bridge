@@ -1,5 +1,6 @@
 """Exercise the actual psql export against an explicitly owned disposable PostgreSQL container."""
 
+import itertools
 import json
 import os
 from pathlib import Path
@@ -89,6 +90,7 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertFalse(manifest['pageDeliveryReferencesChecked'])
         self.assertFalse(manifest['elementDescriptionReferencesChecked'])
         self.assertFalse(manifest['demoScriptReferencesChecked'])
+        self.assertFalse(manifest['organizationReferencesChecked'])
         self.assertEqual(0, manifest['integrityErrors'])
         self.assertEqual({'public-message', 'internal-message'},
                          {row['messageId'] for row in manifest['imageEntries']})
@@ -412,6 +414,113 @@ class StorageExportPostgresTest(unittest.TestCase):
                          "UPDATE p_revision_approval SET approved=false WHERE id='publication';"):
             with self.subTest(mutation=mutation):
                 self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+
+    def create_organization(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_share ADD COLUMN token text;
+          ALTER TABLE p_version ADD COLUMN status text;
+          ALTER TABLE p_project ADD COLUMN group_name text;
+          ALTER TABLE p_project ADD COLUMN archived_time bigint;
+          ALTER TABLE p_project ADD COLUMN organization_version bigint;
+          ALTER TABLE p_project ADD COLUMN cover text;
+          CREATE TABLE s_user(id text primary key,status int);
+          INSERT INTO s_user VALUES('reader',1),('disabled-reader',0);
+          CREATE TABLE p_project_tag(id text primary key,project_id text,tag_name text);
+          CREATE TABLE p_project_favorite(id text primary key,project_id text,user_id text,
+            favorite boolean,config_version bigint,created_at bigint,updated_at bigint);
+          UPDATE p_project SET group_name='Private group',archived_time=123,organization_version=2,
+            cover='https://private.example/cover.png';
+          INSERT INTO p_project(id) VALUES('legacy-project');
+          INSERT INTO p_project_tag VALUES('tag-a','project','Private tag'),('tag-b','project','Second tag');
+          INSERT INTO p_project_favorite VALUES('favorite','project','reader',false,2,100,101),
+            ('other-favorite','project','disabled-reader',true,1,100,100);
+          """)
+
+    def test_organization_graph_checks_retained_false_preferences_without_exporting_labels_or_urls(self):
+        self.create_organization()
+        manifest = self.export()
+        self.assertEqual(4, manifest['formatVersion'])
+        self.assertTrue(manifest['organizationReferencesChecked'])
+        self.assertTrue(manifest['referencesComplete'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        for private in ('Private group', 'Private tag', 'private.example', 'reader', 'favorite'):
+            self.assertNotIn(private, json.dumps(manifest))
+        # Disabled accounts remain valid retained graph nodes; a missing account does not.
+        mutations = (
+            "UPDATE p_project_tag SET project_id='missing' WHERE id='tag-a';",
+            "UPDATE p_project_tag SET tag_name='' WHERE id='tag-a';",
+            "UPDATE p_project_tag SET tag_name=chr(160)||'Private tag' WHERE id='tag-a';",
+            "UPDATE p_project_tag SET tag_name=repeat('t',33) WHERE id='tag-a';",
+            "INSERT INTO p_project_tag VALUES('duplicate','project','Private tag');",
+            "INSERT INTO p_project_tag SELECT 'extra-'||i,'project','Extra '||i FROM generate_series(1,10) i;",
+            "UPDATE p_project_favorite SET project_id='missing' WHERE id='favorite';",
+            "UPDATE p_project_favorite SET user_id='missing' WHERE id='favorite';",
+            "UPDATE p_project_favorite SET favorite=null WHERE id='favorite';",
+            "UPDATE p_project_favorite SET config_version=0 WHERE id='favorite';",
+            "UPDATE p_project_favorite SET config_version=9007199254740992 WHERE id='favorite';",
+            "UPDATE p_project_favorite SET created_at=null WHERE id='favorite';",
+            "UPDATE p_project_favorite SET updated_at=99 WHERE id='favorite';",
+            "INSERT INTO p_project_favorite VALUES('duplicate','project','reader',true,1,100,100);",
+            "UPDATE p_project SET group_name='' WHERE id='project';",
+            "UPDATE p_project SET group_name=chr(65279)||'Private group' WHERE id='project';",
+            "UPDATE p_project SET group_name=repeat('g',65) WHERE id='project';",
+            "UPDATE p_project SET archived_time=-1 WHERE id='project';",
+            "UPDATE p_project SET organization_version=-1 WHERE id='project';",
+            "UPDATE p_project SET organization_version=9007199254740992 WHERE id='project';")
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+                self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation))
+        self.assertEqual(manifest, self.export())
+        # Literal case-sensitive labels can be shared across distinct projects.
+        valid = "INSERT INTO p_project_tag VALUES('other-project-tag','legacy-project','Private tag');"
+        self.assertEqual(0, self.export(valid)['integrityErrors'])
+
+    def test_partial_organization_columns_without_relations_fail_closed(self):
+        self.sql(self.prefix() + 'ALTER TABLE p_share ADD COLUMN token text; ALTER TABLE p_version ADD COLUMN status text;')
+        columns = {'group_name': 'text', 'archived_time': 'bigint', 'organization_version': 'bigint'}
+        for size in (1, 2):
+            for names in itertools.combinations(columns, size):
+                mutation = ''.join('ALTER TABLE p_project ADD COLUMN ' + name + ' ' + columns[name] + ';' for name in names)
+                with self.subTest(columns=names):
+                    manifest = self.export(mutation)
+                    self.assertFalse(manifest['organizationReferencesChecked'])
+                    self.assertFalse(manifest['referencesComplete'])
+                    self.assertGreater(manifest['integrityErrors'], 0)
+                    preflight = self.script('preflight-db.sql', mutation)
+                    errors = next(line for line in preflight.splitlines() if line.startswith('current_scope_errors|'))
+                    self.assertGreater(int(errors.split('|')[1]), 0)
+
+    def test_partial_organization_schema_never_claims_complete_reference_coverage(self):
+        self.sql(self.prefix() + 'CREATE TABLE p_project_tag(id text,project_id text,tag_name text);')
+        manifest = self.export()
+        self.assertFalse(manifest['organizationReferencesChecked'])
+        self.assertFalse(manifest['referencesComplete'])
+        self.assertGreater(manifest['integrityErrors'], 0)
+
+    def test_organization_snapshot_hashes_all_thirteen_new_fields_and_existing_cover(self):
+        self.create_organization()
+        before = self.script('snapshot-db.sql')
+        self.assertIn('business_rows_p_project_tag|2|', before)
+        self.assertIn('business_rows_p_project_favorite|2|', before)
+        for private in ('Private group', 'Private tag', 'private.example', 'disabled-reader'):
+            self.assertNotIn(private, before)
+        changes = {
+            'p_project': [('group_name', "'Changed group'"), ('archived_time', '124'),
+                          ('organization_version', '3'), ('cover', "'https://changed.invalid/image.png'")],
+            'p_project_tag': [('id', "'changed-tag'"), ('project_id', "'legacy-project'"), ('tag_name', "'Changed tag'")],
+            'p_project_favorite': [('id', "'changed-favorite'"), ('project_id', "'legacy-project'"),
+                ('user_id', "'changed-reader'"), ('favorite', 'true'), ('config_version', '3'),
+                ('created_at', '99'), ('updated_at', '102')]}
+        for table, fields in changes.items():
+            identity = {'p_project': 'project', 'p_project_tag': 'tag-a', 'p_project_favorite': 'favorite'}[table]
+            label = 'business_rows_' + table + '|'
+            original = next(line for line in before.splitlines() if line.startswith(label))
+            for field, value in fields:
+                with self.subTest(table=table, field=field):
+                    after = self.script('snapshot-db.sql', 'UPDATE ' + table + ' SET ' + field + '=' + value + " WHERE id='" + identity + "';")
+                    self.assertNotEqual(original, next(line for line in after.splitlines() if line.startswith(label)))
+        self.assertEqual(before, self.script('snapshot-db.sql'))
 
     def test_approval_snapshot_hashes_full_rows_without_printing_private_content(self):
         self.create_revision_approval()

@@ -13,7 +13,11 @@ import org.hswebframework.web.crud.annotation.EnableEntityEvent;
 @Setter
 @Table(
         name = "p_project",
-        indexes = @Index(name = "idx_project_deleted", columnList = "deleted_time,id"))
+        indexes = {
+            @Index(name = "idx_project_deleted", columnList = "deleted_time,id"),
+            @Index(name = "idx_project_group", columnList = "group_name,id"),
+            @Index(name = "idx_project_archive", columnList = "archived_time,id")
+        })
 @EnableEntityEvent
 @Schema(description = "原型项目及创建修改信息")
 public class PrototypeProjectEntity extends GenericEntity<String> {
@@ -32,6 +36,18 @@ public class PrototypeProjectEntity extends GenericEntity<String> {
     @Column(name = "cover", length = 1024)
     @Schema(description = "原型项目封面地址")
     private String cover;
+
+    @Column(name = "group_name", length = 64)
+    @Schema(description = "Shared project group; null means ungrouped")
+    private String groupName;
+
+    @Column(name = "archived_time")
+    @Schema(description = "Organization archive time; does not revoke access or release quota")
+    private Long archivedTime;
+
+    @Column(name = "organization_version")
+    @Schema(description = "Shared organization CAS version; legacy null reads as zero")
+    private Long organizationVersion;
 
     @Column(name = "owner_id", length = 64)
     @Schema(description = "项目所有者用户标识，历史未认领项目为空")

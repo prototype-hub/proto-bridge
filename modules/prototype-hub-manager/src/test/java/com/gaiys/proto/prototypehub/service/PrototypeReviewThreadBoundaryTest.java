@@ -256,6 +256,7 @@ class PrototypeReviewThreadBoundaryTest {
                         null,
                         dimensionUsers,
                         members,
+                        null,
                         null) {
                     @Override
                     public Mono<Actor> current() {

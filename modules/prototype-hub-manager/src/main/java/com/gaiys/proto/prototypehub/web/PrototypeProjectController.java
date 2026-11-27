@@ -4,7 +4,11 @@ import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.service.PrototypeDeletionService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService.Action;
+import com.gaiys.proto.prototypehub.service.PrototypeProjectOrganizationService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectService;
+import com.gaiys.proto.prototypehub.service.query.PrototypeScopeQuery;
+import com.gaiys.proto.prototypehub.web.request.ProjectListQueryRequest;
+import com.gaiys.proto.prototypehub.web.request.ProjectOrganizationRequests;
 import com.gaiys.proto.prototypehub.web.request.ProjectRequest;
 import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
@@ -48,6 +52,8 @@ public class PrototypeProjectController {
     private final PrototypeProjectService projects;
     private final PrototypeDeletionService deletion;
     private final PrototypeProjectAccessService access;
+    private final PrototypeProjectOrganizationService organization;
+    private final PrototypeScopeQuery scope;
 
     @GetMapping
     @QueryAction
@@ -61,8 +67,45 @@ public class PrototypeProjectController {
     @QueryAction
     @Operation(summary = "按授权范围分页查询原型项目", description = "支持名称字面包含和稳定排序；越界页返回真实总数及空列表")
     public Mono<PagerResult<ProjectResponse>> query(
-            @Valid @RequestBody PrototypeListQueryRequest input) {
+            @Valid @RequestBody ProjectListQueryRequest input) {
         return access.readableProjects(input);
+    }
+
+    /** Options share READ scope, independent of the currently selected list filters. */
+    @PostMapping("/_organization/options")
+    @QueryAction
+    @Operation(summary = "Page accessible group or tag names")
+    public Mono<PagerResult<String>> organizationOptions(
+            @Valid @RequestBody ProjectOrganizationRequests.Options input) {
+        return access.current()
+                .flatMap(
+                        actor ->
+                                scope.organizationOptions(
+                                        actor.userId(), actor.administrator(), input));
+    }
+
+    /**
+     * Shared full replacement uses EDIT; personal preferences use the existing query+READ
+     * self-service boundary.
+     */
+    @PutMapping("/{id}/_organization")
+    @SaveAction
+    @Operation(summary = "Replace shared project organization with CAS and original-key retry")
+    public Mono<ProjectResponse> organization(
+            @PathVariable String id,
+            @Valid @RequestBody ProjectOrganizationRequests.Organization input) {
+        return organization.organization(id, input);
+    }
+
+    @PutMapping("/{id}/_favorite")
+    @QueryAction
+    @Operation(
+            summary =
+                    "Set the current account favorite with independent CAS and original-key retry")
+    public Mono<ProjectResponse> favorite(
+            @PathVariable String id,
+            @Valid @RequestBody ProjectOrganizationRequests.Favorite input) {
+        return organization.favorite(id, input);
     }
 
     /** 回收站查询仍使用项目查询动作，范围仅当前所有者及有效管理员。 */

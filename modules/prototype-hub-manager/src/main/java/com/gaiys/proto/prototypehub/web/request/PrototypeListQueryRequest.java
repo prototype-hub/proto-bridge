@@ -1,5 +1,6 @@
 package com.gaiys.proto.prototypehub.web.request;
 
+import com.fasterxml.jackson.annotation.JsonAnySetter;
 import io.swagger.v3.oas.annotations.media.Schema;
 import jakarta.validation.constraints.Max;
 import jakarta.validation.constraints.Min;
@@ -18,6 +19,13 @@ import lombok.Setter;
 @Setter
 @Schema(description = "原型项目和版本的分页查询条件")
 public class PrototypeListQueryRequest {
+    /** Keep legacy paging hints compatible, but never silently ignore project-only filters. */
+    @JsonAnySetter
+    public void unknown(String field, Object value) {
+        if (java.util.Set.of("archived", "groupName", "tag", "favoriteOnly").contains(field))
+            throw new IllegalArgumentException("Project filter is not valid for this query");
+    }
+
     @NotNull
     @Min(0)
     @Max(10000)

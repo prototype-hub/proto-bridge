@@ -78,3 +78,9 @@ python3 tools/verify-runtime.py --jar bootstrap/target/bootstrap-1.0.0.jar --fro
 新增脚本只使用既有依赖与授权/回执/JsonCodec边界，发行内容包含单表、内部维护及现有分享下的只读内容。交付前核对13字段、严格标量/未知字段、真实页面/重复访问/有序JSON数据库往返、菜单query/save与项目READ/EDIT（含save-only）、原键读取当前状态和CAS一赢家；并验证非空正常重启/整库恢复、完整工具图、软删除恢复及原子永久清理。公开仅返回三个摘要/七个全文字段，不改变分享设置或创建访客。
 
 后端与前端必须保留精确source/JAR/dist身份，并在真实后端上完成中英文桌面与390px的创建、维护、讲解、分享关闭及深链接路径。针对新能力的定向测试、公开源码导出和有限模式检查不代表完整release gate、Gitleaks历史扫描或部署验收；沿既有完整检查入口执行并保留实际结果。新增表回滚保留，禁止旧写入/清理/恢复工具遗漏数据。
+
+## Project organization release compatibility
+
+Pair the project organization frontend with its backend and current operational tools. Preserve the published project GET array, omitted archive filter meaning all, existing version/recycle query behavior and unchanged cover create/update contract. New UI explicitly requests active projects. Organization save uses existing project save+EDIT; private favorites use query+READ, including viewers, without new grants or global menus.
+
+Before release, retain evidence for real scoped distinct option/count/page queries beyond200 names, private two-account preferences, save-only editors, CAS/original-key current-state replay, additive old-schema preservation and nonempty restart/whole-database restore. Keep exact candidate JAR/dist hashes and distinguish database tests from actual paired UI/runtime and deployment evidence. Do not describe existing test source or a successful compile as a completed runtime exercise.

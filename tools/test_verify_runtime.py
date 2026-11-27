@@ -31,6 +31,64 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_organization_fixture_keeps_cover_archive_labels_and_two_independent_favorite_versions(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            original = {'id': 'project', 'name': 'Original', 'description': 'Original description',
+                        'cover': '', 'groupName': '', 'tags': [], 'archivedTime': None,
+                        'organizationVersion': 0, 'favorite': False, 'favoriteVersion': 0, 'updatedAt': 10}
+            first = dict(original, cover='https://example.invalid/original-runtime-cover.png',
+                         groupName='Original shared group', tags=['Original tag', 'Second tag'],
+                         archivedTime=100, organizationVersion=1, updatedAt=20)
+            shared = dict(first, groupName='Current shared group', tags=['Current tag', 'Second tag'], organizationVersion=2)
+            liked = dict(shared, favorite=True, favoriteVersion=1)
+            owner = dict(shared, favoriteVersion=2)
+            reader_row = dict(shared, favorite=True, favoriteVersion=1)
+            for broken in (False, True):
+                api = unittest.mock.Mock(origin='http://owned.invalid')
+                api.request.side_effect = [original, dict(original, cover=first['cover']), first, shared,
+                                           liked, dict(owner, updatedAt=99) if broken else owner]
+                reader = unittest.mock.Mock()
+                reader.request.return_value = reader_row
+                with patch.object(runtime, 'Api', return_value=reader):
+                    if broken:
+                        with self.assertRaisesRegex(runtime.VerificationFailure, 'Personal preference changed'):
+                            check.create_organization_fixture(api, original, {'id': 'reader', 'username': 'reader'})
+                    else:
+                        fixture = check.create_organization_fixture(api, original, {'id': 'reader', 'username': 'reader'})
+                        self.assertEqual(owner, fixture['owner'])
+                        self.assertEqual(reader_row, fixture['reader'])
+                        self.assertEqual([True, False], [row['favorite'] for row in fixture['favoriteOperations']])
+                        self.assertEqual(2, len({row['clientRequestId'] for row in fixture['organizationOperations']}))
+                        self.assertEqual({'name', 'description', 'cover'}, set(api.request.call_args_list[1].args[2]))
+
+    def test_organization_restore_replays_original_keys_and_rejects_each_changed_persisted_field(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'
+            jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            owner = {'groupName': 'Current group', 'tags': ['a', 'b'], 'archivedTime': 100,
+                     'organizationVersion': 2, 'favorite': False, 'favoriteVersion': 2, 'cover': '/cover.png', 'updatedAt': 30}
+            reader_row = dict(owner, favorite=True, favoriteVersion=1)
+            fixture = {'path': '/project', 'owner': owner, 'reader': reader_row,
+                       'member': {'username': 'reader'}, 'organizationOperations': [{'clientRequestId': 'original-org'}],
+                       'favoriteOperations': [{'favorite': True, 'clientRequestId': 'original-like'},
+                                              {'favorite': False, 'clientRequestId': 'original-unlike'}],
+                       'readerFavorite': {'favorite': True, 'clientRequestId': 'reader-original'}}
+            api = unittest.mock.Mock(); api.request.return_value = owner
+            reader = unittest.mock.Mock(); reader.request.return_value = reader_row
+            with patch.object(runtime, 'Api', return_value=reader):
+                check.verify_organization_fixture(api, fixture)
+                self.assertIn(unittest.mock.call('PUT', '/project/_favorite', fixture['favoriteOperations'][0]), api.request.call_args_list)
+                for field, value in [('groupName', 'Changed'), ('tags', ['a']), ('archivedTime', None),
+                    ('organizationVersion', 3), ('favorite', True), ('favoriteVersion', 0), ('cover', '/other.png'), ('updatedAt', 31)]:
+                    with self.subTest(field=field):
+                        api.request.return_value = dict(owner, **{field: value})
+                        with self.assertRaisesRegex(runtime.VerificationFailure, 'Restored organization'):
+                            check.verify_organization_fixture(api, fixture)
+
     def test_demo_fixture_uses_real_parent_and_child_pages_then_reorders_and_disables(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'
@@ -174,7 +232,9 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(29, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(31, len(runtime.BUSINESS_TABLES))
+        self.assertIn('p_project_tag', runtime.BUSINESS_TABLES)
+        self.assertIn('p_project_favorite', runtime.BUSINESS_TABLES)
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_approval', runtime.BUSINESS_TABLES)
         self.assertIn('p_demo_script', runtime.BUSINESS_TABLES)
@@ -248,6 +308,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
             fixture = {'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
+                       'project': {'id': 'organization-project'}, 'organization': {'member': {'id': 'reader'}},
                        'demoScripts': {'shared': {'id': 'demo'}},
                        'copyProject': {'id': 'foreign-project'}, 'copyVersion': {'revisionId': 'foreign-revision'},
                        'copy': [{'context': {'snapshotId': 'snapshot'}, 'entries': {'data': [{'id': 'entry'}]}},
@@ -266,11 +327,12 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                     return baseline if not mutation or no_change else baseline + '-changed'
                 if name == 'export-storage-manifest.sql':
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
-                                       'referencesComplete': True, 'demoScriptReferencesChecked': True})
+                                       'referencesComplete': True, 'demoScriptReferencesChecked': True,
+                                       'organizationReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(19, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(26, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
                 with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 4 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)

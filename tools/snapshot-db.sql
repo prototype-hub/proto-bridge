@@ -118,11 +118,11 @@ SELECT 'share_visits',count(*),md5(coalesce(jsonb_agg(to_jsonb(v) ORDER BY id)::
 -- Missing old-schema tables remain visible in the coverage list; this is not a current-release pass.
 SELECT 'business_table_coverage',count(*),string_agg(table_name,',' ORDER BY table_name)
  FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
- :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT format('SELECT %L,count(*),md5(coalesce(jsonb_agg(to_jsonb(r) ORDER BY id)::text,''[]'')) FROM %I.%I r;',
  'business_rows_'||table_name,current_schema(),table_name)
  FROM information_schema.tables WHERE table_schema=current_schema() AND table_name IN (
- :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table') ORDER BY table_name
+ :'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_page_delivery_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_revision_material_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table') ORDER BY table_name
 \gexec
 
 -- Plain-text manual observations remain private; emit a complete-row digest only.
@@ -151,4 +151,23 @@ SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_demo_script_t
 \if :prototype_hub_has_demo_scripts
 SELECT 'demo_scripts',count(*),md5(coalesce(jsonb_agg(to_jsonb(d) ORDER BY id)::text,'[]'))
  FROM :"prototype_hub_demo_script_table" d;
+\endif
+
+-- Shared labels, cover strings and private preference state stay private; hash complete rows.
+SELECT count(*)=3 AS prototype_hub_has_organization_columns FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_project_table'
+ AND column_name IN ('group_name','archived_time','organization_version') \gset
+\if :prototype_hub_has_organization_columns
+SELECT 'project_organization',count(*),md5(coalesce(jsonb_agg(to_jsonb(p) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_project_table" p;
+\endif
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_project_tag_table')) IS NOT NULL AS prototype_hub_has_project_tags,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_project_favorite_table')) IS NOT NULL AS prototype_hub_has_project_favorites \gset
+\if :prototype_hub_has_project_tags
+SELECT 'project_tags',count(*),md5(coalesce(jsonb_agg(to_jsonb(t) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_project_tag_table" t;
+\endif
+\if :prototype_hub_has_project_favorites
+SELECT 'project_favorites',count(*),md5(coalesce(jsonb_agg(to_jsonb(f) ORDER BY id)::text,'[]'))
+ FROM :"prototype_hub_project_favorite_table" f;
 \endif

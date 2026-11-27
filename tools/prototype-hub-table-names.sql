@@ -33,3 +33,5 @@
 \set prototype_hub_revision_material_table :prototype_hub_table_prefix 'revision_material'
 \set prototype_hub_revision_approval_table :prototype_hub_table_prefix 'revision_approval'
 \set prototype_hub_demo_script_table :prototype_hub_table_prefix 'demo_script'
+\set prototype_hub_project_tag_table :prototype_hub_table_prefix 'project_tag'
+\set prototype_hub_project_favorite_table :prototype_hub_table_prefix 'project_favorite'

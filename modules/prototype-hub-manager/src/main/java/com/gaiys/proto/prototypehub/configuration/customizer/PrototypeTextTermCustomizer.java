@@ -5,6 +5,7 @@ import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeElementDescriptionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
@@ -71,6 +72,14 @@ public class PrototypeTextTermCustomizer implements TableMetadataCustomizer {
                     .orElseThrow()
                     .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
         }
+        if (PrototypeProjectEntity.class.isAssignableFrom(entityType))
+            table.getColumn("groupName")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
+        if (PrototypeProjectTagEntity.class.isAssignableFrom(entityType))
+            table.getColumn("tagName")
+                    .orElseThrow()
+                    .addFeature(PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS);
         if (PrototypeVersionEntity.class.isAssignableFrom(entityType)) {
             table.getColumn("versionName")
                     .orElseThrow()

@@ -46,6 +46,7 @@ public class PrototypeProjectAccessService {
     private final ReactiveRepository<DimensionUserEntity, String> dimensionUsers;
     private final ReactiveRepository<PrototypeProjectMemberEntity, String> members;
     private final PrototypeScopeQuery scope;
+    private final PrototypeProjectOrganizationData organization;
 
     public enum Action {
         READ,
@@ -250,8 +251,10 @@ public class PrototypeProjectAccessService {
         return current()
                 .flatMap(
                         actor ->
-                                scope.deletedProjects(
-                                        actor.userId(), actor.administrator(), request));
+                                org.hswebframework.web.crud.query.QueryHelper.transformPageResult(
+                                        scope.deletedProjects(
+                                                actor.userId(), actor.administrator(), request),
+                                        rows -> organization.enrich(rows, actor.userId())));
     }
 
     public Mono<PagerResult<PrototypeVersionEntity>> deletedVersions(
@@ -336,7 +339,10 @@ public class PrototypeProjectAccessService {
                                 log.info(
                                         "Prototype administrator project scope query: actor={}",
                                         actor.userId());
-                            return scope.projects(actor.userId(), actor.administrator());
+                            return scope.projects(actor.userId(), actor.administrator())
+                                    .buffer(100)
+                                    .concatMap(rows -> organization.enrich(rows, actor.userId()))
+                                    .concatMapIterable(rows -> rows);
                         });
     }
 
@@ -349,7 +355,11 @@ public class PrototypeProjectAccessService {
                                 log.info(
                                         "Prototype administrator project scope query: actor={}",
                                         actor.userId());
-                            return scope.projects(actor.userId(), actor.administrator(), request);
+                            return org.hswebframework.web.crud.query.QueryHelper
+                                    .transformPageResult(
+                                            scope.projects(
+                                                    actor.userId(), actor.administrator(), request),
+                                            rows -> organization.enrich(rows, actor.userId()));
                         });
     }
 
@@ -400,8 +410,22 @@ public class PrototypeProjectAccessService {
     }
 
     public Mono<ProjectResponse> response(Grant grant) {
-        return claimRequired(grant.project())
-                .map(pending -> ProjectResponse.from(grant.project(), grant.role(), pending));
+        return current()
+                .flatMap(
+                        actor ->
+                                claimRequired(grant.project())
+                                        .map(
+                                                pending ->
+                                                        ProjectResponse.from(
+                                                                grant.project(),
+                                                                grant.role(),
+                                                                pending))
+                                        .flatMap(
+                                                row ->
+                                                        organization.enrich(
+                                                                java.util.List.of(row),
+                                                                actor.userId()))
+                                        .map(rows -> rows.get(0)));
     }
 
     public Mono<Boolean> claimRequired(PrototypeProjectEntity project) {
