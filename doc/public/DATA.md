@@ -397,3 +397,15 @@ EasyORM仅增三个元数据表及索引，不重写原表/文件。`p_page_rela
 `p_page_trace_decision`保存固定页的title、decision、rationale、author_id、updated_by、config_version及时间；按revision/page/created_at/id分页，另有清理索引。历史作者ID在账号删除后保留，不授予访问权。三表仍按当前成员/动作范围访问，无guest授权。
 
 三表及版本归属回执随软删/恢复保留，永久版本图与孤项目图在同一数据库事务删除。不增文件、配额、后台任务或保留期。旧库恢复副本验证增表、原行/文件不变、非空重启及整库/两文件根同窗口恢复。回滚代码须保留三表/回执并停止旧清理器，不用遗漏数据的旧导出恢复工具；需要数据回退时恢复同窗口整库与文件。
+
+## 固定页面组件代码卡持久化
+
+EasyORM仅新增 `p_component_code_mapping` 的17列与两个索引；已有表、说明正文和修订文件不回填或重写。列为id、project_id/version_id/revision_id/page_id、alias/repository_path/repository_url/documentation_url/snippet/framework/framework_version、可空description_id/description_version、config_version/created_at/updated_at。revision/page/created_at/id索引支持固定页稳定分页，version索引支持清理；别名和仓库路径不是唯一键，明确再次新增导入允许同内容并存。
+
+七文本原样存储，仓库路径与片段不触发文件、网络、脚本或依赖安装。说明指针只保存同页F27 ID/确认版本，正文和几何仍由原说明表拥有。来源changed/missing是合法历史状态，不视为坏图、不自动删卡或重绑；指针双空或双非空且版本为安全整数。卡CAS独立于说明版本。
+
+写入复用 `p_creation_receipt`，主键绑定当前actor/operation/完整固定scope/原请求键；指纹覆盖所有文本、顺序、指针及期望版本。create使用回执派生ID；一次import只记父回执，每卡ID由绑定actor/scope/key的父ID加序号派生，不增导入会话表。批量插入及回执同事务，原键重放只读该批当前行/缺失项；资源后来更新或删除不被旧请求逆转。回执原键、卡包内容不作为日志输出。
+
+软删和恢复沿原策略保留代码卡/回执；永久版本图及孤项目图在既有事务删除代码卡和归属回执，不增加文件/配额/保留期。回滚代码保留新增表/行/回执并停止遗漏新表的旧永久清理器，数据回退应恢复同窗口整库与私有文件。
+
+整库与工具表清单纳入新表。`snapshot-db.sql` 的 `component_code_mapping` 和 `business_rows_p_component_code_mapping` 只输出数量/完整行摘要，任一私有片段、路径、指针、CAS变化都会影响摘要，不打印正文。preflight与存储引用导出验证固定范围/真实内容页、字段与指针形状；不要求历史F27行仍存在。导出保持formatVersion4/sourceSchema，新增可选`codeMappingReferencesChecked`仅在表存在且执行检查时为true；旧报告缺标记不能证明代码卡图已覆盖，此标记不证明备份实际恢复完成。

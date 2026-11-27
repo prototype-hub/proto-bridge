@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeComponentCodeMappingEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopyEntryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCopySnapshotEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeCreationReceiptEntity;
@@ -71,6 +72,7 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
     private final ReactiveRepository<PrototypeDemoScriptEntity, String> demoScripts;
+    private final ReactiveRepository<PrototypeComponentCodeMappingEntity, String> codeMappings;
     private final ReactiveRepository<PrototypePageRelationEntity, String> pageRelations;
     private final ReactiveRepository<PrototypePageTraceContextEntity, String> pageTraceContexts;
     private final ReactiveRepository<PrototypePageTraceDecisionEntity, String> pageTraceDecisions;
@@ -430,10 +432,15 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return pageRelations
+        return codeMappings
                 .createDelete()
-                .where(PrototypePageRelationEntity::getVersionId, id)
+                .where(PrototypeComponentCodeMappingEntity::getVersionId, id)
                 .execute()
+                .then(
+                        pageRelations
+                                .createDelete()
+                                .where(PrototypePageRelationEntity::getVersionId, id)
+                                .execute())
                 .then(
                         pageTraceContexts
                                 .createDelete()
@@ -524,10 +531,20 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                pageRelations
+                                codeMappings
                                         .createDelete()
-                                        .where(PrototypePageRelationEntity::getProjectId, id)
+                                        .where(
+                                                PrototypeComponentCodeMappingEntity::getProjectId,
+                                                id)
                                         .execute()
+                                        .then(
+                                                pageRelations
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypePageRelationEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 pageTraceContexts
                                                         .createDelete()

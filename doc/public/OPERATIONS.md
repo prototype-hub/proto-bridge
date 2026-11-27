@@ -278,3 +278,13 @@ Rollback keeps the new columns/tables and all rows. Do not run old permanent-cle
 关系、人工入口、来源ID/版本及人工决策不产生文件，导出仍formatVersion4。三表完整存在时`pageTraceabilityReferencesChecked=true`；历史完全无三表时false；部分存在时`referencesComplete=false`且完整性错误非零，即使空表也不能授权修复。缺列/坏JSON等SQL错误同样失败关闭。覆盖字段不证明实际备份恢复完成。
 
 `preflight-db.sql`核固定project/version/revision/page、内容父页、CAS/时间、引用形状/安全整数/重复/上限；来源更新或删除的指针是合法历史状态，不强制来源行存在。`snapshot-db.sql`摘要三表完整行及source_refs顺序，不打印人工内容/历史作者。运行验证器同步当前BUSINESS_TABLES。停写同窗口保存整库、两文件根及外置配置，恢复前后核全部行/文件，再以授权API核入口、current/changed/missing、决策及原请求键。永久清理包含三表及原版本回执；软删保留，不以分页当前100条边冒称全包图。
+
+## 组件代码卡升级、备份与恢复
+
+升级前停止旧写入/永久清理节点，联合备份整库、现有两文件根和外置配置；在隔离副本验证新增 `p_component_code_mapping` 的17列及分页/清理两个索引，既有F27、回执与文件应保持。没有新配置、外部连接、文件抓取或独立后台任务。配套前端在固定预览“页面资料→代码映射卡”提供维护与安全文本卡包。
+
+恢复核验必须包含非空代码片段/路径/框架、说明current/changed/missing及独立卡CAS、导入原键和后来删除的卡。重启/整库dump-restore后授权API精确读取原页；旧导入key仍只返回该批current/missing且不复活已删卡，原更新/删除key不改写后来状态。导出仅用户选卡的七文本，检查换行缩进和无内部ID；路径/片段可能含私有内容，卡包是用户主动导出的资料，不是脱敏报告。
+
+用最新snapshot/preflight/export工具比对完整行摘要及`codeMappingReferencesChecked:true`；诊断只报数量/摘要/错误计数，不输出代码、仓库路径或链接正文。坏范围、坏指针形状须失败关闭，来源后来变更/删除本身合法。仅建空表或启动成功不算业务恢复验收。
+
+软删保留与永久清理保持原30天策略；永久版本和孤项目清理需在原事务同时移除卡与版本回执，先用受控失败验证整图回滚再验证清理成功。回滚保留卡表和回执，不运行遗漏这些行的旧清理/恢复工具；需要数据回退时使用同一停写窗口的完整数据库与文件备份。该操作不部署原型、不发送外部通知。

@@ -1,5 +1,6 @@
 -- Read-only: run against a restored copy; select the actual migration stage explicitly.
 \ir prototype-hub-table-names.sql
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_code_mapping_table')) IS NOT NULL AS prototype_hub_has_code_mappings \gset
 -- Page tracing is optional for historical schemas, but partial graphs fail closed.
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_relation_table')) IS NOT NULL AS prototype_hub_has_page_relations,
  to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_context_table')) IS NOT NULL AS prototype_hub_has_page_trace_contexts,
@@ -24,10 +25,10 @@ SELECT (:'prototype_hub_has_organization_columns'::boolean AND :'prototype_hub_h
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
+ AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_code_mapping_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_page_relation_table',:'prototype_hub_page_trace_context_table',:'prototype_hub_page_trace_decision_table',:'prototype_hub_code_mapping_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -353,6 +354,35 @@ WITH current_scope_errors AS (
   OR t.rationale IS NULL OR btrim(t.rationale)='' OR length(t.rationale)>2000
   OR nullif(t.author_id,'') IS NULL OR nullif(t.updated_by,'') IS NULL
  -- Historical actor IDs survive account removal; they never authorize later access.
+\endif
+\if :prototype_hub_has_code_mappings
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_code_mapping_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.alias IS NULL OR btrim(t.alias)='' OR length(t.alias)>120
+  OR t.repository_path IS NULL OR btrim(t.repository_path)='' OR length(t.repository_path)>2048
+  OR t.snippet IS NULL OR length(t.snippet)>16000
+  OR t.framework IS NULL OR length(t.framework)>120
+  OR t.framework_version IS NULL OR length(t.framework_version)>120
+  OR t.repository_url IS NULL OR length(t.repository_url)>2048
+  OR t.documentation_url IS NULL OR length(t.documentation_url)>2048
+  OR (t.repository_url<>'' AND (t.repository_url !~* '^https?://[^/?#@[:space:]]+([/?#]|$)'
+   OR t.repository_url ~ '[[:space:][:cntrl:]]' OR position(chr(92) in t.repository_url)>0))
+  OR (t.documentation_url<>'' AND (t.documentation_url !~* '^https?://[^/?#@[:space:]]+([/?#]|$)'
+   OR t.documentation_url ~ '[[:space:][:cntrl:]]' OR position(chr(92) in t.documentation_url)>0))
+  OR (t.description_id IS NULL) IS DISTINCT FROM (t.description_version IS NULL)
+  OR (t.description_id IS NOT NULL AND (btrim(t.description_id)='' OR length(t.description_id)>128
+   OR t.description_version NOT BETWEEN 0 AND 9007199254740991))
+ -- Changed/missing F27 pointers are valid historical references, never a reason to delete a card.
 \endif
 \if :prototype_hub_has_demo_scripts
  UNION ALL

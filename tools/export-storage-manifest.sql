@@ -2,6 +2,7 @@
 -- unmigrated legacy projection; never audit history from current-version rows only.
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_code_mapping_table')) IS NOT NULL AS prototype_hub_has_code_mappings \gset
 -- Page tracing is optional for historical schemas, but partial graphs fail closed.
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_relation_table')) IS NOT NULL AS prototype_hub_has_page_relations,
  to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_trace_context_table')) IS NOT NULL AS prototype_hub_has_page_trace_contexts,
@@ -364,6 +365,35 @@ WITH storage_references AS (
   OR nullif(t.author_id,'') IS NULL OR nullif(t.updated_by,'') IS NULL
  -- Historical actor IDs survive account removal; they never authorize later access.
 \endif
+\if :prototype_hub_has_code_mappings
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_code_mapping_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
+   '$.pages.** ? (@.pageId == $page && @.folder == false)',jsonb_build_object('page',t.page_id)),false)
+  OR t.alias IS NULL OR btrim(t.alias)='' OR length(t.alias)>120
+  OR t.repository_path IS NULL OR btrim(t.repository_path)='' OR length(t.repository_path)>2048
+  OR t.snippet IS NULL OR length(t.snippet)>16000
+  OR t.framework IS NULL OR length(t.framework)>120
+  OR t.framework_version IS NULL OR length(t.framework_version)>120
+  OR t.repository_url IS NULL OR length(t.repository_url)>2048
+  OR t.documentation_url IS NULL OR length(t.documentation_url)>2048
+  OR (t.repository_url<>'' AND (t.repository_url !~* '^https?://[^/?#@[:space:]]+([/?#]|$)'
+   OR t.repository_url ~ '[[:space:][:cntrl:]]' OR position(chr(92) in t.repository_url)>0))
+  OR (t.documentation_url<>'' AND (t.documentation_url !~* '^https?://[^/?#@[:space:]]+([/?#]|$)'
+   OR t.documentation_url ~ '[[:space:][:cntrl:]]' OR position(chr(92) in t.documentation_url)>0))
+  OR (t.description_id IS NULL) IS DISTINCT FROM (t.description_version IS NULL)
+  OR (t.description_id IS NOT NULL AND (btrim(t.description_id)='' OR length(t.description_id)>128
+   OR t.description_version NOT BETWEEN 0 AND 9007199254740991))
+ -- Changed/missing F27 pointers are valid historical references, never a reason to delete a card.
+\endif
 \if :prototype_hub_has_demo_scripts
  UNION ALL
  SELECT d.id FROM :"prototype_hub_demo_script_table" d
@@ -483,6 +513,7 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  'demoScriptReferencesChecked',:'prototype_hub_has_demo_scripts'::boolean,
  'organizationReferencesChecked',:'prototype_hub_has_organization'::boolean,
  'pageTraceabilityReferencesChecked',:'prototype_hub_has_page_traceability'::boolean,
+ 'codeMappingReferencesChecked',:'prototype_hub_has_code_mappings'::boolean,
  'imageReferencesChecked',(:'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean),
  'integrityErrors',(SELECT count(*) FROM integrity_errors),
  'entries',coalesce(json_agg(json_build_object('id',version_id,'projectId',project_id,

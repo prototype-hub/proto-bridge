@@ -151,6 +151,47 @@ class StorageExportPostgresTest(unittest.TestCase):
         for mutation in mutations:
             self.assertNotEqual(before, self.script('snapshot-db.sql', mutation), mutation)
 
+    def create_code_mappings(self):
+        self.create_page_traceability()
+        self.sql(self.prefix() + """
+          CREATE TABLE p_component_code_mapping(id text primary key,project_id text,version_id text,revision_id text,
+            page_id text,alias text,repository_path text,repository_url text,documentation_url text,snippet text,
+            framework text,framework_version text,description_id text,description_version bigint,
+            config_version bigint,created_at bigint,updated_at bigint);
+          INSERT INTO p_component_code_mapping VALUES('code-card','project','version','r1','parent','Private code alias',
+            'src/private/Secret.vue','https://example.invalid/repository','https://example.invalid/document',
+            '<script>  ordinary text  </script>','Vue','3','deleted-description',2,3,100,103);
+        """)
+
+    def test_code_mapping_scope_text_and_pointer_shape_checked_without_requiring_live_source(self):
+        self.create_code_mappings()
+        manifest = self.export()
+        self.assertTrue(manifest['codeMappingReferencesChecked'])
+        self.assertEqual(0, manifest['integrityErrors'])
+        self.assertEqual(0, self.export('UPDATE p_component_code_mapping SET description_id=null,description_version=null;')['integrityErrors'])
+        for assignment in ("project_id='missing'", "version_id='missing'", "revision_id='missing'", "page_id='missing'",
+                           'config_version=-1', 'created_at=-1', 'updated_at=99', "alias=''", "repository_path=''",
+                           "snippet=null", "framework=null", "repository_url='javascript:alert(1)'",
+                           "documentation_url='https://user:secret@example.invalid/doc'", 'description_version=-1',
+                           'description_version=9007199254740992', 'description_id=null'):
+            mutation = 'UPDATE p_component_code_mapping SET ' + assignment + ';'
+            self.assertGreater(self.export(mutation)['integrityErrors'], 0, assignment)
+            self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines(), assignment)
+
+    def test_code_mapping_snapshot_hashes_every_private_field_without_printing_card_content(self):
+        self.create_code_mappings()
+        before = self.script('snapshot-db.sql')
+        self.assertIn('business_rows_p_component_code_mapping|1|', before)
+        self.assertIn('component_code_mapping|1|', before)
+        for private in ('Private code alias', 'Secret.vue', '<script>', 'deleted-description'):
+            self.assertNotIn(private, before)
+            self.assertNotIn(private, self.script('export-storage-manifest.sql'))
+        for assignment in ("alias='Different'", "repository_path='different.vue'", "snippet='Different indentation'",
+                           "repository_url='https://other.invalid/repo'", "documentation_url='https://other.invalid/doc'",
+                           "framework='Other'", "framework_version='4'", 'description_version=3', 'config_version=4'):
+            self.assertNotEqual(before, self.script('snapshot-db.sql', 'UPDATE p_component_code_mapping SET ' + assignment + ';'))
+        self.assertEqual(before, self.script('snapshot-db.sql'))
+
     def create_page_delivery(self):
         self.sql(self.prefix() + """
           ALTER TABLE p_revision ADD COLUMN manifest_json text;
@@ -174,6 +215,7 @@ class StorageExportPostgresTest(unittest.TestCase):
         self.assertFalse(manifest['elementDescriptionReferencesChecked'])
         self.assertFalse(manifest['demoScriptReferencesChecked'])
         self.assertFalse(manifest['organizationReferencesChecked'])
+        self.assertFalse(manifest['codeMappingReferencesChecked'])
         self.assertEqual(0, manifest['integrityErrors'])
         self.assertEqual({'public-message', 'internal-message'},
                          {row['messageId'] for row in manifest['imageEntries']})
