@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_revision_approval', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -247,7 +247,8 @@ class Api:
                 if key in ('token', 'accessKey', 'previewUrl', 'runtimeBaseUrl', 'pagesUrl', 'csrfToken',
                            'invitationToken', 'email', 'displayName', 'company', 'text', 'summary',
                            'authorName', 'authorCompany', 'actorName', 'visitTicket', 'clientRequestId',
-                           'businessTerm', 'note', 'requirementUrl', 'evidenceReference') and item:
+                           'businessTerm', 'note', 'requirementUrl', 'evidenceReference', 'title',
+                           'objective', 'prerequisites', 'resetNote', 'narration') and item:
                     self.secrets_seen.add(str(item))
                 self.remember_secrets(item)
         elif isinstance(value, list):
@@ -1754,6 +1755,88 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         require(api.request('POST', fixture['path'] + '/_history', {'pageIndex': 0, 'pageSize': 100}) ==
                 fixture['history'], 'Original approval replay changed immutable decision history')
 
+    def create_demo_script_fixture(self, api, version_id, revision_id, grant):
+        path = '/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id + '/demo-scripts'
+        pages = api.request('GET', path.rsplit('/', 1)[0] + '/pages')
+        available = []
+        pending = list(pages)
+        while pending:
+            page = pending.pop(0)
+            if page.get('pageId') and not page.get('folder'):
+                available.append(page['pageId'])
+            pending.extend(page.get('children') or [])
+        require(len(available) >= 2, 'Demo fixture needs two actual openable manifest pages')
+        payload = {'title': 'Original private demo', 'objective': 'Original demo objective',
+                   'prerequisites': 'Original prerequisites', 'resetNote': 'Original reset guidance',
+                   'shareEnabled': False, 'clientRequestId': uuid.uuid4().hex,
+                   'steps': [{'id': 'first', 'pageId': available[0], 'narration': 'Original first narration'},
+                             {'id': 'second', 'pageId': available[1], 'narration': 'Original second narration'},
+                             {'id': 'revisit', 'pageId': available[0], 'narration': 'Original repeat narration'}]}
+        row = api.request('POST', path, payload)
+        require(row['configVersion'] == 0 and row['steps'] == payload['steps'] and not row['shareEnabled'],
+                'Demo JSON insert lost typed step order or its internal-only default')
+        operations = [('POST', path, payload)]
+        update = dict(payload, title='Original reordered demo', shareEnabled=True, expectedVersion=0,
+                      clientRequestId=uuid.uuid4().hex,
+                      steps=[payload['steps'][2], payload['steps'][0], payload['steps'][1]])
+        row = api.request('PUT', path + '/' + row['id'], update)
+        operations.append(('PUT', path + '/' + row['id'], update))
+        disabled = dict(update, shareEnabled=False, expectedVersion=1, clientRequestId=uuid.uuid4().hex)
+        row = api.request('PUT', path + '/' + row['id'], disabled)
+        operations.append(('PUT', path + '/' + row['id'], disabled))
+        require(row['configVersion'] == 2 and row['steps'] == update['steps'] and not row['shareEnabled'],
+                'Demo JSON update lost ordered repeated pages or explicit share revocation')
+        shared_payload = dict(payload, title='Original shared demo', shareEnabled=True,
+                              clientRequestId=uuid.uuid4().hex)
+        shared = api.request('POST', path, shared_payload)
+        deleted_payload = dict(payload, title='Original deleted demo', clientRequestId=uuid.uuid4().hex)
+        deleted = api.request('POST', path, deleted_payload)
+        delete = {'expectedVersion': 0, 'clientRequestId': uuid.uuid4().hex}
+        require(api.request('POST', path + '/' + deleted['id'] + '/_delete', delete) is True,
+                'Demo fixture delete did not complete')
+        return {'path': path, 'row': row, 'operations': operations, 'shared': shared,
+                'sharedPayload': shared_payload, 'grant': grant, 'deleted': deleted,
+                'deletedPayload': deleted_payload, 'delete': delete}
+
+    def verify_demo_script_fixture(self, api, fixture):
+        path, row, shared = fixture['path'], fixture['row'], fixture['shared']
+        require(api.request('GET', path + '/' + row['id']) == row and
+                api.request('GET', path + '/' + shared['id']) == shared,
+                'Restored demo changed its full typed JSON, text, share flag or CAS')
+        for method, endpoint, payload in fixture['operations']:
+            require(api.request(method, endpoint, payload) == row,
+                    'Original demo key did not return current disabled state')
+        require(api.request('POST', path, fixture['sharedPayload']) == shared,
+                'Shared demo original key changed its row')
+        page = api.request('POST', path + '/_query', {'pageSize': 100})
+        fields = ('id', 'projectId', 'versionId', 'revisionId', 'title', 'shareEnabled',
+                  'configVersion', 'createdAt', 'updatedAt')
+        expected = [{field: item[field] for field in fields} for item in (row, shared)]
+        expected.sort(key=lambda item: (-item['createdAt'], item['id']))
+        require(page['total'] == 2 and page['data'] == expected,
+                'Demo summary lost exact database scope, ordering or nine-field projection')
+        deleted_path = path + '/' + fixture['deleted']['id']
+        api.request('POST', path, fixture['deletedPayload'], expected=409)
+        require(api.request('POST', deleted_path + '/_delete', fixture['delete']) is True,
+                'Original demo delete key did not replay true')
+        api.request('GET', deleted_path, expected=404)
+        grant = fixture['grant']
+        anonymous = Api(api.origin, self.secrets_seen)
+        public = '/api/prototype-hub/public/shares/' + grant['token'] + '/demo-scripts'
+        body = {'revisionId': row['revisionId'], 'accessKey': grant['accessKey']}
+        listed = anonymous.request('POST', public + '/_query', dict(body, pageSize=100))
+        require(listed['total'] == 1 and listed['data'] == [
+                    {field: shared[field] for field in ('id', 'revisionId', 'title')}],
+                'Public demo list leaked private rows or exceeded its three-field projection')
+        context = anonymous.request('POST', public + '/' + shared['id'] + '/context', body)
+        require(context == {field: shared[field] for field in
+                           ('id', 'revisionId', 'title', 'objective', 'prerequisites', 'resetNote', 'steps')},
+                'Public demo context changed its seven fields or ordered repeated steps')
+        anonymous.request('POST', public + '/' + row['id'] + '/context', body, expected=404)
+        self.report['demoScripts'] = {'typedJsonOrderedRepeatedStepsPreserved': True,
+            'originalKeysReadCurrentDisabledState': True, 'deletedCreateNeverResurrects': True,
+            'internalSummaryFields': 9, 'publicSummaryFields': 3, 'publicContextFields': 7}
+
     def create_current_graph(self, api, project, version, current, member, review):
         """Establish durable current-version rows through the existing product APIs."""
         fixture = {'project': project, 'version': version, 'current': current,
@@ -1761,6 +1844,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         discussion = review['discussion']
         base = discussion['base']
         fixture['approval'] = self.create_approval_fixture(api, version['id'], base['revisionId'])
+        fixture['demoScripts'] = self.create_demo_script_fixture(
+            api, version['id'], base['revisionId'], review['grant'])
         path = '/api/prototype-hub/versions/' + version['id'] + '/work-items'
         payload = dict(base, url='https://example.invalid/restore-work-item',
                        note='Original private work item', clientRequestId=uuid.uuid4().hex)
@@ -1891,6 +1976,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
     def verify_current_graph(self, api, fixture, database):
         """Recheck the same persisted fixture on source, restart, replica and restored roots."""
         self.verify_approval_fixture(api, fixture['approval'])
+        self.verify_demo_script_fixture(api, fixture['demoScripts'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2006,7 +2092,8 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
     def verify_sql_diagnostics(self, database, fixture):
         require(not self.processes, 'SQL mutation checks require stopped owned writers')
         clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
-        require(clean['integrityErrors'] == 0 and clean['referencesComplete'],
+        require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
+                clean.get('demoScriptReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
@@ -2014,6 +2101,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
         variables = {'association': fixture['associations']['active']['id'],
+                     'demo': fixture['demoScripts']['shared']['id'],
                      'foreign_project': fixture['copyProject']['id'],
                      'foreign_revision': fixture['copyVersion']['revisionId'],
                      'snapshot': fixture['copy'][0]['context']['snapshotId'],
@@ -2043,7 +2131,12 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_copy_snapshot SET page_path='missing.html',page_id=encode(sha256(convert_to('missing.html','UTF8')),'hex') WHERE id=:'empty_snapshot'; UPDATE p_copy_entry SET page_id=encode(sha256(convert_to('missing.html','UTF8')),'hex') WHERE snapshot_id=:'empty_snapshot';",
             "UPDATE p_copy_snapshot SET revision_id=:'foreign_revision' WHERE id=:'snapshot';",
             "UPDATE p_copy_entry SET page_id=repeat('f',64) WHERE id=:'entry';",
-            "UPDATE p_copy_entry SET project_id=:'foreign_project' WHERE id=:'entry';")
+            "UPDATE p_copy_entry SET project_id=:'foreign_project' WHERE id=:'entry';",
+            "UPDATE p_demo_script SET project_id=:'foreign_project' WHERE id=:'demo';",
+            "UPDATE p_demo_script SET revision_id=:'foreign_revision' WHERE id=:'demo';",
+            "UPDATE p_demo_script SET steps=jsonb_set(steps::jsonb,'{0,pageId}','\"missing-page\"')::text WHERE id=:'demo';",
+            "UPDATE p_demo_script SET steps=jsonb_set(steps::jsonb,'{1,id}',steps::jsonb->0->'id')::text WHERE id=:'demo';",
+            "UPDATE p_demo_script SET steps='{}' WHERE id=:'demo';")
         for index, mutation in enumerate(mutations, 1):
             case = 'SQL negative case ' + str(index)
             require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
@@ -2349,7 +2442,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True
