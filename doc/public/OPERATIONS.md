@@ -264,3 +264,11 @@ Markdown附件是ZIP（`说明书.md`与`images/`必须一同保留），HTML附
 恢复验收必须包含非空脚本、不同步骤ID重复访问同页、步骤重排及讲解、开放后关闭的当前脚本和原请求键。正常重启及整库dump/restore后通过HTTP核对原范围、精确步骤次序和规范化正文，原创建/更新键应返回当前关闭状态，不能重复插入或恢复旧开放配置。仅启动建表或空表不能证明业务恢复。使用现有snapshot/preflight/export工具核对新表完整行摘要与 `demoScriptReferencesChecked:true`，确认原F06/F30数据未改；备份、原始正文及运行凭据留在受控环境。
 
 软删除/恢复仍遵循现有30天策略，永久版本/项目清理必须把脚本及版本回执纳入同一事务；用失败阻挡fixture验证清理回滚，再验证成功清理。对固定和已解析精确修订的latest分享分别检查密码授权、到期、撤销、关闭shareEnabled后的后续拒绝；这些读取不新增guest/session/visit。演示无需批准或发布，也不会部署原型。
+
+## Project organization upgrades and recovery
+
+Stop old writers and cleanup nodes before the paired upgrade. Back up the whole database and existing files together; verify nullable project group/archive/version columns, `p_project_tag`, `p_project_favorite`, their uniqueness/indexes and current SQL inventory. Existing rows require no organization backfill. No new files, settings, route/menu grants or dependency are required.
+
+A restored archived project still supports its ordinary reads/edits/shares and occupies quota. Soft-delete/recover must retain group/tags/archive and each account's private favorite/version. Check two different users and ADMIN separately after recovery. Original mutation keys must return current state; an old favorite=true retry must not reverse a later false. Do not reset counters or receipts to resolve409; refresh current state and explicitly decide whether to submit a new edit.
+
+Rollback keeps the new columns/tables and all rows. Do not run old permanent-cleanup or export tools that omit the organization relations. The storage manifest remains format4 with the organization reference check identified explicitly; exports must not print group/tag/cover text or preference bodies. Validate restart and whole-database restore with a nonempty organization fixture before treating a deployment as verified.

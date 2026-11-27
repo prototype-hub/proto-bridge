@@ -40,7 +40,7 @@ FIXTURE = Path(__file__).resolve().parent / 'fixtures' / 'runtime-site'
 REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_review_rate',
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
-BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_member', 'p_preview_session',
+BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_tag', 'p_project_favorite', 'p_project_member', 'p_preview_session',
                    'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
@@ -1837,10 +1837,65 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'originalKeysReadCurrentDisabledState': True, 'deletedCreateNeverResurrects': True,
             'internalSummaryFields': 9, 'publicSummaryFields': 3, 'publicContextFields': 7}
 
+    def create_organization_fixture(self, api, project, member):
+        path = '/api/prototype-hub/projects/' + project['id']
+        original = api.request('GET', path)
+        cover = 'https://example.invalid/original-runtime-cover.png'
+        api.request('PUT', path, {field: original.get(field) for field in ('name', 'description')} | {'cover': cover})
+        organization = {'groupName': 'Original shared group', 'tags': ['Second tag', 'Original tag'],
+                        'archived': True, 'expectedVersion': original['organizationVersion'],
+                        'clientRequestId': uuid.uuid4().hex}
+        first = api.request('PUT', path + '/_organization', organization)
+        updated = dict(organization, groupName='Current shared group', tags=['Current tag', 'Second tag'],
+                       expectedVersion=first['organizationVersion'], clientRequestId=uuid.uuid4().hex)
+        shared = api.request('PUT', path + '/_organization', updated)
+        require(shared['archivedTime'] is not None and shared['archivedTime'] == first['archivedTime'] and
+                shared['organizationVersion'] == original['organizationVersion'] + 2 and
+                shared['tags'] == ['Current tag', 'Second tag'] and shared['cover'] == cover,
+                'Organization fixture lost archived state, sorted labels, cover or shared CAS')
+        favorite = {'favorite': True, 'expectedVersion': shared['favoriteVersion'], 'clientRequestId': uuid.uuid4().hex}
+        liked = api.request('PUT', path + '/_favorite', favorite)
+        unlike = dict(favorite, favorite=False, expectedVersion=liked['favoriteVersion'], clientRequestId=uuid.uuid4().hex)
+        owner = api.request('PUT', path + '/_favorite', unlike)
+        require(owner['favorite'] is False and owner['favoriteVersion'] == shared['favoriteVersion'] + 2 and
+                owner['organizationVersion'] == shared['organizationVersion'] and owner['updatedAt'] == shared['updatedAt'],
+                'Personal preference changed shared metadata or lost the retained false version')
+        reader = Api(api.origin, self.secrets_seen)
+        reader.login(member['username'], self.member_password)
+        reader_favorite = {'favorite': True, 'expectedVersion': 0, 'clientRequestId': uuid.uuid4().hex}
+        readable = reader.request('PUT', path + '/_favorite', reader_favorite)
+        require(readable['favorite'] is True and readable['favoriteVersion'] == 1 and
+                readable['organizationVersion'] == owner['organizationVersion'] and readable['updatedAt'] == owner['updatedAt'],
+                'READ member cannot keep a private independent favorite without changing the project')
+        return {'path': path, 'owner': owner, 'reader': readable, 'member': member,
+                'organizationOperations': [organization, updated], 'favoriteOperations': [favorite, unlike],
+                'readerFavorite': reader_favorite}
+
+    def verify_organization_fixture(self, api, fixture):
+        fields = ('groupName', 'tags', 'archivedTime', 'organizationVersion', 'favorite', 'favoriteVersion', 'cover', 'updatedAt')
+        def same(actual, expected):
+            require(all(actual[field] == expected[field] for field in fields),
+                    'Restored organization, private favorite, cover or independent versions differ')
+        path = fixture['path']
+        same(api.request('GET', path), fixture['owner'])
+        for payload in fixture['organizationOperations']:
+            same(api.request('PUT', path + '/_organization', payload), fixture['owner'])
+        for payload in fixture['favoriteOperations']:
+            same(api.request('PUT', path + '/_favorite', payload), fixture['owner'])
+        reader = Api(api.origin, self.secrets_seen)
+        reader.login(fixture['member']['username'], self.member_password)
+        same(reader.request('GET', path), fixture['reader'])
+        same(reader.request('PUT', path + '/_favorite', fixture['readerFavorite']), fixture['reader'])
+        same(api.request('GET', path), fixture['owner'])
+        self.report['projectOrganization'] = {'archivedProjectStillReadable': True,
+            'sharedGroupAndNonemptyTagsPreserved': True, 'existingCoverStringPreservedWithoutFetch': True,
+            'retainedFalseFavoriteAndIndependentReaderFavorite': True, 'originalKeysReadCurrentState': True}
+
     def create_current_graph(self, api, project, version, current, member, review):
         """Establish durable current-version rows through the existing product APIs."""
         fixture = {'project': project, 'version': version, 'current': current,
                    'member': member, 'review': review}
+        fixture['organization'] = self.create_organization_fixture(api, project, member)
         discussion = review['discussion']
         base = discussion['base']
         fixture['approval'] = self.create_approval_fixture(api, version['id'], base['revisionId'])
@@ -1977,6 +2032,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         """Recheck the same persisted fixture on source, restart, replica and restored roots."""
         self.verify_approval_fixture(api, fixture['approval'])
         self.verify_demo_script_fixture(api, fixture['demoScripts'])
+        self.verify_organization_fixture(api, fixture['organization'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2093,7 +2149,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require(not self.processes, 'SQL mutation checks require stopped owned writers')
         clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
         require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
-                clean.get('demoScriptReferencesChecked') is True,
+                clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
@@ -2101,6 +2157,8 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
         variables = {'association': fixture['associations']['active']['id'],
+                     'organization_project': fixture['project']['id'],
+                     'favorite_user': fixture['organization']['member']['id'],
                      'demo': fixture['demoScripts']['shared']['id'],
                      'foreign_project': fixture['copyProject']['id'],
                      'foreign_revision': fixture['copyVersion']['revisionId'],
@@ -2136,7 +2194,14 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_demo_script SET revision_id=:'foreign_revision' WHERE id=:'demo';",
             "UPDATE p_demo_script SET steps=jsonb_set(steps::jsonb,'{0,pageId}','\"missing-page\"')::text WHERE id=:'demo';",
             "UPDATE p_demo_script SET steps=jsonb_set(steps::jsonb,'{1,id}',steps::jsonb->0->'id')::text WHERE id=:'demo';",
-            "UPDATE p_demo_script SET steps='{}' WHERE id=:'demo';")
+            "UPDATE p_demo_script SET steps='{}' WHERE id=:'demo';",
+            "UPDATE p_project_tag SET project_id='missing-fixture-project' WHERE project_id=:'organization_project';",
+            "UPDATE p_project_tag SET tag_name='' WHERE project_id=:'organization_project';",
+            "UPDATE p_project_favorite SET project_id='missing-fixture-project' WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
+            "UPDATE p_project_favorite SET user_id='missing-fixture-user' WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
+            "UPDATE p_project_favorite SET config_version=0 WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
+            "UPDATE p_project SET organization_version=-1 WHERE id=:'organization_project';",
+            "UPDATE p_project SET archived_time=-1 WHERE id=:'organization_project';")
         for index, mutation in enumerate(mutations, 1):
             case = 'SQL negative case ' + str(index)
             require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
@@ -2442,7 +2507,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

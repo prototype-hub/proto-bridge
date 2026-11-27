@@ -10,7 +10,9 @@ import com.gaiys.proto.prototypehub.entity.PrototypeInstallationEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePageDeliveryEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionApprovalEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
@@ -47,6 +49,8 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
     private final ReactiveRepository<PrototypeCreationReceiptEntity, String> receipts;
     private final ReactiveRepository<PrototypeProjectMemberEntity, String> members;
+    private final ReactiveRepository<PrototypeProjectTagEntity, String> projectTags;
+    private final ReactiveRepository<PrototypeProjectFavoriteEntity, String> projectFavorites;
     private final PrototypeProjectAccessService access;
     private final PrototypeInstallationService installations;
     private final FileCleanupService cleanup;
@@ -548,6 +552,22 @@ public class PrototypeRetentionService {
                                                 shares.createDelete()
                                                         .where(
                                                                 PrototypeShareEntity::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                projectTags
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeProjectTagEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                projectFavorites
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeProjectFavoriteEntity
+                                                                        ::getProjectId,
                                                                 id)
                                                         .execute())
                                         .then(

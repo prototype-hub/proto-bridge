@@ -16,6 +16,16 @@
 
 冷建表和增列仍委托 EasyORM 的结构生成器，实体表名和列名沿用当前常规标识符规范。描述文本中的单引号、反斜线和中文会安全保留；已经存在且标识符带引号的表可同步描述，但官方 CREATE 对标识符内部含引号的情况不提供完整转义保证，不能据此宣称任意表名都可自动创建。
 
+## Project organization persistence
+
+EasyORM adds nullable `p_project.group_name` (64), `archived_time` and `organization_version`, without rewriting existing rows. Null archive means unarchived and null organization version reads as0. Group/archive lookup indexes are additive. Archive is independent of deleted_time and never releases retained-root capacity, changes access epochs or freezes project work.
+
+`p_project_tag(id,project_id,tag_name)` has unique(project_id,tag_name) and a name/project lookup index; normalized names are shared project metadata, with no detached catalog. `p_project_favorite(id,project_id,user_id,favorite,config_version,created_at,updated_at)` has unique(user_id,project_id), current-user favorite lookup and project-purge indexes. A missing favorite reads false/version0; unfavorite retains false and its incremented counter. Account deletion removes only that account's rows in the existing user-delete transaction. Current project scope always intersects preference reads.
+
+Organization/favorite writes lock active user then project, reload current identity/action/role, compare their independent counters in the locked state and database mutation, and commit relation changes with the existing creation-receipt store. Receipt namespaces are `project-organization-update` / `project-favorite-update`, with resource_id=projectId; original-key replay returns current state. Tags and favorites survive soft deletion/recovery and are removed in permanent project graph cleanup. No file, new queue, background task or MBean is introduced.
+
+All three columns and both tables belong in whole-database backups and full-row snapshot hashes. Reference exports contain consistency facts, not group/tag/cover text or private preferences. Rollback retains additive structures; old export/cleanup tools cannot silently omit new relations. Existing cover, delivery descriptions, approvals, demo scripts, members and creation receipts remain intact during additive schema synchronization.
+
 ## 菜单与用户初始化
 
 初始化复用现有响应式 hsweb 服务：维护用户所需的角色维度及默认授权，按配置首次创建管理员，再初始化菜单。密码通过既有 PBKDF2 编码器处理，不在 SQL 中保存明文或固定哈希。资源权限定义继续由 hsweb 框架同步；组织、职位、字典及原型业务数据不导入演示种子。

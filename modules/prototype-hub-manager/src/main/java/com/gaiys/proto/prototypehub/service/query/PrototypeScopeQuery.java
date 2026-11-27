@@ -2,15 +2,21 @@ package com.gaiys.proto.prototypehub.service.query;
 
 import com.gaiys.proto.prototypehub.configuration.builder.PrototypeTextTermFragmentBuilder;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.enums.ProjectRole;
 import com.gaiys.proto.prototypehub.service.PrototypeRetentionService;
+import com.gaiys.proto.prototypehub.web.request.ProjectListQueryRequest;
+import com.gaiys.proto.prototypehub.web.request.ProjectOrganizationRequests;
 import com.gaiys.proto.prototypehub.web.request.PrototypeListQueryRequest;
 import com.gaiys.proto.prototypehub.web.response.ProjectResponse;
 import lombok.Getter;
 import lombok.RequiredArgsConstructor;
 import lombok.Setter;
+import org.hswebframework.ezorm.rdb.mapping.ReactiveRepository;
+import org.hswebframework.ezorm.rdb.operator.dml.query.Selects;
 import org.hswebframework.ezorm.rdb.operator.dml.query.SortOrder;
 import org.hswebframework.web.api.crud.entity.PagerResult;
 import org.hswebframework.web.api.crud.entity.QueryParamEntity;
@@ -29,6 +35,8 @@ import reactor.core.publisher.Mono;
 @RequiredArgsConstructor
 public class PrototypeScopeQuery {
     private final QueryHelper queries;
+    private final ReactiveRepository<PrototypeProjectEntity, String> projectRepository;
+    private final ReactiveRepository<PrototypeProjectTagEntity, String> tagRepository;
 
     public Flux<ProjectResponse> projects(String userId, boolean administrator) {
         return projectQuery(userId, administrator, null, false)
@@ -55,6 +63,46 @@ public class PrototypeScopeQuery {
             PrototypeListQueryRequest request,
             boolean deleted) {
         var query = projectQuery(userId, administrator, pageParameter(request), deleted);
+        if (!deleted && request instanceof ProjectListQueryRequest input) {
+            if (input.getArchived() != null)
+                query.where(
+                        condition -> {
+                            if (input.getArchived())
+                                condition.notNull(PrototypeProjectEntity::getArchivedTime);
+                            else condition.isNull(PrototypeProjectEntity::getArchivedTime);
+                        });
+            if (input.getGroupName() != null)
+                query.where(
+                        condition -> {
+                            if (input.getGroupName().isEmpty())
+                                condition.isNull(PrototypeProjectEntity::getGroupName);
+                            else
+                                condition.is(
+                                        PrototypeProjectEntity::getGroupName, input.getGroupName());
+                        });
+            if (input.getTag() != null) {
+                // Exact tag and user/project favorite bindings are unique, so joins cannot multiply
+                // project rows.
+                query.innerJoin(
+                        PrototypeProjectTagEntity.class,
+                        join ->
+                                join.is(
+                                                PrototypeProjectTagEntity::getProjectId,
+                                                PrototypeProjectEntity::getId)
+                                        .and(
+                                                PrototypeProjectTagEntity::getTagName,
+                                                input.getTag()));
+            }
+            if (Boolean.TRUE.equals(input.getFavoriteOnly()))
+                query.innerJoin(
+                        PrototypeProjectFavoriteEntity.class,
+                        join ->
+                                join.is(
+                                                PrototypeProjectFavoriteEntity::getProjectId,
+                                                PrototypeProjectEntity::getId)
+                                        .and(PrototypeProjectFavoriteEntity::getUserId, userId)
+                                        .and(PrototypeProjectFavoriteEntity::getFavorite, true));
+        }
         String keyword = keyword(request);
         if (!keyword.isEmpty())
             query.where(
@@ -110,6 +158,68 @@ public class PrototypeScopeQuery {
                 query.where(condition -> condition.is(PrototypeProjectEntity::getOwnerId, userId));
         } else applyScope(query, userId, administrator, false);
         return query;
+    }
+
+    /**
+     * Group in SQL before QueryHelper counts/pages; never cap or deduplicate a Java project list.
+     */
+    public Mono<PagerResult<String>> organizationOptions(
+            String userId, boolean administrator, ProjectOrganizationRequests.Options input) {
+        boolean group = "group".equals(input.getKind());
+        String column = group ? "groupName" : "tagName";
+        String project = group ? "" : "p_project.";
+        var query = group ? projectRepository.nativeQuery() : tagRepository.nativeQuery();
+        if (!group)
+            query.innerJoin(
+                    "p_project", join -> join.on("p_project.id = p_project_tag.project_id"));
+        query.select(Selects.column(column).as("label"))
+                .leftJoin(
+                        "p_project_member",
+                        join ->
+                                join.as("m")
+                                        .on("m.project_id = p_project.id")
+                                        .on(condition -> condition.is("m.userId", userId)));
+        query.where(condition -> condition.isNull(project + "deletedTime").notNull(column));
+        if (!administrator)
+            query.where(
+                    condition ->
+                            condition
+                                    .accept(
+                                            project + "ownerId",
+                                            PrototypeTextTermFragmentBuilder.OWNER_PRESENT
+                                                    .getTermType(),
+                                            true)
+                                    .nest()
+                                    .is(project + "ownerId", userId)
+                                    .or()
+                                    .in("m.role", "editor", "viewer")
+                                    .end());
+        query.where(condition -> condition.not(column, ""));
+        query.groupBy(Selects.column(column).get()).orderBy(SortOrder.asc(column));
+        var sql = query.getSql();
+        var page = new QueryParamEntity();
+        page.doPaging(input.getPageIndex(), input.getPageSize());
+        page.setParallelPager(true);
+        // Inject the official term after SQL analysis: this parser version cannot parse jOOQ
+        // POSITION syntax.
+        if (input.getKeyword() != null && !input.getKeyword().isEmpty())
+            page.toQuery()
+                    .accept(
+                            column,
+                            PrototypeTextTermFragmentBuilder.LITERAL_CONTAINS.getTermType(),
+                            input.getKeyword());
+        // Native analyzer wraps GROUP BY for the distinct total; JoinSpec.count cannot do this.
+        return QueryHelper.transformPageResult(
+                queries.select(sql.getSql(), sql.getParameters()).where(page).fetchPaged(),
+                rows ->
+                        Mono.just(
+                                rows.stream()
+                                        .map(
+                                                row ->
+                                                        row.get("label")
+                                                                .map(Object::toString)
+                                                                .orElseThrow())
+                                        .toList()));
     }
 
     private static ProjectResponse projectResponse(

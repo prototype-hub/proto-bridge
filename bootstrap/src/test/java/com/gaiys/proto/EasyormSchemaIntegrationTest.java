@@ -3,6 +3,8 @@ package com.gaiys.proto;
 import static org.junit.jupiter.api.Assertions.*;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewChallengeEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewEventEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewInvitationEntity;
@@ -253,6 +255,66 @@ class EasyormSchemaIntegrationTest {
         } finally {
             execute("DELETE FROM p_version WHERE id='old-soft-delete-version'");
             execute("DELETE FROM p_project WHERE id='old-soft-delete-project'");
+        }
+    }
+
+    @Test
+    void organizationUpgradeFromOldFortyFiveTablesKeepsCoverAndExistingDeliveryRows()
+            throws Exception {
+        execute("DROP TABLE p_project_tag, p_project_favorite");
+        execute(
+                "ALTER TABLE p_project DROP COLUMN group_name, DROP COLUMN archived_time, DROP COLUMN organization_version");
+        execute(
+                "INSERT INTO p_project(id,name,cover,creator_id,create_time,modifier_id,modify_time) VALUES ('old-org-project','Existing','/existing-cover.png','legacy',1,'legacy',2)");
+        // Fixed legacy sentinels test byte preservation by additive DDL, independent of API
+        // authorization.
+        execute(
+                "INSERT INTO p_element_description(id,project_id,version_id,revision_id,page_id,title,purpose,input_rules,permission_rules,navigation_rules,notes,config_version,created_at,updated_at) VALUES ('old-org-element','old-org-project','legacy-v','legacy-r','page','Title','Purpose','','','','',3,1,2)");
+        execute(
+                "INSERT INTO p_revision_approval(id,project_id,version_id,revision_id,config_version,action,approved,published,actor_id,actor_name,note,create_time) VALUES ('old-org-approval','old-org-project','legacy-v','legacy-r',4,'approve',true,false,'legacy','Legacy','Preserve',1)");
+        execute(
+                "INSERT INTO p_demo_script(id,project_id,version_id,revision_id,title,objective,prerequisites,reset_note,steps,share_enabled,config_version,created_at,updated_at) VALUES ('old-org-script','old-org-project','legacy-v','legacy-r','Demo','Objective','','','[]',false,5,1,2)");
+        var snapshots = new HashMap<String, String>();
+        for (String table :
+                List.of("p_element_description", "p_revision_approval", "p_demo_script"))
+            snapshots.put(
+                    table,
+                    scalar(
+                            "SELECT row_to_json(t)::text FROM "
+                                    + table
+                                    + " t WHERE id LIKE 'old-org-%'"));
+        try {
+            assertEquals(
+                    "45",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            synchronize(PrototypeProjectEntity.class);
+            synchronize(PrototypeProjectTagEntity.class);
+            synchronize(PrototypeProjectFavoriteEntity.class);
+            synchronize(PrototypeProjectEntity.class);
+            assertEquals(
+                    "47",
+                    scalar(
+                            "SELECT count(*)::text FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'"));
+            assertEquals(
+                    "/existing-cover.png|1|2",
+                    scalar(
+                            "SELECT cover||'|'||create_time||'|'||modify_time FROM p_project WHERE id='old-org-project' AND group_name IS NULL AND archived_time IS NULL AND organization_version IS NULL"));
+            for (var entry : snapshots.entrySet())
+                assertEquals(
+                        entry.getValue(),
+                        scalar(
+                                "SELECT row_to_json(t)::text FROM "
+                                        + entry.getKey()
+                                        + " t WHERE id LIKE 'old-org-%'"));
+        } finally {
+            for (String table :
+                    List.of(
+                            "p_element_description",
+                            "p_revision_approval",
+                            "p_demo_script",
+                            "p_project"))
+                execute("DELETE FROM " + table + " WHERE id LIKE 'old-org-%'");
         }
     }
 

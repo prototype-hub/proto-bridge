@@ -1,12 +1,25 @@
 -- Read-only: run against a restored copy; select the actual migration stage explicitly.
 \ir prototype-hub-table-names.sql
+-- Organization data adds no storage files. Check its complete optional graph before claiming coverage.
+SELECT count(*)=3 AS prototype_hub_has_organization_columns,
+ count(*)>0 AS prototype_hub_has_any_organization_columns FROM information_schema.columns
+ WHERE table_schema=current_schema() AND table_name=:'prototype_hub_project_table'
+ AND column_name IN ('group_name','archived_time','organization_version') \gset
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_project_tag_table')) IS NOT NULL AS prototype_hub_has_project_tags,
+ to_regclass(format('%I.%I',current_schema(),:'prototype_hub_project_favorite_table')) IS NOT NULL AS prototype_hub_has_project_favorites,
+ to_regclass(format('%I.%I',current_schema(),'s_user')) IS NOT NULL AS prototype_hub_has_organization_users \gset
+SELECT (:'prototype_hub_has_organization_columns'::boolean AND :'prototype_hub_has_project_tags'::boolean
+ AND :'prototype_hub_has_project_favorites'::boolean AND :'prototype_hub_has_organization_users'::boolean)
+ AS prototype_hub_has_organization,
+ (:'prototype_hub_has_any_organization_columns'::boolean OR :'prototype_hub_has_project_tags'::boolean
+ OR :'prototype_hub_has_project_favorites'::boolean) AS prototype_hub_has_organization_parts \gset
 SELECT current_database(), version();
 SELECT table_name, column_name, data_type, character_maximum_length, is_nullable
  FROM information_schema.columns WHERE table_schema=current_schema()
- AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
+ AND table_name IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table')
  ORDER BY table_name,ordinal_position;
 SELECT tablename,indexname,indexdef FROM pg_indexes WHERE schemaname=current_schema()
- AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
+ AND tablename IN (:'prototype_hub_installation_table',:'prototype_hub_project_table',:'prototype_hub_project_tag_table',:'prototype_hub_project_favorite_table',:'prototype_hub_member_table',:'prototype_hub_preview_session_table',:'prototype_hub_version_table',:'prototype_hub_revision_table',:'prototype_hub_revision_approval_table',:'prototype_hub_work_item_table',:'prototype_hub_element_description_table',:'prototype_hub_viewport_check_table',:'prototype_hub_demo_script_table',:'prototype_hub_share_table',:'prototype_hub_review_guest_table',:'prototype_hub_review_unverified_guest_table',:'prototype_hub_review_challenge_table',:'prototype_hub_review_session_table',:'prototype_hub_review_rate_table',:'prototype_hub_review_invitation_table',:'prototype_hub_review_thread_table',:'prototype_hub_review_message_table',:'prototype_hub_review_event_table',:'prototype_hub_review_association_table',:'prototype_hub_copy_snapshot_table',:'prototype_hub_copy_entry_table',:'prototype_hub_share_visit_table',:'prototype_hub_receipt_table',:'prototype_hub_cleanup_table');
 SELECT :'prototype_hub_project_table' AS name,count(*) AS rows FROM :"prototype_hub_project_table" UNION ALL
 SELECT :'prototype_hub_version_table',count(*) FROM :"prototype_hub_version_table" UNION ALL
 SELECT :'prototype_hub_share_table',count(*) FROM :"prototype_hub_share_table";
@@ -220,6 +233,43 @@ WITH current_scope_errors AS (
   OR NOT coalesce(jsonb_path_exists(r.manifest_json::jsonb,
    '$.pages.** ? (@.pageId == $page && @.folder == false)',
    jsonb_build_object('page',d.page_id)),false)
+\endif
+ UNION ALL
+ SELECT p.id FROM :"prototype_hub_project_table" p
+ WHERE :'prototype_hub_has_organization_parts'::boolean AND NOT :'prototype_hub_has_organization'::boolean
+\if :prototype_hub_has_organization_columns
+ UNION ALL
+ SELECT p.id FROM :"prototype_hub_project_table" p
+ WHERE (p.group_name IS NOT NULL AND (p.group_name='' OR length(p.group_name)>64
+  OR p.group_name IS DISTINCT FROM btrim(p.group_name,E' \t\n\r\v\f' || U&'\001C\001D\001E\001F\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')))
+  OR (p.archived_time IS NOT NULL AND p.archived_time<0)
+  OR (p.organization_version IS NOT NULL AND p.organization_version NOT BETWEEN 0 AND 9007199254740991)
+\endif
+\if :prototype_hub_has_project_tags
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_project_tag_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ WHERE p.id IS NULL OR t.tag_name IS NULL OR t.tag_name='' OR length(t.tag_name)>32
+  OR t.tag_name IS DISTINCT FROM btrim(t.tag_name,E' \t\n\r\v\f' || U&'\001C\001D\001E\001F\00A0\1680\2000\2001\2002\2003\2004\2005\2006\2007\2008\2009\200A\2028\2029\202F\205F\3000\FEFF')
+  OR (SELECT count(*) FROM :"prototype_hub_project_tag_table" other WHERE other.project_id=t.project_id)>10
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_project_tag_table" other
+   WHERE other.id<>t.id AND other.project_id=t.project_id AND other.tag_name=t.tag_name)
+\endif
+\if :prototype_hub_has_project_favorites
+ UNION ALL
+ SELECT f.id FROM :"prototype_hub_project_favorite_table" f
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=f.project_id
+\if :prototype_hub_has_organization_users
+ LEFT JOIN s_user u ON u.id=f.user_id
+\endif
+ WHERE p.id IS NULL OR nullif(f.user_id,'') IS NULL OR f.favorite IS NULL
+\if :prototype_hub_has_organization_users
+  OR u.id IS NULL
+\endif
+  OR f.config_version IS NULL OR f.config_version NOT BETWEEN 1 AND 9007199254740991
+  OR f.created_at IS NULL OR f.created_at<0 OR f.updated_at IS NULL OR f.updated_at<f.created_at
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_project_favorite_table" other
+   WHERE other.id<>f.id AND other.project_id=f.project_id AND other.user_id=f.user_id)
 \endif
 \if :prototype_hub_has_demo_scripts
  UNION ALL

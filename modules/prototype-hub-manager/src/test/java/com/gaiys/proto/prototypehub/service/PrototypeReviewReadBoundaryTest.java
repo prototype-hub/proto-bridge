@@ -69,7 +69,7 @@ class PrototypeReviewReadBoundaryTest {
         when(versions.createQuery()).thenReturn(versionQuery);
         var access =
                 new PrototypeProjectAccessService(
-                        projects, versions, null, null, null, null, null, null, null, null);
+                        projects, versions, null, null, null, null, null, null, null, null, null);
         var work = mock(FileWork.class);
         var preparing = new AtomicBoolean();
         when(work.call(any()))

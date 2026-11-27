@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.service.cleanup;
 
 import com.gaiys.proto.prototypehub.entity.PrototypePreviewSessionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeProjectFavoriteEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectMemberEntity;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectAccessService;
 import com.gaiys.proto.prototypehub.service.PrototypeProjectMemberService;
@@ -34,6 +35,7 @@ public class PrototypeAccountAccessCleanup {
     private final ReactiveRepository<PrototypeProjectEntity, String> projects;
     private final ReactiveRepository<PrototypeProjectMemberEntity, String> bindings;
     private final ReactiveRepository<PrototypePreviewSessionEntity, String> sessions;
+    private final ReactiveRepository<PrototypeProjectFavoriteEntity, String> favorites;
 
     @EventListener
     public void deleted(UserDeletedEvent event) {
@@ -47,6 +49,11 @@ public class PrototypeAccountAccessCleanup {
                 .then(
                         sessions.createDelete()
                                 .where(PrototypePreviewSessionEntity::getUserId, userId)
+                                .execute())
+                .then(
+                        favorites
+                                .createDelete()
+                                .where(PrototypeProjectFavoriteEntity::getUserId, userId)
                                 .execute())
                 .then();
     }

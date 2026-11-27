@@ -2,6 +2,7 @@ package com.gaiys.proto.prototypehub.web.response;
 
 import com.gaiys.proto.prototypehub.entity.PrototypeProjectEntity;
 import io.swagger.v3.oas.annotations.media.Schema;
+import java.util.List;
 
 /** 原型项目管理接口的响应视图，保留前端使用的创建和修改时间字段。 */
 @Schema(description = "原型项目响应信息")
@@ -17,7 +18,36 @@ public record ProjectResponse(
         @Schema(description = "当前用户项目角色，owner/editor/viewer/admin") String role,
         @Schema(description = "是否缺少有效所有者，需要管理员认领") boolean claimRequired,
         @Schema(description = "项目范围能力，与菜单动作权限取交集") ProjectCapabilities capabilities,
-        @Schema(description = "软删除时间（Unix 毫秒），活动项目为空；30天后不能恢复并自动永久清理") Long deletedTime) {
+        @Schema(description = "软删除时间（Unix 毫秒），活动项目为空；30天后不能恢复并自动永久清理") Long deletedTime,
+        String groupName,
+        List<String> tags,
+        Long archivedTime,
+        long organizationVersion,
+        boolean favorite,
+        long favoriteVersion) {
+    public ProjectResponse withPersonalOrganization(
+            List<String> labels, boolean saved, long version) {
+        return new ProjectResponse(
+                id,
+                name,
+                description,
+                cover,
+                createdBy,
+                createdAt,
+                updatedAt,
+                ownerId,
+                role,
+                claimRequired,
+                capabilities,
+                deletedTime,
+                groupName,
+                labels,
+                archivedTime,
+                organizationVersion,
+                saved,
+                version);
+    }
+
     public static ProjectResponse from(
             PrototypeProjectEntity p, String role, boolean claimRequired) {
         return new ProjectResponse(
@@ -32,6 +62,12 @@ public record ProjectResponse(
                 role,
                 claimRequired,
                 ProjectCapabilities.forRole(role),
-                p.getDeletedTime());
+                p.getDeletedTime(),
+                p.getGroupName() == null ? "" : p.getGroupName(),
+                List.of(),
+                p.getArchivedTime(),
+                p.getOrganizationVersion() == null ? 0 : p.getOrganizationVersion(),
+                false,
+                0);
     }
 }
