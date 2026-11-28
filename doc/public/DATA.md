@@ -127,7 +127,7 @@ EasyORM仅增补 `p_page_delivery` 及索引，不回填旧页面或改写既有
 
 软删/恢复保留状态和回执，永久版本清理在原图删除事务中移除两者；数据库失败全部回滚，既有清理调度可重试。父项目仍须所有原始子版本清理完成后才删除，不提前级联。此表不引入文件引用、通知或新调度器，现有文件队列的失败/重启语义保持不变。备份应包含完整新增表、回执及其固定修订，并与完整私有文件同窗口保存；人工理由/姓名属于私有业务资料，不写公开诊断或日志。
 
-数据库核对清单将 `p_page_delivery` 纳入完整业务表集合，`page_deliveries` 项记录完整行数量与摘要，不能只备份状态枚举而遗漏理由、负责人、并发版本或修订关联。存储引用导出保持 `formatVersion:4`、原 `sourceSchema/referencesComplete` 兼容语义，并提供可选 `pageDeliveryReferencesChecked` 布尔标记：为true表示交付行的项目/版本/修订以及清单真实叶子pageId和精确pagePath已核对；它不证明历史负责人当前启用或仍有成员资格，也不表示人工结论已被验收。旧导出缺少此标记不能据此声称已核对新增交付表。
+数据库核对清单将 `p_page_delivery` 纳入完整业务表集合，`page_deliveries` 项记录完整行数量与摘要，不能只备份状态枚举而遗漏理由、负责人、并发版本或修订关联。存储引用导出在当前schema使用 `formatVersion:5`、原 `sourceSchema/referencesComplete` 兼容语义，并提供可选 `pageDeliveryReferencesChecked` 布尔标记：为true表示交付行的项目/版本/修订以及清单真实叶子pageId和精确pagePath已核对；它不证明历史负责人当前启用或仍有成员资格，也不表示人工结论已被验收。旧导出缺少此标记不能据此声称已核对新增交付表。
 
 ## 固定页面人工视口自测
 
@@ -172,7 +172,7 @@ EasyORM 为 `p_project/p_version` 增补可空的 `deleted_time`；null 表示�
 
 存储核验先停写后导出完整引用：`psql -X -qAt -v ON_ERROR_STOP=1 -f tools/export-storage-manifest.sql > references.json`，再运行 `python3 tools/audit-storage.py --root /path/to/snapshot --manifest references.json`。导出包括活动与已删除版本、全部历史修订及未迁移旧投影，校验项目/版本/修订/分享、成员的父项目、内部会话的项目/版本及显式修订、非空创建回执修订的实际资源关联（version、thread或message→thread），以及所有public/internal消息图片的完整元数据和父线程/项目/版本/修订关联；创建回执没有修订的旧请求与项目请求不按猜测类型修复。导出不按 30 天期限过滤，仍持久化的到期引用也必须保护，只有数据库事务真正删掉引用后目录才可能回收。`preflight-db.sql` 另输出活动/软删计数，`snapshot-db.sql` 输出删除状态和完整文件清理队列的摘要，恢复时必须核对，不能只比较 ID 或行数。
 
-完整清单使用format=prototype-hub-storage-references、formatVersion=4、sourceSchema=immutable-revisions-materials-v1，同时具有 `referencesComplete=true`、`receiptReferencesChecked=true`、`imageReferencesChecked=true`、`materialReferencesChecked=true` 和 `integrityErrors=0`。原修订entries、评审imageEntries保持原形，新增materialEntries `{projectId,versionId,revisionId,materialId,materialType,storagePath,size,sha256}`，不导出来源、正文或凭据。旧数组、v2、current-only及缺关联检查的清单仅供检查；v3仅适用于尚无私有资料目录的旧快照，有materials目录时拒绝旧清单修复。审计先验证全部数据库关联、规范边界、字节数和SHA-256，缺失、损坏、重复引用或符号链接阻止所有删除。完整v4显式修复仅删除无任何持久引用的版本、评审图片或私有资料候选目录。离线修复必须提供 `--offline --confirm /path/to/snapshot` 并先在联合备份的隔离副本审核；不要手改完整性标志，软删目录仍属于被引用数据。
+资料图兼容format4；当前完整清单使用format=prototype-hub-storage-references、formatVersion=5、sourceSchema=immutable-revisions-token-packages-v1，同时具有 `referencesComplete=true`、`receiptReferencesChecked=true`、`imageReferencesChecked=true`、`materialReferencesChecked=true` 和 `integrityErrors=0`。原修订entries、评审imageEntries保持原形，新增materialEntries `{projectId,versionId,revisionId,materialId,materialType,storagePath,size,sha256}`，不导出来源、正文或凭据。旧数组、v2、current-only及缺关联检查的清单仅供检查；v3仅适用于尚无私有资料目录的旧快照，有materials目录时拒绝旧清单修复。审计先验证全部数据库关联、规范边界、字节数和SHA-256，缺失、损坏、重复引用或符号链接阻止所有删除。完整v4显式修复仅删除无任何持久引用的版本、评审图片或私有资料候选目录。离线修复必须提供 `--offline --confirm /path/to/snapshot` 并先在联合备份的隔离副本审核；不要手改完整性标志，软删目录仍属于被引用数据。
 
 ## 固定修订私有资料数据
 
@@ -362,7 +362,7 @@ The search request does not read original document files, extract missing text, 
 
 EasyORM仅增补 `p_element_description`、索引 `(revision_id,page_id,created_at,id)` 和 `version_id`，不回填旧页面或改写旧表。每行包含固定 `project_id/version_id/revision_id/page_id`，普通文本 `title/purpose/input_rules/permission_rules/navigation_rules/notes`、可空的JSON编码 `anchor`、独立 `config_version/created_at/updated_at`。几何仅保存根文档快照，不是DOM标识；新修订不会复制说明。软删除阻止访问，恢复后仍属原固定修订；版本30天到期永久清理时，同事务清除说明及归属该版本的持久回执。人工删除说明仍保留回执，防止旧创建键复活记录。
 
-数据库备份和完整业务表核对包含非空说明的全部字段；`element_descriptions` 与 `business_rows_p_element_description` 记录数量/完整行摘要，不输出标题、正文或几何。存储引用导出保持 `formatVersion:4`，新增可选 `elementDescriptionReferencesChecked`：true只证明项目/版本/修订与清单真实叶子页关联已核验，不证明业务说明正确或几何仍可定位；旧报告缺该标记不能作为新增表已核验的证据。
+数据库备份和完整业务表核对包含非空说明的全部字段；`element_descriptions` 与 `business_rows_p_element_description` 记录数量/完整行摘要，不输出标题、正文或几何。存储引用导出在当前schema使用 `formatVersion:5`，新增可选 `elementDescriptionReferencesChecked`：true只证明项目/版本/修订与清单真实叶子页关联已核验，不证明业务说明正确或几何仍可定位；旧报告缺该标记不能作为新增表已核验的证据。
 
 ## 固定修订正式决策
 
@@ -398,6 +398,16 @@ EasyORM仅增三个元数据表及索引，不重写原表/文件。`p_page_rela
 
 三表及版本归属回执随软删/恢复保留，永久版本图与孤项目图在同一数据库事务删除。不增文件、配额、后台任务或保留期。旧库恢复副本验证增表、原行/文件不变、非空重启及整库/两文件根同窗口恢复。回滚代码须保留三表/回执并停止旧清理器，不用遗漏数据的旧导出恢复工具；需要数据回退时恢复同窗口整库与文件。
 
+## 固定修订 DTCG 规范包持久化
+
+EasyORM新增`p_design_token_package`及修订列表、版本/项目清理索引。表拥有id、project/version/revision、原文件名/长度/SHA256/私有storagePath、标准/校验器版本、valid/token/group/issue计数、首次小报告、四source字段、CAS与作者/时间。原字节位于`projects/{project}/design-token-packages/{随机目录}/content`；客户端文件名和token路径不参与文件解析。既有资料类型不变，没有每token表或后台索引。
+
+包内容不可变，仅来源可CAS维护。FileWork在短事务之外读写/校验/hash，事务内重授权并插包/回执。回执resourceId=versionId、revisionId精确绑定；包id绑定actor/scope/原键，重试current/missing不复活。未知提交保留候选，确认无归属才回收。独立`token-package`清理任务核包括软删根在内的包表引用后才删文件。
+
+项目/版本软删保留包/原文件/回执，恢复仍同ID/hash；永久图事务内分批移除包并排队文件清理，沿现根用量释放机制。DB和原文件必须同窗口备份恢复；代码回退保留新增表/文件/回执，停止遗漏新图的旧永久清理器。
+
+当前schema存储导出formatVersion5、sourceSchema=`immutable-revisions-token-packages-v1`，增加tokenPackageReferencesChecked和tokenPackageEntries（project/version/revision/packageId、storagePath、size、sha256）。原entries/imageEntries/materialEntries保持；无包表的历史schema输出format4并标未检查。旧清单不能授权修复规范包目录。preflight/export核父归属、唯一规范路径、字节/hash/版本/计数/CAS/来源；快照将新增表全行纳入摘要，不打印私有来源或token正文。
+
 ## 固定页面组件代码卡持久化
 
 EasyORM仅新增 `p_component_code_mapping` 的17列与两个索引；已有表、说明正文和修订文件不回填或重写。列为id、project_id/version_id/revision_id/page_id、alias/repository_path/repository_url/documentation_url/snippet/framework/framework_version、可空description_id/description_version、config_version/created_at/updated_at。revision/page/created_at/id索引支持固定页稳定分页，version索引支持清理；别名和仓库路径不是唯一键，明确再次新增导入允许同内容并存。
@@ -408,4 +418,4 @@ EasyORM仅新增 `p_component_code_mapping` 的17列与两个索引；已有表�
 
 软删和恢复沿原策略保留代码卡/回执；永久版本图及孤项目图在既有事务删除代码卡和归属回执，不增加文件/配额/保留期。回滚代码保留新增表/行/回执并停止遗漏新表的旧永久清理器，数据回退应恢复同窗口整库与私有文件。
 
-整库与工具表清单纳入新表。`snapshot-db.sql` 的 `component_code_mapping` 和 `business_rows_p_component_code_mapping` 只输出数量/完整行摘要，任一私有片段、路径、指针、CAS变化都会影响摘要，不打印正文。preflight与存储引用导出验证固定范围/真实内容页、字段与指针形状；不要求历史F27行仍存在。导出保持formatVersion4/sourceSchema，新增可选`codeMappingReferencesChecked`仅在表存在且执行检查时为true；旧报告缺标记不能证明代码卡图已覆盖，此标记不证明备份实际恢复完成。
+整库与工具表清单纳入新表。`snapshot-db.sql` 的 `component_code_mapping` 和 `business_rows_p_component_code_mapping` 只输出数量/完整行摘要，任一私有片段、路径、指针、CAS变化都会影响摘要，不打印正文。preflight与存储引用导出验证固定范围/真实内容页、字段与指针形状；不要求历史F27行仍存在。当前导出使用formatVersion5/sourceSchema，新增可选`codeMappingReferencesChecked`仅在表存在且执行检查时为true；旧报告缺标记不能证明代码卡图已覆盖，此标记不证明备份实际恢复完成。

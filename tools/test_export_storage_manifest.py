@@ -68,6 +68,39 @@ class StorageExportPostgresTest(unittest.TestCase):
     def export(self, mutation=''):
         return json.loads(self.script('export-storage-manifest.sql', mutation))
 
+    def test_design_token_packages_export_retained_raw_graph_and_hash_all_private_metadata(self):
+        self.create_page_traceability()
+        self.sql(self.prefix() + """
+          CREATE TABLE p_design_token_package(id text primary key,project_id text,version_id text,revision_id text,
+            file_name text,file_size bigint,sha256 text,storage_path text,standard_version text,validator_version text,
+            valid boolean,token_count int,group_count int,issue_count int,report text,
+            source_tool text,source_name text,source_url text,source_notes text,
+            config_version bigint,created_at bigint,updated_at bigint);
+          INSERT INTO p_design_token_package VALUES('package','project','version','r1','tokens.json',2,
+            repeat('a',64),'projects/project/design-token-packages/pack/content','2025.10','2025.10-1',true,0,0,0,
+            '{"valid":true,"issues":[],"truncated":false,"inputs":{}}','Penpot','Private source',
+            'https://example.test/source','Private source note',0,100,100);
+        """)
+        result = self.export()
+        self.assertEqual(5, result['formatVersion'])
+        self.assertTrue(result['tokenPackageReferencesChecked'])
+        self.assertEqual(0, result['integrityErrors'])
+        self.assertEqual('package', result['tokenPackageEntries'][0]['packageId'])
+        self.assertNotIn('Private source', json.dumps(result))
+        self.assertEqual(0, self.export("UPDATE p_design_token_package SET source_tool=null,source_name=null,source_url=null,source_notes=null;")['integrityErrors'])
+        before = self.script('snapshot-db.sql')
+        self.assertIn('business_rows_p_design_token_package|1|', before)
+        self.assertIn('design_token_package|1|', before)
+        after = self.script('snapshot-db.sql', "UPDATE p_design_token_package SET source_notes='Changed private note';")
+        self.assertNotEqual(before, after)
+        for assignment in ("project_id='missing'", "version_id='missing'", "revision_id='missing'",
+                           "storage_path='projects/foreign/design-token-packages/pack/content'", "sha256='bad'",
+                           'file_size=1048577', "standard_version='future'", 'token_count=5001',
+                           'config_version=-1', 'updated_at=99', "source_url='javascript:alert(1)'"):
+            mutation = 'UPDATE p_design_token_package SET ' + assignment + ';'
+            self.assertGreater(self.export(mutation)['integrityErrors'], 0, mutation)
+            self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
+
     def create_page_traceability(self):
         self.sql(self.prefix() + """
           ALTER TABLE p_share ADD COLUMN token text;

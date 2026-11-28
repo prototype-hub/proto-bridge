@@ -775,6 +775,31 @@ Warning codes are `CAPACITY_EXCEEDED`, `STORAGE_UNAVAILABLE`, `CLEANUP_BACKLOG`,
 
 写入在当前用户→项目→版本锁内重验身份/权限，CAS与回执原子提交。clientRequestId为1～128可打印ASCII；未知结果以原键及完全相同输入重试，返回当前记录，已删除记录不能被旧键复活；同键异参沿既有幂等冲突。严格拒绝未知字段、错误标量、NUL和非法安全整数。`PROTOTYPE_HUB_PAGE_TRACE_CONFLICT`为409 CAS冲突，`PROTOTYPE_HUB_PAGE_TRACE_SOURCE_CHANGED`为409来源版本不匹配，`PROTOTYPE_HUB_PAGE_TRACE_INVALID`为400非法关系/引用，其他沿既有404/权限错误。
 
+## 固定修订 DTCG 规范包
+
+成员入口为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/design-token-packages`，固定已有修订。读取要求版本菜单query与项目READ交集，校验/导入/维护/移除要求save与项目EDIT交集；无分享或访客入口，不产生新逻辑版本。
+
+| 方法与路径后缀 | 输入 | 结果 |
+| --- | --- | --- |
+| `POST /_validate` | multipart `file` | 权威文档报告；不保存文件、包或回执 |
+| `POST /_import` | multipart `file`、可选四source字段、`allowInvalid`文本true/false，必需`Idempotency-Key` | `{id,status:"current"或"missing",package:当前包或null}` |
+| `POST /_query` | `{pageIndex?,pageSize?}` | 真DB分页，`createdAt DESC,id ASC`；0–10000/1–100，默认0/20 |
+| `GET /{id}` | 无 | 文件名/大小/hash、标准/校验器版本、报告、来源、审计和CAS字段 |
+| `POST /{id}/_document` | `{inputs?:字符串映射}` | 完整有界分组/token/引用投影，前端包内筛选和分页 |
+| `GET /{id}/content` | 无 | 原字节JSON附件 |
+| `PUT /{id}` | 四source字段及`expectedVersion/clientRequestId` | 来源CAS维护，原文件不变 |
+| `POST /{id}/_delete` | `{expectedVersion,clientRequestId}` | true，删包并持久排队清理文件 |
+
+支持DTCG2025.10 Format/Color全部标准13种token类型，或`version:"2025.10"`的单文件bundled Resolver。sources可内联或同文档RFC6901引用（含显式$defs）；读取实际sets/modifier contexts/defaults，按resolutionOrder覆盖完整token后解析别名。支持组$type/$root/$extends、花括号别名和JSON Pointer属性引用。扩展仅文本保留，不抓外部/本机文件、推断工具私有主题或从HTML恢复tokens。
+
+UTF-8原文件1–1048576字节，BOM允许并保留；JSON深度32、5000token、引用链64、展开节点100000、完整上下文组合16、投影4MiB、诊断128条；每固定修订100包是资源边界，不是付费额度。非法编码/语法/重复键/根非object或资源超限拒绝导入。语义错误含code/severity/pointer/message，只有显式allowInvalid=true才可存储用于检查，存储不将其标为有效。预检和导入共用服务端解析器；被后续来源完整替换的字面值不独立验证，不表示每份原始来源均通过单独认证。
+
+Package.valid/report.valid针对支持范围内所有上下文组合按resolutionOrder合并后的有效结果，小报告仅含valid/issues/truncated/inputs。`_document`省略或null inputs返回已声明默认或首个实际上下文的初始浏览选择及实际inputs；首个选择不是文件声明的default。显式inputs（含空object）严格核必需/未知modifier及字符串context，返回当前选择的有效性。token含path分段、pointer、声明/解析值、有效类型、说明/扩展和引用目标；未解析值为null。不执行上传内容或注入CSS。
+
+导入指纹涵盖actor、精确范围、键、原hash、文件名、来源和allowInvalid。原键原payload重试返回该包current或后来删除的missing，不重建；异payload同键409。来源CAS与回执同事务，冲突不覆盖；删除原键重放仍true。锁序账号→项目→版本，锁内重授权；文件I/O/hash/解析在锁外FileWork，未知事务结果保留候选。来源沿现有资料字段及安全HTTP(S)边界，服务器不请求URL。
+
+下载核当前READ、安全路径/no-follow普通文件、长度和hash后，再核权限和同包归属，返回application/octet-stream、安全UTF-8附件名、private/no-store、nosniff及sandbox CSP。空白/键顺序/BOM/未知扩展不重序列化；原样导出不表示已脱敏。
+
 ## 固定页面组件代码映射卡
 
 成员在固定修订的真实非目录页面维护人工代码卡，包括有子节点的可打开父页；不识别DOM组件、不迁移修订、不读取路径或抓取私库、不执行代码。基础路径为 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/pages/{pageId}/code-mappings`。读取/导出要求当前 `prototype-hub-version.query ∩ 项目READ`，写入/导入要求 `save ∩ EDIT`；每次及原键重放重新核验当前身份/范围。无访客、分享或匿名入口。

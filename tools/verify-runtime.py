@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_tag', 'p_project_favorite', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -1983,6 +1983,108 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'originalImportReadsExactCurrentMissingBatch': True, 'deletedCardNeverResurrects': True,
             'originalUpdateAndDeleteKeysRetained': True, 'portableExportFields': len(fields)}
 
+    def create_token_package_fixture(self, api, project_id, version_id, revision_id):
+        """Keep one nonempty bundled resolver and original current/missing import keys durable."""
+        path = ('/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id +
+                '/design-token-packages')
+        document = {'version': '2025.10', '$defs': {'base': {
+            'n': {'$type': 'number', '$value': 1}, 'alias': {'$value': '{n}'}}},
+            'sets': {'base': {'sources': [{'$ref': '#/$defs/base'}]}},
+            'modifiers': {'density': {'contexts': {
+                'compact': [{'n': {'$type': 'number', '$value': 3}}],
+                'comfortable': [{'n': {'$type': 'number', '$value': 8}}]}, 'default': 'compact'}},
+            'resolutionOrder': [{'$ref': '#/sets/base'}, {'$ref': '#/modifiers/density'}],
+            '$extensions': {'org.example.runtime': {'note': 'Original 文本 <script>'}}}
+        original = b'\xef\xbb\xbf' + json.dumps(document, ensure_ascii=False, indent=2).encode() + b'\r\n'
+        source = {'sourceTool': 'Runtime original tool', 'sourceName': 'Original private token source',
+                  'sourceUrl': 'https://example.invalid/original-tokens', 'sourceNotes': 'Original private note'}
+        filename = 'runtime-design-tokens.json'
+        self.secrets_seen.update(source.values())
+        self.secrets_seen.add(original.decode())
+        body, content_type = file_multipart(filename, original, 'application/octet-stream',
+            tuple(source.items()) + (('allowInvalid', 'false'),))
+        headers = {'Content-Type': content_type, 'Idempotency-Key': uuid.uuid4().hex}
+        preview = api.request('POST', path + '/_validate', body, headers={'Content-Type': content_type})
+        require(preview.get('valid') is True and preview.get('tokenCount') == 2 and
+                preview.get('inputs') == {'density': 'compact'} and
+                next((token.get('resolvedValue') for token in preview.get('tokens', [])
+                      if token.get('path') == ['alias']), None) == 3,
+                'Token package fixture did not validate all effective resolver permutations')
+        imported = api.request('POST', path + '/_import', body, headers=headers)
+        row = imported.get('package')
+        require(imported.get('status') == 'current' and isinstance(row, dict) and
+                imported.get('id') == row.get('id') and row.get('projectId') == project_id and
+                row.get('versionId') == version_id and row.get('revisionId') == revision_id and
+                row.get('sha256') == hashlib.sha256(original).hexdigest() and
+                row.get('fileSize') == len(original) and row.get('fileName') == filename and
+                row.get('valid') is True and row.get('report', {}).get('valid') is True,
+                'Token package import lost original bytes, fixed scope or all-permutation validity')
+        update = dict(source, sourceName='Current private token source', sourceUrl=None,
+                      sourceNotes='Current private token note', expectedVersion=row['configVersion'],
+                      clientRequestId=uuid.uuid4().hex)
+        imported_row = row
+        row = api.request('PUT', path + '/' + row['id'], update)
+        immutable = ('id', 'projectId', 'versionId', 'revisionId', 'fileName', 'fileSize', 'sha256',
+                     'standardVersion', 'validatorVersion', 'valid', 'tokenCount', 'groupCount',
+                     'issueCount', 'report', 'createdBy', 'createdAt')
+        require(all(row.get(field) == imported_row.get(field) for field in immutable) and
+                all(row.get(field) == update[field] for field in source) and
+                row.get('configVersion') == update['expectedVersion'] + 1,
+                'Token package source CAS changed original ownership or lost its current metadata')
+        deleted_headers = dict(headers, **{'Idempotency-Key': uuid.uuid4().hex})
+        deleted = api.request('POST', path + '/_import', body, headers=deleted_headers)
+        require(deleted.get('status') == 'current' and isinstance(deleted.get('package'), dict),
+                'Token package deletion fixture was not imported')
+        delete = {'expectedVersion': deleted['package']['configVersion'], 'clientRequestId': uuid.uuid4().hex}
+        require(api.request('POST', path + '/' + deleted['id'] + '/_delete', delete) is True,
+                'Token package fixture delete did not complete')
+        chosen = api.request('POST', path + '/' + row['id'] + '/_document',
+                             {'inputs': {'density': 'comfortable'}})
+        require(chosen.get('valid') is True and chosen.get('inputs') == {'density': 'comfortable'} and
+                next((token.get('resolvedValue') for token in chosen.get('tokens', [])
+                      if token.get('path') == ['alias']), None) == 8,
+                'Token package selected context did not resolve the post-merge alias')
+        return {'path': path, 'row': row, 'body': body, 'headers': headers, 'original': original,
+                'update': update, 'document': preview, 'chosen': chosen, 'deletedId': deleted['id'],
+                'deletedHeaders': deleted_headers, 'delete': delete}
+
+    def verify_token_package_fixture(self, api, fixture):
+        path, row = fixture['path'], fixture['row']
+        require(api.request('GET', path + '/' + row['id']) == row,
+                'Restored token package changed its hash, source, fixed scope or CAS')
+        page = api.request('POST', path + '/_query', {'pageSize': 50})
+        require(page.get('total') == 1 and page.get('data') == [row],
+                'Restored token package list omitted its package or resurrected the deleted import')
+        require(api.request('POST', path + '/_import', fixture['body'], headers=fixture['headers']) ==
+                {'id': row['id'], 'status': 'current', 'package': row},
+                'Original token package import key did not read current source state')
+        require(api.request('PUT', path + '/' + row['id'], fixture['update']) == row,
+                'Original token package source key changed current state')
+        require(api.request('POST', path + '/_import', fixture['body'], headers=fixture['deletedHeaders']) ==
+                {'id': fixture['deletedId'], 'status': 'missing', 'package': None},
+                'Original token package import key did not retain its missing result')
+        require(api.request('POST', path + '/' + fixture['deletedId'] + '/_delete', fixture['delete']) is True,
+                'Original token package delete key did not retain its result')
+        api.request('GET', path + '/' + fixture['deletedId'], expected=404)
+        require(api.request('POST', path + '/' + row['id'] + '/_document', {}) == fixture['document'],
+                'Restored token package changed its all-effective-permutation report or initial context')
+        require(api.request('POST', path + '/' + row['id'] + '/_document',
+                            {'inputs': {'density': 'comfortable'}}) == fixture['chosen'],
+                'Restored token package changed its explicitly selected context or resolved aliases')
+        original, headers = api.request('GET', path + '/' + row['id'] + '/content', raw=True)
+        require(original == fixture['original'] and len(original) == row['fileSize'] and
+                hashlib.sha256(original).hexdigest() == row['sha256'],
+                'Restored token package original bytes or hash changed')
+        require(headers.get('Content-Type', '').split(';', 1)[0] == 'application/octet-stream' and
+                headers.get('Content-Disposition', '').startswith('attachment;') and
+                'no-store' in headers.get('Cache-Control', '') and
+                headers.get('X-Content-Type-Options') == 'nosniff' and
+                'sandbox' in headers.get('Content-Security-Policy', ''),
+                'Token package original download lost its envelope-free binary or attachment boundary')
+        self.report['designTokenPackages'] = {'nonemptyOriginalBytesAndMetadataRetained': True,
+            'allEffectivePermutationsAndExplicitContextRetained': True, 'originalImportReadsCurrentMissing': True,
+            'originalSourceAndDeleteKeysRetained': True, 'originalByteCount': len(original)}
+
     def create_organization_fixture(self, api, project, member):
         path = '/api/prototype-hub/projects/' + project['id']
         original = api.request('GET', path)
@@ -2174,6 +2276,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         fixture['pageTraceability'] = self.create_page_traceability_fixture(
             api, version['id'], base['revisionId'], base['pageId'], fixture['workItem']['row'], fixture['viewportCheck']['row'])
         fixture['codeMappings'] = self.create_code_mapping_fixture(api, version['id'], base['revisionId'], base['pageId'])
+        fixture['tokenPackages'] = self.create_token_package_fixture(api, project['id'], version['id'], base['revisionId'])
         self.current_restore_fixture = fixture
         return fixture
 
@@ -2184,6 +2287,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         self.verify_organization_fixture(api, fixture['organization'])
         self.verify_page_traceability_fixture(api, fixture['pageTraceability'])
         self.verify_code_mapping_fixture(api, fixture['codeMappings'])
+        self.verify_token_package_fixture(api, fixture['tokenPackages'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2301,14 +2405,16 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         clean = json.loads(self.sql_script(database, 'export-storage-manifest.sql'))
         require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
                 clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True and
-                clean.get('pageTraceabilityReferencesChecked') is True and clean.get('codeMappingReferencesChecked') is True,
+                clean.get('pageTraceabilityReferencesChecked') is True and clean.get('codeMappingReferencesChecked') is True and
+                clean.get('tokenPackageReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
         before = self.sql_script(database, 'snapshot-db.sql')
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
-        variables = {'code_mapping': fixture['codeMappings']['rows'][0]['id'],
+        variables = {'token_package': fixture['tokenPackages']['row']['id'],
+                     'code_mapping': fixture['codeMappings']['rows'][0]['id'],
                      'trace_relation': fixture['pageTraceability']['relation']['id'],
                      'trace_context': fixture['pageTraceability']['context']['id'],
                      'trace_decision': fixture['pageTraceability']['decision']['id'],
@@ -2366,7 +2472,12 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_project SET archived_time=-1 WHERE id=:'organization_project';",
             "UPDATE p_component_code_mapping SET project_id=:'foreign_project' WHERE id=:'code_mapping';",
             "UPDATE p_component_code_mapping SET page_id='missing-page' WHERE id=:'code_mapping';",
-            "UPDATE p_component_code_mapping SET description_version=-1 WHERE id=:'code_mapping';")
+            "UPDATE p_component_code_mapping SET description_version=-1 WHERE id=:'code_mapping';",
+            "UPDATE p_design_token_package SET project_id=:'foreign_project' WHERE id=:'token_package';",
+            "UPDATE p_design_token_package SET revision_id=:'foreign_revision' WHERE id=:'token_package';",
+            "UPDATE p_design_token_package SET sha256='invalid' WHERE id=:'token_package';",
+            "UPDATE p_design_token_package SET file_size=1048577 WHERE id=:'token_package';",
+            "UPDATE p_design_token_package SET config_version=-1 WHERE id=:'token_package';")
         for index, mutation in enumerate(mutations, 1):
             case = 'SQL negative case ' + str(index)
             require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
@@ -2672,7 +2783,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True

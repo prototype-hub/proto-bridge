@@ -64,6 +64,47 @@ class StorageAuditTest(unittest.TestCase):
         self.assertEqual(1, self.run_audit(manifest, repair=True).returncode)
         self.assertTrue(directory.exists())
 
+    def test_token_package_repair_requires_complete_graph_and_preserves_original_bytes(self):
+        directory = self.root / 'projects/project/design-token-packages/package'
+        directory.mkdir(parents=True)
+        payload = b'\xef\xbb\xbf{ "accent": { "$type": "number", "$value": 3 } }\r\n'
+        (directory / 'content').write_bytes(payload)
+        old = dict(self.complete(self.entries(('r1', 'r2'))), formatVersion=4,
+                   sourceSchema='immutable-revisions-materials-v1',
+                   materialReferencesChecked=True, materialEntries=[])
+        self.assertEqual(2, self.run_audit(old, repair=True).returncode)
+        self.assertTrue(self.paths['orphan'].parent.exists())
+        manifest = dict(old, formatVersion=5, sourceSchema='immutable-revisions-token-packages-v1',
+                        tokenPackageReferencesChecked=True, tokenPackageEntries=[{
+                            'projectId': 'project', 'versionId': 'version', 'revisionId': 'r1',
+                            'packageId': 'package', 'storagePath': str((directory / 'content').relative_to(self.root)),
+                            'size': len(payload), 'sha256': hashlib.sha256(payload).hexdigest()}])
+        (directory / 'content').write_bytes(payload.replace(b'3', b'4'))
+        self.assertEqual(1, self.run_audit(manifest, repair=True).returncode)
+        self.assertTrue(self.paths['orphan'].parent.exists())
+        (directory / 'content').write_bytes(payload)
+        self.assertEqual(0, self.run_audit(manifest, repair=True).returncode)
+        self.assertEqual(payload, (directory / 'content').read_bytes())
+        self.assertFalse(self.paths['orphan'].parent.exists())
+
+    def test_token_package_manifest_rejects_cross_root_paths_and_duplicate_payloads(self):
+        directory = self.root / 'projects/project/design-token-packages/package'
+        directory.mkdir(parents=True)
+        (directory / 'content').write_bytes(b'{}')
+        entry = {'projectId': 'project', 'versionId': 'version', 'revisionId': 'r1', 'packageId': 'package',
+                 'storagePath': str((directory / 'content').relative_to(self.root)),
+                 'size': 2, 'sha256': hashlib.sha256(b'{}').hexdigest()}
+        manifest = dict(self.complete(self.entries(('r1', 'r2'))), formatVersion=5,
+                        sourceSchema='immutable-revisions-token-packages-v1', materialReferencesChecked=True,
+                        materialEntries=[], tokenPackageReferencesChecked=True, tokenPackageEntries=[entry])
+        for change in ({'storagePath': 'projects/other/design-token-packages/package/content'},
+                       {'size': True}, {'sha256': 'invalid'}):
+            manifest['tokenPackageEntries'] = [dict(entry, **change)]
+            self.assertEqual(2, self.run_audit(manifest, repair=True).returncode)
+            self.assertTrue(self.paths['orphan'].parent.exists())
+        manifest['tokenPackageEntries'] = [entry, dict(entry, packageId='other')]
+        self.assertEqual(2, self.run_audit(manifest, repair=True).returncode)
+
     def test_legacy_current_only_manifest_is_read_only(self):
         entries = self.entries(('r2',))
         self.assertEqual(0, self.run_audit(entries).returncode)

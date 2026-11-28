@@ -2,6 +2,7 @@
 -- unmigrated legacy projection; never audit history from current-version rows only.
 -- Select prototype_hub_table_prefix=protohub_ for a pre-V15 inspection.
 \ir prototype-hub-table-names.sql
+SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_token_package_table')) IS NOT NULL AS prototype_hub_has_token_packages \gset
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_code_mapping_table')) IS NOT NULL AS prototype_hub_has_code_mappings \gset
 -- Page tracing is optional for historical schemas, but partial graphs fail closed.
 SELECT to_regclass(format('%I.%I',current_schema(),:'prototype_hub_page_relation_table')) IS NOT NULL AS prototype_hub_has_page_relations,
@@ -365,6 +366,33 @@ WITH storage_references AS (
   OR nullif(t.author_id,'') IS NULL OR nullif(t.updated_by,'') IS NULL
  -- Historical actor IDs survive account removal; they never authorize later access.
 \endif
+\if :prototype_hub_has_token_packages
+ UNION ALL
+ SELECT t.id FROM :"prototype_hub_token_package_table" t
+ LEFT JOIN :"prototype_hub_project_table" p ON p.id=t.project_id
+ LEFT JOIN :"prototype_hub_version_table" v ON v.id=t.version_id
+ LEFT JOIN :"prototype_hub_revision_table" r ON r.id=t.revision_id
+ WHERE p.id IS NULL OR v.id IS NULL OR r.id IS NULL
+  OR v.project_id IS DISTINCT FROM t.project_id OR r.project_id IS DISTINCT FROM t.project_id
+  OR r.version_id IS DISTINCT FROM t.version_id
+  OR t.config_version IS NULL OR t.config_version NOT BETWEEN 0 AND 9007199254740991
+  OR t.created_at IS NULL OR t.created_at<0 OR t.updated_at IS NULL OR t.updated_at<t.created_at
+  OR t.file_size IS NULL OR t.file_size NOT BETWEEN 1 AND 1048576
+  OR t.sha256 IS NULL OR t.sha256 !~ '^[a-f0-9]{64}$'
+  OR t.storage_path IS NULL OR t.storage_path !~ ('^projects/' || t.project_id || '/design-token-packages/[A-Za-z0-9_-]{1,128}/content$')
+  OR EXISTS(SELECT 1 FROM :"prototype_hub_token_package_table" other WHERE other.id<>t.id AND other.storage_path=t.storage_path)
+  OR t.standard_version IS DISTINCT FROM '2025.10' OR nullif(t.validator_version,'') IS NULL
+  OR t.valid IS NULL OR t.token_count IS NULL OR t.token_count NOT BETWEEN 0 AND 5000
+  OR t.group_count IS NULL OR t.group_count<0 OR t.issue_count IS NULL OR t.issue_count NOT BETWEEN 0 AND 128
+  OR t.file_name IS NULL OR length(t.file_name) NOT BETWEEN 1 AND 255
+  OR t.report IS NULL OR jsonb_typeof(t.report::jsonb) IS DISTINCT FROM 'object'
+  OR length(t.source_tool)>80
+  OR length(t.source_name)>200
+  OR length(t.source_notes)>2000
+  OR length(t.source_url)>2048
+  OR (t.source_url<>'' AND (t.source_url !~* '^https?://[^/?#@[:space:]]+([/?#]|$)'
+   OR t.source_url ~ '[[:space:][:cntrl:]]' OR position(chr(92) in t.source_url)>0))
+\endif
 \if :prototype_hub_has_code_mappings
  UNION ALL
  SELECT t.id FROM :"prototype_hub_code_mapping_table" t
@@ -498,13 +526,14 @@ WITH storage_references AS (
 \endif
 \endif
 )
-SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',4,
- 'sourceSchema','immutable-revisions-materials-v1',
+SELECT json_build_object('format','prototype-hub-storage-references','formatVersion',CASE WHEN :'prototype_hub_has_token_packages'::boolean THEN 5 ELSE 4 END,
+ 'sourceSchema',CASE WHEN :'prototype_hub_has_token_packages'::boolean THEN 'immutable-revisions-token-packages-v1' ELSE 'immutable-revisions-materials-v1' END,
  'referencesComplete',(:'prototype_hub_has_receipt_revision'::boolean
   AND :'prototype_hub_has_review_threads'::boolean AND :'prototype_hub_has_review_images'::boolean
   AND :'prototype_hub_has_revision_materials'::boolean
   AND (NOT :'prototype_hub_has_organization_parts'::boolean OR :'prototype_hub_has_organization'::boolean)
   AND (NOT :'prototype_hub_has_page_traceability_parts'::boolean OR :'prototype_hub_has_page_traceability'::boolean)),
+ 'tokenPackageReferencesChecked',:'prototype_hub_has_token_packages'::boolean,
  'materialReferencesChecked',:'prototype_hub_has_revision_materials'::boolean,
  'receiptReferencesChecked',:'prototype_hub_has_receipt_revision'::boolean,
  'pageDeliveryReferencesChecked',:'prototype_hub_has_page_deliveries'::boolean,
@@ -537,6 +566,14 @@ SELECT json_build_object('format','prototype-hub-storage-references','formatVers
  FROM :"prototype_hub_revision_material_table" WHERE material_type IN ('prototype','image','document'))
 \else
  'materialEntries','[]'::json
+\endif
+ ,
+\if :prototype_hub_has_token_packages
+ 'tokenPackageEntries',(SELECT coalesce(json_agg(json_build_object('projectId',project_id,'versionId',version_id,
+ 'revisionId',revision_id,'packageId',id,'storagePath',storage_path,'size',file_size,'sha256',sha256)
+ ORDER BY project_id,version_id,revision_id,id),'[]'::json) FROM :"prototype_hub_token_package_table")
+\else
+ 'tokenPackageEntries','[]'::json
 \endif
  ) FROM storage_references;
 \else

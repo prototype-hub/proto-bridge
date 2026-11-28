@@ -78,6 +78,7 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypePageTraceDecisionEntity, String> pageTraceDecisions;
 
     private final PrototypeRevisionMaterialService materials;
+    private final PrototypeDesignTokenPackageService tokenPackages;
 
     /** 恰好30天即到期；null仍为活动行，未来时间不会提前清理。 */
     public static boolean expired(Long deletedTime, long now) {
@@ -463,6 +464,7 @@ public class PrototypeRetentionService {
                                 .execute())
                 .then(statistics.purgeVersion(id))
                 .then(materials.purgeVersion(id))
+                .then(tokenPackages.purgeVersion(id))
                 .then(
                         viewportChecks
                                 .createDelete()
@@ -579,6 +581,7 @@ public class PrototypeRetentionService {
                                                         .execute())
                                         .then(statistics.purgeProject(id))
                                         .then(materials.purgeProject(id))
+                                        .then(tokenPackages.purgeProject(id))
                                         .then(
                                                 viewportChecks
                                                         .createDelete()

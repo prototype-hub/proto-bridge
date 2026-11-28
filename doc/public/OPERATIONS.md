@@ -174,7 +174,7 @@ Normal completion, preparation errors and client cancellation close the request'
 
 备份包含完整资料表、创建回执和 `projects/*/materials/*/content`，同时保留原型来源所引用的original.zip。使用当前format4引用清单及配套audit-storage验证固定项目/版本/修订关联、原字节数及SHA-256；缺引用或损坏时禁止离线清理。旧format3不能证明新资料目录无引用。回收站恢复应保持同一资料ID/修订/摘要并重验授权；30天永久清理先事务登记material任务，再由现有持久队列删除无引用目录。回退必须保留新增表和文件，旧工具不能处理新目录。
 
-独立链接无需DDL或文件目录，只保存资料表和原创建回执；数据库五个文件字段的空串/0哨兵表示无载荷，不能据此创建或清理文件。恢复保留原链接ID、固定修订、标题及目标，并重验当前权限；移除关联不会改变外部内容。每修订100条链接独立于原图片/文档预算。备份使用更新后的export-storage-manifest.sql校验链接父归属、哨兵及必填字段，仍输出format4纯文件graph，现audit-storage.py可复用；不把URL/备注放入文件清单。旧export遇链接将报完整性错误，不能据其结果执行清理。
+独立链接无需DDL或文件目录，只保存资料表和原创建回执；数据库五个文件字段的空串/0哨兵表示无载荷，不能据此创建或清理文件。恢复保留原链接ID、固定修订、标题及目标，并重验当前权限；移除关联不会改变外部内容。每修订100条链接独立于原图片/文档预算。备份使用更新后的export-storage-manifest.sql校验链接父归属、哨兵及必填字段，当前输出format5纯文件graph，现audit-storage.py可复用；不把URL/备注放入文件清单。旧export遇链接将报完整性错误，不能据其结果执行清理。
 
 回退前停写并保留联合数据库/文件备份；旧应用不理解link，不得混用其资料CRUD、项目/版本永久清理或旧export清理。无结构回滚或自动删链迁移；旧三种资料和原件字节保持，升级也不会后台访问或认证链接目标。
 
@@ -224,7 +224,7 @@ Rollback the paired code while retaining original source data, additive material
 
 仅回退此功能时先停写、回退配套前后端并保留新增表与数据，在副本验证目标旧JAR的原功能；旧清理节点必须暂停，或在受控窗口处理其未识别的新表清理职责。普通代码回退不删表、不重置config_version或回执。灾难恢复仍需同窗口数据库/文件联合恢复并对账，不能仅恢复新增表。人工状态不代表正式批准或自动验收，不触发业务通知。
 
-恢复演练需实际保留一条非空人工状态、合法负责人和私有理由，重启及恢复后核对GET、原键PUT重放、列表与完整行摘要；空表或仅结构启动不代表此能力通过恢复。完整业务表对账应包含 `p_page_delivery`，数据库快照核对其 `page_deliveries` 数量/整行摘要；存储导出 `formatVersion:4` 的可选 `pageDeliveryReferencesChecked:true` 只证明固定页引用核验，不证明历史负责人资格或业务结论正确。缺该标记时不能把旧报告当作新增表已核验的证据。业务理由仅在隔离私有库验证，报告保留数量、摘要和结果，避免导出正文。
+恢复演练需实际保留一条非空人工状态、合法负责人和私有理由，重启及恢复后核对GET、原键PUT重放、列表与完整行摘要；空表或仅结构启动不代表此能力通过恢复。完整业务表对账应包含 `p_page_delivery`，数据库快照核对其 `page_deliveries` 数量/整行摘要；当前存储导出 `formatVersion:5` 的可选 `pageDeliveryReferencesChecked:true` 只证明固定页引用核验，不证明历史负责人资格或业务结论正确。缺该标记时不能把旧报告当作新增表已核验的证据。业务理由仅在隔离私有库验证，报告保留数量、摘要和结果，避免导出正文。
 
 ## Local runtime diagnostics
 
@@ -271,13 +271,21 @@ Stop old writers and cleanup nodes before the paired upgrade. Back up the whole 
 
 A restored archived project still supports its ordinary reads/edits/shares and occupies quota. Soft-delete/recover must retain group/tags/archive and each account's private favorite/version. Check two different users and ADMIN separately after recovery. Original mutation keys must return current state; an old favorite=true retry must not reverse a later false. Do not reset counters or receipts to resolve409; refresh current state and explicitly decide whether to submit a new edit.
 
-Rollback keeps the new columns/tables and all rows. Do not run old permanent-cleanup or export tools that omit the organization relations. The storage manifest remains format4 with the organization reference check identified explicitly; exports must not print group/tag/cover text or preference bodies. Validate restart and whole-database restore with a nonempty organization fixture before treating a deployment as verified.
+Rollback keeps the new columns/tables and all rows. Do not run old permanent-cleanup or export tools that omit the organization relations. The current storage manifest uses format5 with the organization reference check identified explicitly; exports must not print group/tag/cover text or preference bodies. Validate restart and whole-database restore with a nonempty organization fixture before treating a deployment as verified.
 
 ## 页面追踪元数据备份与诊断
 
-关系、人工入口、来源ID/版本及人工决策不产生文件，导出仍formatVersion4。三表完整存在时`pageTraceabilityReferencesChecked=true`；历史完全无三表时false；部分存在时`referencesComplete=false`且完整性错误非零，即使空表也不能授权修复。缺列/坏JSON等SQL错误同样失败关闭。覆盖字段不证明实际备份恢复完成。
+关系、人工入口、来源ID/版本及人工决策不产生文件，当前导出使用formatVersion5。三表完整存在时`pageTraceabilityReferencesChecked=true`；历史完全无三表时false；部分存在时`referencesComplete=false`且完整性错误非零，即使空表也不能授权修复。缺列/坏JSON等SQL错误同样失败关闭。覆盖字段不证明实际备份恢复完成。
 
 `preflight-db.sql`核固定project/version/revision/page、内容父页、CAS/时间、引用形状/安全整数/重复/上限；来源更新或删除的指针是合法历史状态，不强制来源行存在。`snapshot-db.sql`摘要三表完整行及source_refs顺序，不打印人工内容/历史作者。运行验证器同步当前BUSINESS_TABLES。停写同窗口保存整库、两文件根及外置配置，恢复前后核全部行/文件，再以授权API核入口、current/changed/missing、决策及原请求键。永久清理包含三表及原版本回执；软删保留，不以分页当前100条边冒称全包图。
+
+## DTCG 规范包升级、备份与恢复
+
+停旧写入及永久清理节点，同窗口保存整库、两个私有文件根与外置配置，在隔离副本验证新增`p_design_token_package`及索引、既有行/文件保持。无需新配置/外部连接；前端入口固定预览“页面资料→设计令牌包”。校验不等于第三方工具兼容认证，外部引用需作者先打包为同文档内容。
+
+保留期内软删保留文件，恢复核同ID/来源/报告/hash和下载原字节。`token-package`持久任务只在包表无引用时删独立随机目录；到期清理沿现父图与用量释放机制。回退保留新增表/文件/回执，禁止旧清理器遗漏新图。
+
+当前format5清单含tokenPackageReferencesChecked:true及tokenPackageEntries。`audit-storage.py --delete-unreferenced`仍需离线与精确根确认；存在规范包目录时，旧format3/4或未检查报告拒绝修复。坏引用、缺文件、hash不符或符号链接在任何删除前失败。恢复先核完整原始行/文件，再以真实权限API核报告、上下文选择、来源CAS、原键current/missing及原字节下载；空表或单元测试不代表恢复演练完成。
 
 ## 组件代码卡升级、备份与恢复
 

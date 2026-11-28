@@ -83,6 +83,23 @@ public final class SafePaths {
         return canonical;
     }
 
+    /** 规范包独立于资料目录，只有服务端随机目录和固定 content 文件。 */
+    public static Path designTokenPackage(Path root, String projectId, String storagePath) {
+        canonicalDesignTokenPackagePath(projectId, storagePath);
+        return within(root, storagePath);
+    }
+
+    public static String canonicalDesignTokenPackagePath(String projectId, String storagePath) {
+        String prefix = "projects/" + id(projectId) + "/design-token-packages/";
+        if (storagePath == null
+                || !storagePath.startsWith(prefix)
+                || !storagePath.endsWith("/content")) throw PrototypeHubException.invalidPath();
+        String storage = storagePath.substring(prefix.length(), storagePath.length() - 8);
+        String canonical = prefix + id(storage) + "/content";
+        if (!canonical.equals(storagePath)) throw PrototypeHubException.invalidPath();
+        return canonical;
+    }
+
     /** 队列只保存规范快照路径；历史别名先按词法归一，实际删除仍须经过 within 的符号链接检查。 */
     public static String canonicalSitePath(String projectId, String sitePath) {
         id(projectId);

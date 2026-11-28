@@ -1385,7 +1385,7 @@ class PrototypeHubRevisionIntegrationTest {
 
     private FileCleanupService cleanupWorker(PrototypeStorageService supplied) {
         return new FileCleanupService(
-                supplied, revisions.getRepository(), versions.getRepository(), null, null) {
+                supplied, revisions.getRepository(), versions.getRepository(), null, null, null) {
             @Override
             public ReactiveRepository<FileCleanupEntity, String> getRepository() {
                 return cleanup.getRepository();
