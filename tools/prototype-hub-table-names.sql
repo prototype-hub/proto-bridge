@@ -40,3 +40,5 @@
 \set prototype_hub_page_trace_decision_table :prototype_hub_table_prefix 'page_trace_decision'
 \set prototype_hub_code_mapping_table :prototype_hub_table_prefix 'component_code_mapping'
 \set prototype_hub_token_package_table :prototype_hub_table_prefix 'design_token_package'
+\set prototype_hub_usability_study_table :prototype_hub_table_prefix 'usability_study'
+\set prototype_hub_usability_response_table :prototype_hub_table_prefix 'usability_response'

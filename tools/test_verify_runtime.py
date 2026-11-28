@@ -31,6 +31,183 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_restore_expiry_window_accepts_only_registered_original_deadlines_and_separates_boundaries(self):
+        before = {table: {} for table in runtime.REVIEW_TABLES}
+        before['p_review_challenge'] = {'prelaunch': {'hash': 'a', 'deadline': 99},
+            'during': {'hash': 'b', 'deadline': 105}, 'unexpired': {'hash': 'c', 'deadline': 200}}
+        registered = runtime.registered_review_deadlines(before)
+        after = copy.deepcopy(before)
+        del after['p_review_challenge']['prelaunch']
+        del after['p_review_challenge']['during']
+        counts, details = runtime.review_expiry_observation(before, after, 100, 110, registered)
+        self.assertEqual(2, counts['p_review_challenge'])
+        self.assertEqual({'p_review_challenge': {'prelaunch': 99}}, details['expiredBeforeLaunch'])
+        self.assertEqual({'p_review_challenge': {'during': 105}}, details['expiredDuringReadback'])
+        with self.assertRaises(runtime.VerificationFailure):
+            runtime.review_expiry_observation(before, after, 100, 104, registered)
+        for change in ('unregistered', 'changed-original-deadline', 'unexpired-loss', 'retained-rewrite'):
+            plan, current = copy.deepcopy(registered), copy.deepcopy(after)
+            if change == 'unregistered': del plan['p_review_challenge']['during']
+            if change == 'changed-original-deadline': plan['p_review_challenge']['during'] = 104
+            if change == 'unexpired-loss': current['p_review_challenge'].clear()
+            if change == 'retained-rewrite': current['p_review_challenge']['unexpired']['hash'] = 'changed'
+            with self.subTest(change=change), self.assertRaises(runtime.VerificationFailure):
+                runtime.review_expiry_observation(before, current, 100, 110, plan)
+
+    def test_original_visit_ticket_uses_its_real_expiry_and_never_inserts_on_either_branch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            api = runtime.Api('http://127.0.0.1:10001', check.secrets_seen); api.token = 'platform-token'
+            visits = {'path': '/original-visit', 'recentTicket': 'original-frozen-ticket', 'ticketExpiresAt': 100}
+            for clock, expected in ((.099, 200), (.100, 403), (.101, 403)):
+                with self.subTest(clock=clock), patch.object(runtime.time, 'time', return_value=clock), \
+                        patch.object(check, 'sql', side_effect=['original-row-hash', 'original-row-hash']), \
+                        patch.object(runtime.Api, 'request', autospec=True) as request:
+                    check.verify_visit_replay(api, visits, 'owned')
+                    self.assertEqual(expected, request.call_args.kwargs['expected'])
+                    self.assertEqual({'ticket': 'original-frozen-ticket'}, request.call_args.args[3])
+                    self.assertIsNone(request.call_args.args[0].token)
+                    self.assertEqual(expected == 403, check.report['originalVisitTicketReplay']['naturallyExpiredRejected403'])
+            with patch.object(runtime.time, 'time', return_value=.101), \
+                    patch.object(check, 'sql', side_effect=['original-row-hash', 'changed-row-hash']), \
+                    patch.object(runtime.Api, 'request'):
+                with self.assertRaisesRegex(runtime.VerificationFailure, 'inserted or changed stored visits'):
+                    check.verify_visit_replay(api, visits, 'owned')
+
+    def test_material_restore_rejects_changed_source_bytes_or_private_download_headers(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            original = runtime.sample_png((25, 90, 155, 255))
+            row = {'id': 'material', 'projectId': 'project', 'versionId': 'version', 'revisionId': 'revision',
+                   'sourceName': 'Private material source', 'fileSize': len(original), 'mediaType': 'image/png',
+                   'sha256': hashlib.sha256(original).hexdigest()}
+            fixture = {'path': '/materials', 'row': row, 'original': original, 'body': b'original-multipart',
+                       'headers': {'Idempotency-Key': 'original-upload'}}
+            current = copy.deepcopy(row)
+            content = original
+            headers = {'Content-Type': 'image/png', 'Content-Disposition': 'attachment; filename="material.png"',
+                       'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+                       'Content-Security-Policy': "sandbox; default-src 'none'"}
+            api = unittest.mock.Mock()
+            def respond(method, path, payload=None, **kwargs):
+                if path.endswith('/content'): return content, headers
+                if path.endswith('/_query'): return {'total': 1, 'data': [current]}
+                return current
+            api.request.side_effect = respond
+            check.verify_revision_material_fixture(api, fixture)
+            self.assertNotIn('Private material source', json.dumps(check.report))
+            self.assertIn(unittest.mock.call('POST', '/materials', b'original-multipart',
+                                            headers={'Idempotency-Key': 'original-upload'}), api.request.call_args_list)
+            current['sourceName'] = 'Changed source'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'metadata, source or fixed scope'):
+                check.verify_revision_material_fixture(api, fixture)
+            current = copy.deepcopy(row)
+            content = original + b'changed'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'original bytes or hash'):
+                check.verify_revision_material_fixture(api, fixture)
+            content = original
+            headers['Content-Disposition'] = 'inline'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'attachment security boundary'):
+                check.verify_revision_material_fixture(api, fixture)
+
+    def test_shared_current_graph_runs_real_material_readback_before_backup_and_after_restore(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            fixture = {name: object() for name in ('approval', 'demoScripts', 'organization', 'pageTraceability',
+                                                  'codeMappings', 'tokenPackages', 'usabilityStudies', 'revisionMaterial')}
+            with contextlib.ExitStack() as stack:
+                for name in ('approval', 'demo_script', 'organization', 'page_traceability', 'code_mapping',
+                             'token_package', 'usability'):
+                    stack.enter_context(patch.object(check, 'verify_' + name + '_fixture'))
+                material = stack.enter_context(patch.object(check, 'verify_revision_material_fixture',
+                                                          side_effect=RuntimeError('material-readback-reached')))
+                api = unittest.mock.Mock()
+                with self.assertRaisesRegex(RuntimeError, 'material-readback-reached'):
+                    check.verify_current_graph(api, fixture, 'owned')
+                material.assert_called_once_with(api, fixture['revisionMaterial'])
+
+    def test_usability_restore_rejects_private_content_loss_recreated_withdrawal_and_csv_disclosure(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            study = {'id': 'study', 'state': 'closed', 'revisionId': 'revision', 'configVersion': 3,
+                     'introduction': 'Private definition'}
+            own = {'id': 'answer', 'status': 'submitted', 'contentVersion': 2, 'configVersion': 2,
+                   'taskAnswers': [{'taskId': 'task', 'outcome': 'completed', 'feedback': 'Private task answer'}],
+                   'answers': [], 'feedback': 'Private overall answer'}
+            withdrawn = dict(own, id='withdrawn', status='withdrawn', taskAnswers=[], feedback='')
+            member = {key: own[key] for key in ('id', 'contentVersion', 'status', 'taskAnswers', 'answers', 'feedback')}
+            aggregate = {'submittedCount': 1, 'tasks': [], 'questions': [], 'excludedTextQuestionCount': 1}
+            fixture = {'path': '/studies', 'row': study, 'member': member, 'aggregate': aggregate,
+                'csv': b'section,item,option,count\r\n', 'operations': [('POST', '/studies', {'clientRequestId': 'original'})],
+                'participants': [{'visitor': {'grant': {}, 'cookie': 'cookie'}, 'row': row,
+                    'operations': [('consent', {'clientRequestId': 'original'})]} for row in (own, withdrawn)]}
+            current = copy.deepcopy(study)
+            member_page = {'total': 1, 'data': [member]}
+            current_aggregate = copy.deepcopy(aggregate)
+            csv_bytes = fixture['csv']
+            replay_withdrawn = copy.deepcopy(withdrawn)
+            api = unittest.mock.Mock()
+            def respond(method, path, payload=None, **kwargs):
+                if kwargs.get('expected') == 404: return None
+                if '/responses/_query' in path: return member_page
+                if '/responses/' in path: return member
+                if path.endswith('/summary.csv'):
+                    return csv_bytes, {'Cache-Control': 'private, no-store', 'Content-Disposition': 'attachment; filename="summary.csv"',
+                                       'Content-Type': 'text/csv; charset=UTF-8', 'X-Content-Type-Options': 'nosniff'}
+                if path.endswith('/summary'): return current_aggregate
+                if path.endswith('/_query'): return {'total': 1, 'data': [current]}
+                return current
+            def review(api, grant, operation, payload, **kwargs):
+                original = withdrawn if review.calls // 2 else own
+                review.calls += 1
+                if operation.endswith('/context'): return {'study': study, 'participation': original}, None
+                return {'status': 'current', 'participation': replay_withdrawn if original['status'] == 'withdrawn' else original}, None
+            review.calls = 0
+            api.request.side_effect = respond
+            def verify():
+                review.calls = 0
+                with patch.object(check, 'verify_review_identity', return_value={'csrfToken': 'csrf'}), \
+                        patch.object(check, 'review_call', side_effect=review):
+                    check.verify_usability_fixture(api, fixture)
+            verify()
+            self.assertTrue(check.report['usabilityStudies']['withdrawnAnswersClearedAndExcluded'])
+            self.assertNotIn('Private task answer', json.dumps(check.report))
+            self.assertNotIn('Private definition', json.dumps(check.report))
+            current['introduction'] = 'changed'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'definition lost'): verify()
+            current = copy.deepcopy(study)
+            replay_withdrawn['status'] = 'draft'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'resurrected'): verify()
+            replay_withdrawn = copy.deepcopy(withdrawn)
+            member_page = {'total': 2, 'data': [member, withdrawn]}
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'member results'): verify()
+            member_page = {'total': 1, 'data': [member]}
+            current_aggregate['submittedCount'] = 2
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'aggregate changed'): verify()
+            current_aggregate = copy.deepcopy(aggregate)
+            fixture['csv'] = csv_bytes = b'Private free answer'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'disclosed a participant'): verify()
+
+    def test_shared_current_graph_runs_usability_restore_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            fixture = {name: object() for name in ('approval', 'demoScripts', 'organization', 'pageTraceability',
+                                                  'codeMappings', 'tokenPackages', 'usabilityStudies')}
+            with contextlib.ExitStack() as stack:
+                for name in ('approval', 'demo_script', 'organization', 'page_traceability', 'code_mapping', 'token_package'):
+                    stack.enter_context(patch.object(check, 'verify_' + name + '_fixture'))
+                usability = stack.enter_context(patch.object(check, 'verify_usability_fixture',
+                                                          side_effect=RuntimeError('usability-readback-reached')))
+                api = unittest.mock.Mock()
+                with self.assertRaisesRegex(RuntimeError, 'usability-readback-reached'):
+                    check.verify_current_graph(api, fixture, 'owned')
+                usability.assert_called_once_with(api, fixture['usabilityStudies'])
+
     def test_token_package_restore_rejects_changed_scope_source_hash_missing_and_binary_boundary(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
@@ -388,7 +565,7 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(36, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(38, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_project_tag', runtime.BUSINESS_TABLES)
         self.assertIn('p_project_favorite', runtime.BUSINESS_TABLES)
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
@@ -465,7 +642,9 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar = Path(temporary) / 'fixture.jar'
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
-            fixture = {'tokenPackages': {'row': {'id': 'token-package'}},
+            fixture = {'usabilityStudies': {'row': {'id': 'study'},
+                           'participants': [{'row': {'id': 'submitted'}}, {'row': {'id': 'withdrawn'}}]},
+                       'tokenPackages': {'row': {'id': 'token-package'}},
                        'codeMappings': {'rows': [{'id': 'code-card'}]}, 'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
                        'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
                        'project': {'id': 'organization-project'}, 'organization': {'member': {'id': 'reader'}},
@@ -489,11 +668,12 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
                                        'referencesComplete': True, 'demoScriptReferencesChecked': True,
                                        'organizationReferencesChecked': True, 'pageTraceabilityReferencesChecked': True,
-                                       'codeMappingReferencesChecked': True, 'tokenPackageReferencesChecked': True})
+                                       'codeMappingReferencesChecked': True, 'tokenPackageReferencesChecked': True,
+                                       'usabilityReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(40, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(47, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
                 with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 10 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)
@@ -1400,8 +1580,10 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
                                                    self.storage, 'disposable')
 
     def test_creation_captures_each_file_before_deletion_and_rejects_partial_loss(self):
-        for lost in ('r1', 'r2', 'replacement', None):
-            with self.subTest(lost=lost):
+        scenarios = [(lost, False, False) for lost in ('r1', 'r2', 'replacement', None)]
+        scenarios += [(None, True, False), (None, False, True)]
+        for lost, reused, early_release in scenarios:
+            with self.subTest(lost=lost, reused_at_capacity=reused, early_release=early_release):
                 project_root = self.storage / 'projects'
                 if project_root.exists():
                     shutil.rmtree(project_root)
@@ -1442,26 +1624,30 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
                             files[lost].unlink()
                     return {}
 
-                with patch.object(self.api, 'project', side_effect=[{'id': 'retained-project'},
-                                                                  {'id': 'empty-project'}]), \
-                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}}
-                                                                    for used in (1, 1, 2, 1)]), \
+                roots = {'project': {'id': 'retained-project'}, 'projectKey': 'original-project-key',
+                         'emptyProject': {'id': 'empty-project'}, 'emptyKey': 'original-empty-key'} if reused else None
+                usage = (5, 5, 5, 5) if reused else ((1, 1, 2, 1) if early_release else (1, 2, 3, 3))
+                with patch.object(self.api, 'project', side_effect=(AssertionError('Cannot allocate a sixth root')
+                        if reused else [{'id': 'retained-project'}, {'id': 'empty-project'}])) as creates, \
+                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}} for used in usage]), \
                         patch.object(self.api, 'upload', side_effect=upload), \
                         patch.object(self.api, 'replace', side_effect=replace), \
                         patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
                         patch.object(self.check, 'preview'), \
                         patch.object(self.check, 'deleted_fixture_state', return_value=self.state):
-                    if lost:
+                    if lost or early_release:
                         with self.assertRaisesRegex(runtime.VerificationFailure,
-                                                    'changed retained fixture files'):
+                                'retained capacity' if early_release else 'changed retained fixture files'):
                             self.check.create_deleted_fixture(self.api, {'id': 'viewer', 'username': 'viewer'},
                                                               self.root / 'unused.zip', self.root / 'unused.zip',
-                                                              self.storage)
+                                                              self.storage, roots)
                         self.assertTrue(any(path.exists() for path in files.values()))
                     else:
                         fixture = self.check.create_deleted_fixture(
                             self.api, {'id': 'viewer', 'username': 'viewer'}, self.root / 'unused.zip',
-                            self.root / 'unused.zip', self.storage)
+                            self.root / 'unused.zip', self.storage, roots)
+                        if reused:
+                            creates.assert_not_called()
                         self.assertEqual({path.relative_to(self.storage).as_posix() for path in files.values()},
                                          set(fixture['files']))
 
@@ -1536,7 +1722,10 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
 
     def test_recovery_fixture_rejects_cascading_or_replaced_identity_and_pointer(self):
         failures = {'cascade': 'also restored a deleted child', 'new-project': 'Project recovery replaced',
-                    'new-version': 'Version recovery replaced', 'pointer': 'immutable current pointer'}
+                    'new-version': 'Version recovery replaced', 'pointer': 'immutable current pointer',
+                    'restore-extra-slot': 'consumed an extra project slot',
+                    'soft-delete-release': 'soft deletion changed retained project capacity',
+                    'restore-increment': 'allocated a second slot'}
         for failure in (*failures, None):
             with self.subTest(failure=failure):
                 storage = self.storage / str(failure)
@@ -1572,17 +1761,21 @@ class RetainedDeletionVerificationTest(unittest.TestCase):
                 with patch.object(self.api, 'project', side_effect=project), \
                         patch.object(self.api, 'upload', side_effect=upload), \
                         patch.object(self.api, 'replace', side_effect=replace), \
-                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}} for used in (0, 0, 1)]), \
+                        patch.object(self.api, 'usage', side_effect=[{'projects': {'used': used}} for used in {
+                            'restore-extra-slot': (5, 6), 'soft-delete-release': (5, 5, 4),
+                            'restore-increment': (5, 5, 5, 6)}.get(failure, (5, 5, 5, 5))]), \
                         patch.object(runtime.Api, 'request', autospec=True, side_effect=request), \
                         patch.object(self.check, 'preview', return_value={'entry': 'hash'}), \
                         patch.object(self.check, 'restored_fixture_state', return_value={}):
                     if failure:
                         with self.assertRaisesRegex(runtime.VerificationFailure, failures[failure]):
                             self.check.create_restored_fixture(self.api, self.root / 'unused.zip',
-                                                               self.root / 'unused.zip', storage)
+                                                               self.root / 'unused.zip', storage,
+                                                               {'project': {'id': 'project'}, 'projectKey': 'original', 'projectName': 'Original project'})
                     else:
                         fixture = self.check.create_restored_fixture(self.api, self.root / 'unused.zip',
-                                                                    self.root / 'unused.zip', storage)
+                                                                    self.root / 'unused.zip', storage,
+                                                               {'project': {'id': 'project'}, 'projectKey': 'original', 'projectName': 'Original project'})
                         self.assertEqual(2, len(fixture['files']))
 
 
@@ -1700,7 +1893,9 @@ class ExpiredCleanupVerificationTest(unittest.TestCase):
                     with self.assertRaisesRegex(runtime.VerificationFailure, 'revived the old project ID'):
                         self.check.verify_expired_access(api, fixture)
                 else:
-                    self.check.verify_expired_access(api, fixture)
+                    reusable = self.check.verify_expired_access(api, fixture)
+                    self.assertEqual({'project': {'id': 'new-project'}, 'projectKey': 'original-key',
+                                      'projectName': 'Original name'}, reusable)
                     create.assert_called_once_with('Original name', 'original-key')
                     for call in calls.call_args_list:
                         if call.args[2].startswith(('/api/public/', '/api/runtime/',

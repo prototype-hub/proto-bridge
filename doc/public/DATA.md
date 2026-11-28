@@ -419,3 +419,13 @@ EasyORM仅新增 `p_component_code_mapping` 的17列与两个索引；已有表�
 软删和恢复沿原策略保留代码卡/回执；永久版本图及孤项目图在既有事务删除代码卡和归属回执，不增加文件/配额/保留期。回滚代码保留新增表/行/回执并停止遗漏新表的旧永久清理器，数据回退应恢复同窗口整库与私有文件。
 
 整库与工具表清单纳入新表。`snapshot-db.sql` 的 `component_code_mapping` 和 `business_rows_p_component_code_mapping` 只输出数量/完整行摘要，任一私有片段、路径、指针、CAS变化都会影响摘要，不打印正文。preflight与存储引用导出验证固定范围/真实内容页、字段与指针形状；不要求历史F27行仍存在。当前导出使用formatVersion5/sourceSchema，新增可选`codeMappingReferencesChecked`仅在表存在且执行检查时为true；旧报告缺标记不能证明代码卡图已覆盖，此标记不证明备份实际恢复完成。
+
+## 基本可用性研究及答卷
+
+EasyORM仅增补元数据表`p_usability_study`与`p_usability_response`及索引，不改写既有原型/脚本或文件。研究保存固定project/version/revision、普通文本title/introduction/consent_text、JsonCodec LONGVARCHAR的tasks/questions、state/content_version/config_version及作者/时间；开放后定义永久冻结。任务步骤是普通独立内容快照，没有演示脚本外键或自动同步。
+
+答卷保存相同固定范围、study/share/guest标识及verification_level、冻结content_version、status、consented_at、JSON编码task_answers/answers、feedback、CAS及提交/创建/更新时间。原始cookie/CSRF/邮箱/姓名不复制入表；guest和规范化等级是服务端历史身份快照，当前参与访问仍需有效会话。到期unverified guest按原F22规则清理，其缺失不删除历史答卷；仍存在的guest必须匹配项目/等级，email guest仍核正常引用。历史share可已删除，存在时必须匹配项目/版本；现有分享改绑固定修订不会改写或损坏旧答卷，当前受试授权仍严格校验精确修订。研究不延长访客身份寿命。
+
+每study+share+guest+grade派生一个稳定参与ID；200行上限含撤回，在权威锁内检查。明确同意才建行，草稿只供本人读取；提交不可改，撤回原子清空两答案数组与feedback，保留最少参与状态且不重新创建。成员只读提交结果，聚合只读未撤回提交。创建/更新/开放/关闭/删除及参与写入复用版本归属`p_creation_receipt`，回执与数据同事务；原键回放只返当前/missing，手动删研究不清版本回执。
+
+软删和恢复沿现有保留期保留研究/答卷/回执，永久版本图及孤项目图同事务先移除答卷再研究与范围回执；研究不新增文件、配额项、后台任务或独立保留期。整库备份与snapshot/preflight/export表图纳入两表，摘要不输出研究/答案正文或身份。存在研究表时存储清单为formatVersion6/sourceSchema=`immutable-revisions-usability-v1`，`usabilityReferencesChecked:true`只证明完整性检查覆盖，不证明同意有效、研究质量或恢复已验收。应用回退保留新增表/回执，并停止遗漏新图的旧清理与恢复工具。

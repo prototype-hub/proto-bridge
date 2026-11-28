@@ -827,3 +827,39 @@ Package.valid/report.valid针对支持范围内所有上下文组合按resolutio
 首次导入结果顺序对应输入卡；原键重试仅返回该请求派生卡的当前状态：仍存在为`status:current,card:当前卡`，后来已删为`status:missing,card:null`。此status只代表卡存在，与description.status独立；不会返回当前页其他卡或重建已删卡。明确以新key重新导入会新增一批；未知结果必须冻结原payload/key精确重试。
 
 格式/字段错误400；精确页面/卡/新说明不存在404；CAS冲突`PROTOTYPE_HUB_CODE_MAPPING_CONFLICT`、新来源变化`PROTOTYPE_HUB_CODE_MAPPING_DESCRIPTION_CHANGED`及幂等冲突409；文本包超限`PROTOTYPE_HUB_CODE_MAPPING_TOO_LARGE`为413。客户端保留同身份草稿，显式重读/比较再决定，不能自动确认来源或覆盖服务端。
+
+## 固定修订基本可用性研究
+
+研究是人工任务、短问卷与受试者自报，不采集操作轨迹或耗时，不把打开页面当完成。成员入口 `/prototype-hub/versions/{versionId}/revisions/{revisionId}/usability-studies` 固定已有修订；读取要求菜单query与项目READ交集，定义维护、开放、关闭及删除要求save与EDIT交集。
+
+| 方法与路径后缀 | 请求 / 结果 |
+| --- | --- |
+| `POST /_query`；`GET /{id}` | 研究摘要真DB分页；读取完整研究 |
+| `POST`；`PUT /{id}` | title/introduction/consentText/tasks/questions及clientRequestId；更新另带expectedVersion，仅草稿可改 |
+| `POST /{id}/_open`；`/_close`；`/_delete` | expectedVersion/clientRequestId；开放、关闭返回当前研究，删除返回true |
+| `POST /{id}/responses/_query`；`GET /{id}/responses/{responseId}` | 仅已提交答卷；分页或精确读取，无guest/share/身份等级/时间字段 |
+| `GET /{id}/summary`；`GET /{id}/summary.csv` | 全部已提交且未撤回答卷的结构化汇总；JSON或UTF-8 CSV附件 |
+
+每修订最多10个研究，每研究最多200条参与记录（含撤回），不是独立收费额度。分页默认0/20，pageIndex为0–10000，pageSize为1–100，按updatedAt/id稳定排序。研究由draft首次开放为open时永久冻结定义及contentVersion，关闭为closed后不能重开；configVersion只用于当前并发控制。删除研究及其答卷同事务完成，不删除原型、演示脚本或其他资料。
+
+title必填≤120，introduction≤4000，consentText必填≤4000。tasks最多12项、每项最多12步且总计48步：id为1–64位字母数字/下划线/连字符，title必填≤120，objective/prerequisites/resetNote各≤2000；steps沿现有`{id,pageId,narration}`，只引用该修订真实非目录页。可由成员明确复制现有演示脚本的普通内容，副本独立，不保存来源指针、不改变原脚本公开状态或自动同步。questions最多8项：id、必填prompt≤500、type(singleChoice/rating/text)、required、options；选择项2–8个唯一`{id,label}`且label必填≤200，评分固定1–5，其余类型options为空数组。序列化定义≤128KiB，全部作为普通文本处理。
+
+受试入口 `/prototype-hub/public/shares/{token}/review/usability-studies` 复用原分享策略、精确已解析修订及F22访客身份。必须启用reviewEnabled；评论关闭不阻断研究，研究也不授权评论。latest分享只能访问当前grant明确解析的精确修订。无独立OTP、邀请或自动发送；身份验证不等于研究同意。
+
+所有公开POST均携带revisionId/accessKey并检查Origin；写操作另验现有HttpOnly review cookie及X-Review-CSRF，cookie路径保持`/review`，凭据不进入URL或原型iframe。
+
+| 公开POST后缀 | 请求 / 结果 |
+| --- | --- |
+| `/_query` | 分页，返回已开放/关闭研究的id/title/state |
+| `/{id}/context` | 返回study和本人participation或null；读取不自动创建参与行 |
+| `/{id}/consent` | contentVersion、agreed:true、clientRequestId；明确同意后创建本人参与 |
+| `/{id}/progress`；`/{id}/submit` | contentVersion/expectedVersion/clientRequestId、taskAnswers/answers/feedback；手动保存或明确最终提交 |
+| `/{id}/withdraw` | contentVersion/expectedVersion/clientRequestId；清除本人所有答案及反馈，关闭后仍可撤回 |
+
+taskAnswers为唯一`{taskId,outcome:completed|not_completed|skipped,feedback}`；answers为唯一`{questionId,optionId?|rating?|text?}`且值匹配题型。反馈/文本各≤2000，总答案≤64KiB。草稿可不完整；提交必须覆盖全部任务及必填题，之后不可修改。一次参与绑定研究、分享、稳定guest与验证等级，不能据此声称独立人数；不同身份不能看到他人答卷。撤回保留最少同意/身份状态，答案数组及反馈清空、排除汇总，不能用旧键或重复同意重新参加。
+
+公开写入返回`{status:"current"|"missing",participation:OwnResponse|null}`；本人答卷只含id/contentVersion/status/configVersion/taskAnswers/answers/feedback。当前访客身份与分享范围每次重验，成员结果只含已提交内容，不提供草稿读取。公开study仅含id/title/introduction/consentText/tasks/questions/state/contentVersion。
+
+写入沿当前账号或访客授权、项目、版本及研究范围串行重验；CAS与持久版本回执同事务。clientRequestId和expectedVersion沿现有严格标量/安全整数规则；未知结果必须冻结原键和完整原payload重试。原键返回当前或已删除missing，不能回写旧内容或复活撤回/删除记录；同键异参409。
+
+汇总显式白名单为submittedCount、任务title及completed/notCompleted/skipped/missing、选择/评分题prompt/type/answered/missing及选项label/count、excludedTextQuestionCount。完整有界提交集计算，超过200行失败而不截断。JSON与CSV均不含身份、逐人编号、时间戳、参与自由文本或内部范围ID；固定人工题目/选项允许导出，数量是提交数。CSV逐单元转义并防公式注入，private/no-store，不构成匿名化自由文本导出。自由反馈只在当前项目成员权限内查看。

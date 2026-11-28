@@ -1,5 +1,6 @@
 """Exercise the actual psql export against an explicitly owned disposable PostgreSQL container."""
 
+import ast
 import itertools
 import json
 import os
@@ -67,6 +68,120 @@ class StorageExportPostgresTest(unittest.TestCase):
 
     def export(self, mutation=''):
         return json.loads(self.script('export-storage-manifest.sql', mutation))
+
+    def create_usability(self):
+        self.sql(self.prefix() + """
+          ALTER TABLE p_share ADD COLUMN token text;
+          ALTER TABLE p_version ADD COLUMN status text;
+          ALTER TABLE p_revision ADD COLUMN manifest_json text;
+          UPDATE p_revision SET manifest_json='{"pages":[{"pageId":"page","path":"index.html","folder":false,"children":[]}]}';
+          CREATE TABLE p_review_guest(id text primary key,project_id text);
+          CREATE TABLE p_review_unverified_guest(id text primary key,project_id text);
+          INSERT INTO p_review_guest VALUES('email-guest','project');
+          INSERT INTO p_review_unverified_guest VALUES('unverified-guest','project');
+          INSERT INTO p_share(id,version_id,project_id,revision_id,revision_mode) VALUES('share','version','project','r1','fixed');
+          CREATE TABLE p_usability_study(id text primary key,project_id text,version_id text,revision_id text,
+            title text,introduction text,consent_text text,tasks text,questions text,state text,content_version bigint,
+            config_version bigint,created_by text,updated_by text,created_at bigint,updated_at bigint);
+          CREATE TABLE p_usability_response(id text primary key,project_id text,version_id text,revision_id text,
+            study_id text,share_id text,guest_id text,verification_level text,status text,task_answers text,answers text,
+            feedback text,content_version bigint,config_version bigint,consented_at bigint,created_at bigint,
+            updated_at bigint,submitted_at bigint);
+          INSERT INTO p_usability_study VALUES('study','project','version','r1','Private study title',
+            'Private introduction','Private consent',
+            '[{"id":"task","title":"Authored task","objective":"Private objective","prerequisites":"","resetNote":"","steps":[{"id":"step","pageId":"page","narration":"Private instruction"}]}]',
+            '[{"id":"choice","prompt":"Authored choice","type":"singleChoice","required":true,"options":[{"id":"yes","label":"Yes"},{"id":"no","label":"No"}]},{"id":"rating","prompt":"Authored rating","type":"rating","required":true,"options":[]},{"id":"text","prompt":"Private text question","type":"text","required":true,"options":[]}]',
+            'open',1,1,'removed-author','removed-updater',100,101);
+          INSERT INTO p_usability_response VALUES('submitted','project','version','r1','study','share','email-guest',
+            'email','submitted','[{"taskId":"task","outcome":"completed","feedback":"Private task feedback"}]',
+            '[{"questionId":"choice","optionId":"yes"},{"questionId":"rating","rating":4},{"questionId":"text","text":"Private answer"}]',
+            'Private overall feedback',1,2,101,101,103,103),
+            ('withdrawn','project','version','r1','study','share','unverified-guest','unverified','withdrawn',
+            '[]','[]','',1,2,101,101,103,null);
+        """)
+
+    def test_usability_metadata_checks_complete_graph_and_hashes_private_content_without_exporting_it(self):
+        self.create_usability()
+        result = self.export()
+        self.assertEqual(6, result['formatVersion'])
+        self.assertEqual('immutable-revisions-usability-v1', result['sourceSchema'])
+        self.assertTrue(result['usabilityReferencesChecked'])
+        self.assertTrue(result['referencesComplete'])
+        self.assertEqual(0, result['integrityErrors'])
+        self.assertNotIn('Private', json.dumps(result))
+        before = self.script('snapshot-db.sql')
+        self.assertIn('business_rows_p_usability_study|1|', before)
+        self.assertIn('business_rows_p_usability_response|2|', before)
+        self.assertNotEqual(before, self.script('snapshot-db.sql',
+            "UPDATE p_usability_response SET feedback='Changed private feedback' WHERE id='submitted';"))
+        draft = "DELETE FROM p_usability_response; UPDATE p_usability_study SET state='draft',content_version=null,tasks=jsonb_set(tasks::jsonb,'{0,steps}','[]')::text;"
+        self.assertEqual(0, self.export(draft)['integrityErrors'])
+        # Historical cleanup does not alter the consent or result snapshot.
+        historical = "DELETE FROM p_share; DELETE FROM p_review_unverified_guest;"
+        self.assertEqual(0, self.export(historical)['integrityErrors'])
+        self.assertIn('current_scope_errors|0', self.script('preflight-db.sql', historical).splitlines())
+        partial = self.export('DROP TABLE p_usability_response;')
+        self.assertFalse(partial['usabilityReferencesChecked'])
+        self.assertFalse(partial['referencesComplete'])
+        self.assertGreater(partial['integrityErrors'], 0)
+        partial = self.export('DROP TABLE p_usability_study;')
+        self.assertFalse(partial['referencesComplete'])
+        self.assertGreater(partial['integrityErrors'], 0)
+
+    def test_usability_historical_share_retarget_keeps_answers_but_share_scope_must_still_match(self):
+        self.create_usability()
+        other_revision = "INSERT INTO p_revision SELECT 'r2',version_id,project_id,'projects/project/versions/retarget/site',entry_file,manifest_json FROM p_revision;"
+        for prior_mode in ("", "UPDATE p_share SET revision_mode='latest',revision_id=null;"):
+            mutation = other_revision + prior_mode + "UPDATE p_share SET revision_mode='fixed',revision_id='r2';"
+            result = self.export(mutation)
+            self.assertEqual(0, result['integrityErrors'])
+            self.assertTrue(result['referencesComplete'])
+            self.assertTrue(result['usabilityReferencesChecked'])
+            self.assertIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
+        # Each new share target is internally valid. Only its association to the
+        # retained research response is foreign; deleting responses proves that.
+        for foreign_project in (False, True):
+            project = 'foreign-project' if foreign_project else 'project'
+            mutation = ("INSERT INTO p_project VALUES('foreign-project');" if foreign_project else '') + (
+                "INSERT INTO p_version(id,project_id,current_revision_id,storage_path,entry_file,deleted_time) "
+                "VALUES('other-version','" + project + "','other-revision','projects/" + project + "/versions/other/site','index.html',null);"
+                "INSERT INTO p_revision(id,version_id,project_id,storage_path,entry_file,manifest_json) "
+                "SELECT 'other-revision','other-version','" + project + "','projects/" + project + "/versions/other/site',entry_file,manifest_json FROM p_revision;"
+                "UPDATE p_share SET project_id='" + project + "',version_id='other-version',revision_id='other-revision';")
+            self.assertEqual(0, self.export(mutation + 'DELETE FROM p_usability_response;')['integrityErrors'])
+            self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+            self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
+
+    def test_usability_scope_content_and_answer_corruption_fails_both_diagnostics(self):
+        self.create_usability()
+        mutations = [
+            "UPDATE p_usability_study SET project_id='foreign';",
+            "UPDATE p_usability_study SET content_version=2;",
+            "UPDATE p_usability_study SET tasks=jsonb_set(tasks::jsonb,'{0,steps,0,pageId}','\"missing\"')::text;",
+            "UPDATE p_usability_study SET questions='{}';",
+            "UPDATE p_usability_study SET state='draft';",
+            "UPDATE p_usability_response SET study_id='missing';",
+            "UPDATE p_usability_response SET revision_id='missing';",
+            "UPDATE p_usability_response SET content_version=2;",
+            "UPDATE p_usability_response SET verification_level='unknown';",
+            "UPDATE p_review_guest SET project_id='foreign';",
+            "DELETE FROM p_review_guest;",
+            "UPDATE p_review_unverified_guest SET project_id='foreign';",
+            "UPDATE p_usability_response SET task_answers='[]' WHERE status='submitted';",
+            "UPDATE p_usability_response SET task_answers='[{\"taskId\":\"task\",\"outcome\":\"automatic\",\"feedback\":\"\"}]' WHERE status='submitted';",
+            "UPDATE p_usability_response SET answers='[{\"questionId\":\"unknown\",\"rating\":4}]' WHERE status='submitted';",
+            "UPDATE p_usability_response SET answers=jsonb_set(answers::jsonb,'{0,optionId}','\"unknown-option\"')::text WHERE status='submitted';",
+            "UPDATE p_usability_response SET answers=jsonb_set(answers::jsonb,'{1,rating}','\"4\"')::text WHERE status='submitted';",
+            "UPDATE p_usability_response SET feedback='retained withdrawn text' WHERE status='withdrawn';",
+            "UPDATE p_usability_response SET submitted_at=null WHERE status='submitted';",
+            "INSERT INTO p_usability_response SELECT 'duplicate',project_id,version_id,revision_id,study_id,share_id,guest_id,verification_level,status,task_answers,answers,feedback,content_version,config_version,consented_at,created_at,updated_at,submitted_at FROM p_usability_response WHERE id='withdrawn';",
+            "INSERT INTO p_usability_study SELECT 'extra-study-'||n,project_id,version_id,revision_id,title,introduction,consent_text,tasks,questions,state,content_version,config_version,created_by,updated_by,created_at,updated_at FROM p_usability_study CROSS JOIN generate_series(1,10) n;",
+            "INSERT INTO p_usability_response SELECT 'extra-response-'||n,project_id,version_id,revision_id,study_id,share_id,'historical-guest-'||n,verification_level,status,task_answers,answers,feedback,content_version,config_version,consented_at,created_at,updated_at,submitted_at FROM p_usability_response CROSS JOIN generate_series(1,199) n WHERE id='withdrawn';",
+        ]
+        for mutation in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+                self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
 
     def test_design_token_packages_export_retained_raw_graph_and_hash_all_private_metadata(self):
         self.create_page_traceability()
@@ -593,6 +708,23 @@ class StorageExportPostgresTest(unittest.TestCase):
           INSERT INTO p_project_favorite VALUES('favorite','project','reader',false,2,100,101),
             ('other-favorite','project','disabled-reader',true,1,100,100);
           """)
+
+    def test_runtime_empty_tag_probe_reaches_diagnostics_under_the_real_unique_binding(self):
+        self.create_organization()
+        self.sql(self.prefix() + 'CREATE UNIQUE INDEX idx_project_tag_binding ON p_project_tag(project_id,tag_name);')
+        module = ast.parse((TOOLS / 'verify-runtime.py').read_text())
+        method = next(node for node in ast.walk(module) if isinstance(node, ast.FunctionDef)
+                      and node.name == 'verify_sql_diagnostics')
+        assignment = next(node for node in ast.walk(method) if isinstance(node, ast.Assign)
+                          and any(isinstance(target, ast.Name) and target.id == 'mutations' for target in node.targets))
+        mutation = next(value for value in ast.literal_eval(assignment.value)
+                        if value.startswith("UPDATE p_project_tag SET tag_name=''"))
+        mutation = mutation.replace(":'organization_project'", "'project'")
+        before = self.script('snapshot-db.sql')
+        self.assertNotEqual(before, self.script('snapshot-db.sql', mutation))
+        self.assertGreater(self.export(mutation)['integrityErrors'], 0)
+        self.assertNotIn('current_scope_errors|0', self.script('preflight-db.sql', mutation).splitlines())
+        self.assertEqual(before, self.script('snapshot-db.sql'))
 
     def test_organization_graph_checks_retained_false_preferences_without_exporting_labels_or_urls(self):
         self.create_organization()

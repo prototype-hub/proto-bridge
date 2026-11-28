@@ -86,6 +86,32 @@ class StorageAuditTest(unittest.TestCase):
         self.assertEqual(0, self.run_audit(manifest, repair=True).returncode)
         self.assertEqual(payload, (directory / 'content').read_bytes())
         self.assertFalse(self.paths['orphan'].parent.exists())
+        self.paths['orphan'].mkdir(parents=True)
+        research = dict(manifest, formatVersion=6, sourceSchema='immutable-revisions-usability-v1',
+                        usabilityReferencesChecked=True, tokenPackageReferencesChecked=False)
+        self.assertEqual(2, self.run_audit(research, repair=True).returncode)
+        self.assertTrue(self.paths['orphan'].exists())
+        research['tokenPackageReferencesChecked'] = True
+        self.assertEqual(0, self.run_audit(research, repair=True).returncode)
+        self.assertEqual(payload, (directory / 'content').read_bytes())
+        self.assertFalse(self.paths['orphan'].parent.exists())
+
+    def test_usability_metadata_requires_checked_complete_graph_before_any_repair(self):
+        manifest = dict(self.complete(self.entries(('r1', 'r2'))), formatVersion=6,
+                        sourceSchema='immutable-revisions-usability-v1', materialReferencesChecked=True,
+                        materialEntries=[], tokenPackageReferencesChecked=False, tokenPackageEntries=[],
+                        usabilityReferencesChecked=True)
+        for change in ({'usabilityReferencesChecked': False}, {'referencesComplete': False},
+                       {'integrityErrors': 1}, {'sourceSchema': 'immutable-revisions-token-packages-v1'}):
+            result = self.run_audit(dict(manifest, **change), repair=True)
+            self.assertEqual(2, result.returncode)
+            self.assertTrue(self.paths['orphan'].parent.exists())
+        result = self.run_audit(manifest, repair=True)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertFalse(self.paths['orphan'].parent.exists())
+        self.assertTrue(self.paths['r1'].exists())
+        self.assertNotIn('taskAnswers', result.stdout)
+        self.assertNotIn('feedback', result.stdout)
 
     def test_token_package_manifest_rejects_cross_root_paths_and_duplicate_payloads(self):
         directory = self.root / 'projects/project/design-token-packages/package'
