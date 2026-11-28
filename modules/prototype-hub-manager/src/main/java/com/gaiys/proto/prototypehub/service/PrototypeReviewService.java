@@ -88,12 +88,24 @@ public class PrototypeReviewService {
     /** 评审读写的唯一访客授权；匿名上下文不能代替当前会话及当前访客行。 */
     public Mono<VisitorScope> requireVisitor(
             String token, String revisionId, String key, String cookie) {
+        return requireGuestIdentity(token, revisionId, key, cookie, true);
+    }
+
+    /** 研究复用当前访客身份，评论开关及fixed-mode仅约束原评论入口。 */
+    public Mono<VisitorScope> requireStudyVisitor(
+            String token, String revisionId, String key, String cookie) {
+        return requireGuestIdentity(token, revisionId, key, cookie, false);
+    }
+
+    private Mono<VisitorScope> requireGuestIdentity(
+            String token, String revisionId, String key, String cookie, boolean comments) {
         return requireScope(token, revisionId, key)
                 .flatMap(
                         share -> {
-                            if (!Boolean.TRUE.equals(share.getReviewAllowComment())
-                                    || (share.getRevisionMode() != null
-                                            && !"fixed".equals(share.getRevisionMode())))
+                            if (comments
+                                    && (!Boolean.TRUE.equals(share.getReviewAllowComment())
+                                            || (share.getRevisionMode() != null
+                                                    && !"fixed".equals(share.getRevisionMode()))))
                                 return Mono.error(PrototypeReviewThreadService.commentsDisabled());
                             return sessions.createQuery()
                                     .where(
@@ -131,6 +143,17 @@ public class PrototypeReviewService {
                                 access.lockProject(before.share().getProjectId())
                                         .then(access.lockVersion(before.share().getVersionId()))
                                         .then(requireVisitor(token, revisionId, key, cookie)));
+    }
+
+    /** 调用方事务内按项目→版本持锁后重新核验研究的当前访客身份。 */
+    public Mono<VisitorScope> lockedStudyVisitor(
+            String token, String revisionId, String key, String cookie) {
+        return requireStudyVisitor(token, revisionId, key, cookie)
+                .flatMap(
+                        before ->
+                                access.lockProject(before.share().getProjectId())
+                                        .then(access.lockVersion(before.share().getVersionId()))
+                                        .then(requireStudyVisitor(token, revisionId, key, cookie)));
     }
 
     public record VisitorScope(PrototypeShareEntity share, ReviewIdentity identity) {}

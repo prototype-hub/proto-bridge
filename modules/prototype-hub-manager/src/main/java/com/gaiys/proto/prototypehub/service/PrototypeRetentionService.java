@@ -20,6 +20,8 @@ import com.gaiys.proto.prototypehub.entity.PrototypeProjectTagEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionApprovalEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeShareEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeUsabilityResponseEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeUsabilityStudyEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeVersionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeViewportCheckEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeWorkItemEntity;
@@ -72,6 +74,8 @@ public class PrototypeRetentionService {
     private final ReactiveRepository<PrototypeCopySnapshotEntity, String> copySnapshots;
     private final ReactiveRepository<PrototypeViewportCheckEntity, String> viewportChecks;
     private final ReactiveRepository<PrototypeDemoScriptEntity, String> demoScripts;
+    private final ReactiveRepository<PrototypeUsabilityStudyEntity, String> usabilityStudies;
+    private final ReactiveRepository<PrototypeUsabilityResponseEntity, String> usabilityResponses;
     private final ReactiveRepository<PrototypeComponentCodeMappingEntity, String> codeMappings;
     private final ReactiveRepository<PrototypePageRelationEntity, String> pageRelations;
     private final ReactiveRepository<PrototypePageTraceContextEntity, String> pageTraceContexts;
@@ -433,10 +437,20 @@ public class PrototypeRetentionService {
     }
 
     private Mono<Void> deleteVersionGraph(String id) {
-        return codeMappings
+        return usabilityResponses
                 .createDelete()
-                .where(PrototypeComponentCodeMappingEntity::getVersionId, id)
+                .where(PrototypeUsabilityResponseEntity::getVersionId, id)
                 .execute()
+                .then(
+                        usabilityStudies
+                                .createDelete()
+                                .where(PrototypeUsabilityStudyEntity::getVersionId, id)
+                                .execute())
+                .then(
+                        codeMappings
+                                .createDelete()
+                                .where(PrototypeComponentCodeMappingEntity::getVersionId, id)
+                                .execute())
                 .then(
                         pageRelations
                                 .createDelete()
@@ -533,12 +547,26 @@ public class PrototypeRetentionService {
                 .filter(hasChildren -> !hasChildren)
                 .flatMap(
                         ignored ->
-                                codeMappings
+                                usabilityResponses
                                         .createDelete()
-                                        .where(
-                                                PrototypeComponentCodeMappingEntity::getProjectId,
-                                                id)
+                                        .where(PrototypeUsabilityResponseEntity::getProjectId, id)
                                         .execute()
+                                        .then(
+                                                usabilityStudies
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeUsabilityStudyEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
+                                        .then(
+                                                codeMappings
+                                                        .createDelete()
+                                                        .where(
+                                                                PrototypeComponentCodeMappingEntity
+                                                                        ::getProjectId,
+                                                                id)
+                                                        .execute())
                                         .then(
                                                 pageRelations
                                                         .createDelete()

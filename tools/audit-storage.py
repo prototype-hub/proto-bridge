@@ -31,7 +31,10 @@ def main():
                          and manifest.get('materialReferencesChecked') is True)
                      or (manifest.get('formatVersion') == 5 and manifest.get('sourceSchema') == 'immutable-revisions-token-packages-v1'
                          and manifest.get('materialReferencesChecked') is True
-                         and manifest.get('tokenPackageReferencesChecked') is True))
+                         and manifest.get('tokenPackageReferencesChecked') is True)
+                     or (manifest.get('formatVersion') == 6 and manifest.get('sourceSchema') == 'immutable-revisions-usability-v1'
+                         and manifest.get('materialReferencesChecked') is True
+                         and manifest.get('usabilityReferencesChecked') is True))
                 and manifest.get('imageReferencesChecked') is True
                 and manifest.get('referencesComplete') is True
                 and manifest.get('receiptReferencesChecked') is True
@@ -43,25 +46,25 @@ def main():
     image_rows = manifest.get('imageEntries', []) if isinstance(manifest, dict) else []
     if not isinstance(image_rows, list):
         parser.error('Image reference entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5) and 'imageEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5, 6) and 'imageEntries' not in manifest:
         parser.error('Version 3 requires image reference entries')
-    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5)
+    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5, 6)
                       and manifest.get('imageReferencesChecked') is True)
     material_rows = manifest.get('materialEntries', []) if isinstance(manifest, dict) else []
-    materials_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5)
+    materials_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5, 6)
                          and manifest.get('materialReferencesChecked') is True)
     if not isinstance(material_rows, list):
         parser.error('Material reference entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5) and 'materialEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5, 6) and 'materialEntries' not in manifest:
         parser.error('Version 4 requires material reference entries')
     if args.delete_unreferenced and not materials_checked and any((root / 'projects').glob('*/materials/*')):
         parser.error('Private material directories require a complete version 4 material reference export')
     token_rows = manifest.get('tokenPackageEntries', []) if isinstance(manifest, dict) else []
-    tokens_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 5
+    tokens_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (5, 6)
                       and manifest.get('tokenPackageReferencesChecked') is True)
     if not isinstance(token_rows, list):
         parser.error('Token package entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') == 5 and 'tokenPackageEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (5, 6) and 'tokenPackageEntries' not in manifest:
         parser.error('Version 5 requires token package reference entries')
     if args.delete_unreferenced and not tokens_checked and any((root / 'projects').glob('*/design-token-packages/*')):
         parser.error('Token package directories require a complete version 5 token package reference export')

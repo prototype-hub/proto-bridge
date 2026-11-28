@@ -41,7 +41,7 @@ REVIEW_TABLES = ('p_review_guest', 'p_review_challenge', 'p_review_session', 'p_
                  'p_review_unverified_guest', 'p_review_invitation', 'p_review_thread',
                  'p_review_message', 'p_review_event')
 BUSINESS_TABLES = ('p_installation', 'p_project', 'p_project_tag', 'p_project_favorite', 'p_project_member', 'p_preview_session',
-                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
+                   'p_version', 'p_revision', 'p_revision_approval', 'p_demo_script', 'p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_usability_study', 'p_usability_response', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_viewport_check', 'p_revision_material', 'p_share', *REVIEW_TABLES,
                    'p_review_association', 'p_share_visit', 'p_copy_snapshot', 'p_copy_entry',
                    'p_creation_receipt', 'p_file_cleanup')
 TABLES = (*BUSINESS_TABLES, 's_user', 's_dimension', 's_dimension_user',
@@ -80,6 +80,12 @@ def registered_review_expiry(rows, now):
             for table, values in rows.items()}
 
 
+def registered_review_deadlines(rows):
+    """Preregister only exact owned row identities and immutable original expiry deadlines."""
+    return {table: {identity: row['deadline'] for identity, row in values.items()
+                    if type(row['deadline']) is int} for table, values in rows.items()}
+
+
 def compare_review_rows(before, after, now, allowed_removed=None):
     """Only registered, already-expired rows may disappear; nothing may be rewritten."""
     removed = {}
@@ -91,13 +97,27 @@ def compare_review_rows(before, after, now, allowed_removed=None):
         for identity, row in before[table].items():
             current = after[table].get(identity)
             if current is None:
-                require(identity in allowed_removed.get(table, set()) and
+                registered = allowed_removed.get(table, set())
+                require(identity in registered and
+                        (not isinstance(registered, dict) or registered[identity] == row['deadline']) and
                         type(row['deadline']) is int and row['deadline'] <= now,
                         'An unregistered or unexpired review row disappeared: ' + table)
             else:
                 require(current == row, 'A read or startup changed a review row: ' + table)
         removed[table] = len(before[table]) - len(after[table])
     return removed
+
+
+def review_expiry_observation(before, after, registered_at, observed_at, registered):
+    """Interval evidence proves eligibility by observation, not the exact deletion instant."""
+    counts = compare_review_rows(before, after, observed_at, registered)
+    details = {'expiredBeforeLaunch': {}, 'expiredDuringReadback': {}}
+    for table, values in before.items():
+        for identity, row in values.items():
+            if identity not in after[table]:
+                group = 'expiredBeforeLaunch' if row['deadline'] <= registered_at else 'expiredDuringReadback'
+                details[group].setdefault(table, {})[identity] = row['deadline']
+    return counts, details
 
 
 def current_manifest(manifest):
@@ -300,6 +320,7 @@ class RuntimeCheck:
         self.database_port = None
         self.stage = 'initialization'
         self.external_failure = None
+        self.review_expiry_evidence = {}
         self.mailbox = None
         self.ui_port = None
         self.report = {'schemaVersion': 1, 'status': 'running', 'checks': [],
@@ -1274,13 +1295,15 @@ class RuntimeCheck:
             'foreignRevisionRejected': bool(foreign_revision) or
                 self.report.get('revisionComparison', {}).get('foreignRevisionRejected', False)}
 
-    def create_deleted_fixture(self, api, member, zip_path, replacement_zip, storage):
+    def create_deleted_fixture(self, api, member, zip_path, replacement_zip, storage, roots=None):
         """Exercise deletion through HTTP; keep its graph and files for joint restore."""
         occupied = api.usage()['projects']['used']
         before_files = storage_manifest(storage)
-        project_key, version_key = uuid.uuid4().hex, uuid.uuid4().hex
+        project_key = roots['projectKey'] if roots else uuid.uuid4().hex
+        version_key = uuid.uuid4().hex
         project_name = 'Runtime retained project'
-        project = api.project(project_name, project_key)
+        project = roots['project'] if roots else api.project(project_name, project_key)
+        retained_usage = occupied if roots else occupied + 1
         api.request('PUT', '/api/prototype-hub/projects/' + project['id'] + '/members/' + member['id'],
                     {'role': 'viewer'})
         version = api.upload(project['id'], zip_path, version_key)
@@ -1327,15 +1350,16 @@ class RuntimeCheck:
         retained_files.update(replacement_files)
         api.request('DELETE', '/api/prototype-hub/versions/' + replacement['id'])
         api.request('DELETE', '/api/prototype-hub/projects/' + project['id'])
-        require(api.usage()['projects']['used'] == occupied,
-                'Project with only deleted versions did not release occupancy')
-        empty_key = uuid.uuid4().hex
-        empty = api.project(project_name, empty_key)
-        require(empty['id'] != project['id'] and api.usage()['projects']['used'] == occupied + 1,
-                'Fresh project did not reuse released occupancy with a new identity')
+        require(api.usage()['projects']['used'] == retained_usage,
+                'Soft-deleted project root no longer counts toward retained capacity')
+        empty_key = roots['emptyKey'] if roots else uuid.uuid4().hex
+        empty = roots['emptyProject'] if roots else api.project(project_name, empty_key)
+        retained_usage += 0 if roots else 1
+        require(empty['id'] != project['id'] and api.usage()['projects']['used'] == retained_usage,
+                'Separate empty-project fixture changed retained root capacity')
         api.request('DELETE', '/api/prototype-hub/projects/' + empty['id'])
-        require(api.usage()['projects']['used'] == occupied,
-                'Empty project soft deletion did not release occupancy')
+        require(api.usage()['projects']['used'] == retained_usage,
+                'Soft-deleted empty root no longer counts toward retained capacity')
         files = storage_manifest(storage)
         require(all(files.get(name) == digest for name, digest in retained_files.items()),
                 'Soft deletion changed retained fixture files')
@@ -1444,18 +1468,22 @@ SELECT json_build_object(
         self.report['retainedDeletion'] = {
             'projectCount': 2, 'versionCount': 2, 'revisionCount': 3,
             'retainedFileCount': len(fixture['files']), 'stateAndReferenceHashesVerified': True,
-            'quotaReleasedAndFreshIdsVerified': True, 'oldInternalAndPublicGrantsRejected': True,
+            'retainedProjectQuotaAndReleasedVersionSlotVerified': True, 'oldInternalAndPublicGrantsRejected': True,
             'freshManagementAndPublicEntrypointsRejected': True, 'creationReplaysConflict': True,
             'membershipLineageRetained': True, 'internalSessionsRemoved': True,
             'fileHashesVerified': True}
 
-    def create_restored_fixture(self, api, zip_path, replacement_zip, storage):
-        """Restore a separate graph; the deleted fixture remains a backup tombstone sample."""
+    def create_restored_fixture(self, api, zip_path, replacement_zip, storage, reusable_project):
+        """Reuse the post-purge new root; retained tombstone fixtures stay separate."""
         occupied = api.usage()['projects']['used']
         before_files = storage_manifest(storage)
-        project_key, version_key = uuid.uuid4().hex, uuid.uuid4().hex
-        name = 'Runtime recovered project'
-        project = api.project(name, project_key)
+        project_key, version_key = reusable_project['projectKey'], uuid.uuid4().hex
+        name = reusable_project['projectName']
+        project = api.request('POST', '/api/prototype-hub/projects/' + reusable_project['project']['id'] + '/_restore')
+        require(project['id'] == reusable_project['project']['id'] and project.get('deletedTime') is None,
+                'Project recovery replaced the registered post-purge root')
+        require(api.usage()['projects']['used'] == occupied,
+                'Restoring an existing root consumed an extra project slot')
         original = api.upload(project['id'], zip_path, version_key)
         current = api.replace(original, replacement_zip)
         original_hashes, current_hashes = self.preview(api, original), self.preview(api, current)
@@ -1471,7 +1499,7 @@ SELECT json_build_object(
         api.request('DELETE', path)
         api.request('DELETE', '/api/prototype-hub/projects/' + project['id'])
         require(api.usage()['projects']['used'] == occupied,
-                'Recovered fixture deletion did not release project capacity')
+                'Recovered fixture soft deletion changed retained project capacity')
         api.request('POST', path + '/_restore', expected=404)
         require(api.project(name, project_key, expected=409).get('code') ==
                 'PROTOTYPE_HUB_IDEMPOTENCY_CONFLICT', 'Deleted recovery project replay was accepted')
@@ -1489,8 +1517,8 @@ SELECT json_build_object(
         require(restored_version['id'] == original['id'] and restored_version.get('deletedTime') is None
                 and restored_version['currentRevisionId'] == current['revisionId'],
                 'Version recovery replaced its identity or immutable current pointer')
-        require(api.usage()['projects']['used'] == occupied + 1,
-                'Recovery did not consume exactly one project slot')
+        require(api.usage()['projects']['used'] == occupied,
+                'Recovery allocated a second slot for an already retained project root')
         api.request('POST', '/api/prototype-hub/projects/' + project['id'] + '/_restore', expected=409)
         api.request('POST', path + '/_restore', expected=409)
         new_share = api.request('POST', path + '/shares', {'password': self.share_password})
@@ -1573,7 +1601,7 @@ SELECT json_build_object(
             'projectCount': 1, 'versionCount': 1, 'revisionCount': 2,
             'sameIdsAndCurrentPointerVerified': True, 'parentAndChildRestoredSeparately': True,
             'oldInternalAndPublicGrantsRejected': True, 'newShareAndInternalPreviewVerified': True,
-            'originalCreationReplaysVerified': True, 'quotaReappliedWithoutReplayIncrease': True,
+            'originalCreationReplaysVerified': True, 'restoreAndReplayDoNotAllocateAnotherRootSlot': True,
             'stateAndReferenceHashesVerified': True, 'fileHashesVerified': True,
             'retainedFileCount': len(fixture['files'])}
 
@@ -1678,6 +1706,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         recreated = api.project(fixture['projectName'], fixture['projectKey'])
         require(recreated['id'] != fixture['project']['id'], 'Permanent purge revived the old project ID')
         api.request('DELETE', '/api/prototype-hub/projects/' + recreated['id'])
+        return {'project': recreated, 'projectKey': fixture['projectKey'], 'projectName': fixture['projectName']}
 
     def create_system_files(self, api):
         profile = api.request('GET', '/api/user/detail')
@@ -2085,6 +2114,170 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'allEffectivePermutationsAndExplicitContextRetained': True, 'originalImportReadsCurrentMissing': True,
             'originalSourceAndDeleteKeysRetained': True, 'originalByteCount': len(original)}
 
+    def create_usability_fixture(self, api, version_id, revision_id, page_id, review):
+        """Persist nonempty consent/submission and an explicitly cleared withdrawal through F22."""
+        path = '/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id + '/usability-studies'
+        definition = {'title': 'Original runtime study', 'introduction': 'Original private study introduction',
+            'consentText': 'I agree to this local runtime study',
+            'tasks': [{'id': 'task', 'title': 'Authored task label', 'objective': 'Private objective',
+                       'prerequisites': '', 'resetNote': '',
+                       'steps': [{'id': 'step', 'pageId': page_id, 'narration': 'Private ordinary instructions'}]}],
+            'questions': [
+                {'id': 'choice', 'prompt': 'Authored choice label', 'type': 'singleChoice', 'required': True,
+                 'options': [{'id': 'yes', 'label': 'Yes'}, {'id': 'no', 'label': 'No'}]},
+                {'id': 'rating', 'prompt': 'Authored rating label', 'type': 'rating', 'required': True, 'options': []},
+                {'id': 'text', 'prompt': 'Authored text label', 'type': 'text', 'required': True, 'options': []}],
+            'clientRequestId': uuid.uuid4().hex}
+        row = api.request('POST', path, definition)
+        update = dict(definition, title='Current runtime study', expectedVersion=row['configVersion'],
+                      clientRequestId=uuid.uuid4().hex)
+        row = api.request('PUT', path + '/' + row['id'], update)
+        opened = {'expectedVersion': row['configVersion'], 'clientRequestId': uuid.uuid4().hex}
+        row = api.request('POST', path + '/' + row['id'] + '/_open', opened)
+        require(row.get('state') == 'open' and type(row.get('contentVersion')) is int,
+                'Runtime study did not freeze an opened content version')
+        public = 'usability-studies/' + row['id']
+        participants = []
+        for visitor, withdrawn in ((review['invitations']['consumed']['identity'], False),
+                                   (review['unverified'], True)):
+            identity = self.verify_review_identity(api, visitor)
+            def call(action, payload):
+                return self.review_call(api, visitor['grant'], public + '/' + action, payload,
+                    cookie=visitor['cookie'], csrf=identity['csrfToken'])[0]
+            context = call('context', {})
+            require(context.get('participation') is None, 'Reading study context created participation without consent')
+            consent = {'contentVersion': row['contentVersion'], 'agreed': True, 'clientRequestId': uuid.uuid4().hex}
+            result = call('consent', consent)
+            own = result.get('participation')
+            require(result.get('status') == 'current' and own and own.get('status') == 'draft',
+                    'Runtime study did not store explicit own consent')
+            progress = {'contentVersion': row['contentVersion'], 'expectedVersion': own['configVersion'],
+                'clientRequestId': uuid.uuid4().hex,
+                'taskAnswers': [{'taskId': 'task', 'outcome': 'completed', 'feedback': 'Private task answer'}],
+                'answers': [{'questionId': 'choice', 'optionId': 'yes'}, {'questionId': 'rating', 'rating': 4},
+                            {'questionId': 'text', 'text': 'Private free answer'}], 'feedback': 'Private overall answer'}
+            own = call('progress', progress)['participation']
+            final = {'contentVersion': row['contentVersion'], 'expectedVersion': own['configVersion'],
+                     'clientRequestId': uuid.uuid4().hex}
+            if withdrawn:
+                result = call('withdraw', final)
+            else:
+                final.update({key: progress[key] for key in ('taskAnswers', 'answers', 'feedback')})
+                result = call('submit', final)
+            own = result['participation']
+            require(own['status'] == ('withdrawn' if withdrawn else 'submitted'),
+                    'Runtime study did not persist its final own state')
+            if withdrawn:
+                require(own['taskAnswers'] == [] and own['answers'] == [] and own['feedback'] == '',
+                        'Withdrawing runtime participation retained private answers')
+            participants.append({'visitor': visitor, 'row': own,
+                'operations': [('consent', consent), ('progress', progress),
+                               ('withdraw' if withdrawn else 'submit', final)]})
+            self.secrets_seen.update(('Private task answer', 'Private free answer', 'Private overall answer'))
+        close = {'expectedVersion': row['configVersion'], 'clientRequestId': uuid.uuid4().hex}
+        row = api.request('POST', path + '/' + row['id'] + '/_close', close)
+        require(row.get('state') == 'closed', 'Runtime collection did not close')
+        csv_bytes, _ = api.request('GET', path + '/' + row['id'] + '/summary.csv', raw=True)
+        submitted = participants[0]['row']
+        member_row = {key: submitted[key] for key in ('id', 'contentVersion', 'status', 'taskAnswers', 'answers', 'feedback')}
+        aggregate = {'submittedCount': 1,
+            'tasks': [{'title': 'Authored task label', 'completed': 1, 'notCompleted': 0, 'skipped': 0, 'missing': 0}],
+            'questions': [
+                {'prompt': 'Authored choice label', 'type': 'singleChoice', 'answered': 1, 'missing': 0,
+                 'options': [{'label': 'Yes', 'count': 1}, {'label': 'No', 'count': 0}]},
+                {'prompt': 'Authored rating label', 'type': 'rating', 'answered': 1, 'missing': 0,
+                 'options': [{'label': str(value), 'count': int(value == 4)} for value in range(1, 6)]}],
+            'excludedTextQuestionCount': 1}
+        return {'path': path, 'row': row, 'participants': participants, 'member': member_row,
+                'aggregate': aggregate, 'csv': csv_bytes,
+                'operations': [('POST', path, definition), ('PUT', path + '/' + row['id'], update),
+                    ('POST', path + '/' + row['id'] + '/_open', opened),
+                    ('POST', path + '/' + row['id'] + '/_close', close)]}
+
+    def verify_usability_fixture(self, api, fixture):
+        path, row = fixture['path'], fixture['row']
+        require(api.request('GET', path + '/' + row['id']) == row,
+                'Restored usability definition lost private text, fixed scope, state or CAS')
+        page = api.request('POST', path + '/_query', {'pageSize': 100})
+        require(page.get('total') == 1 and [item.get('id') for item in page.get('data', [])] == [row['id']],
+                'Restored usability list lost its exact study')
+        for method, target, payload in fixture['operations']:
+            require(api.request(method, target, payload) == row,
+                    'Original usability member key did not read current study state')
+        for participant in fixture['participants']:
+            visitor, own = participant['visitor'], participant['row']
+            identity = self.verify_review_identity(api, visitor)
+            public = 'usability-studies/' + row['id']
+            context, _ = self.review_call(api, visitor['grant'], public + '/context', {},
+                cookie=visitor['cookie'], csrf=identity['csrfToken'])
+            require(context.get('participation') == own and context.get('study', {}).get('state') == 'closed',
+                    'Restored usability context lost the exact own final response')
+            for action, payload in participant['operations']:
+                replay, _ = self.review_call(api, visitor['grant'], public + '/' + action, payload,
+                    cookie=visitor['cookie'], csrf=identity['csrfToken'])
+                require(replay == {'status': 'current', 'participation': own},
+                        'Original usability participant key resurrected or rewrote final answers')
+        responses = path + '/' + row['id'] + '/responses'
+        member_page = api.request('POST', responses + '/_query', {'pageSize': 100})
+        require(member_page.get('total') == 1 and member_page.get('data') == [fixture['member']],
+                'Restored member results included drafts, withdrawals, identity or changed private answers')
+        require(api.request('GET', responses + '/' + fixture['member']['id']) == fixture['member'],
+                'Restored member result lost its original private answer content')
+        for participant in fixture['participants'][1:]:
+            api.request('GET', responses + '/' + participant['row']['id'], expected=404)
+        require(api.request('GET', path + '/' + row['id'] + '/summary') == fixture['aggregate'],
+                'Restored usability aggregate changed its explicit structured counts or included text')
+        csv_bytes, headers = api.request('GET', path + '/' + row['id'] + '/summary.csv', raw=True)
+        require(csv_bytes == fixture['csv'] and 'no-store' in headers.get('Cache-Control', '') and
+                headers.get('Content-Disposition', '').startswith('attachment;') and
+                headers.get('Content-Type', '').split(';', 1)[0] == 'text/csv' and
+                headers.get('X-Content-Type-Options') == 'nosniff',
+                'Restored usability CSV changed counts or lost its private attachment boundary')
+        for secret in ('Private task answer', 'Private free answer', 'Private overall answer',
+                       *(participant['row']['id'] for participant in fixture['participants'])):
+            require(secret.encode() not in csv_bytes, 'Usability CSV disclosed a participant answer or row identity')
+        self.report['usabilityStudies'] = {'nonemptyFixedStudyAndSubmittedAnswersRetained': True,
+            'withdrawnAnswersClearedAndExcluded': True, 'originalKeysReadFinalCurrentState': True,
+            'structuredAggregateAndPrivateCsvRetained': True}
+
+    def create_revision_material_fixture(self, api, project_id, version_id, revision_id):
+        """Upload one actual private payload; a source-free ZIP upload creates no material declaration."""
+        path = '/api/prototype-hub/versions/' + version_id + '/revisions/' + revision_id + '/materials'
+        original = sample_png((25, 90, 155, 255))
+        source = {'sourceTool': 'Runtime manually declared tool', 'sourceName': 'Private runtime material source',
+                  'sourceUrl': 'https://example.invalid/material-source', 'sourceNotes': 'Private runtime source note'}
+        self.secrets_seen.update(source.values())
+        body, content_type = file_multipart('runtime-material.png', original, 'image/png', tuple(source.items()))
+        headers = {'Content-Type': content_type, 'Idempotency-Key': uuid.uuid4().hex}
+        row = api.request('POST', path, body, headers=headers)
+        require(row.get('projectId') == project_id and row.get('versionId') == version_id and
+                row.get('revisionId') == revision_id and row.get('materialType') == 'image' and
+                row.get('sha256') == hashlib.sha256(original).hexdigest() and row.get('fileSize') == len(original) and
+                row.get('mediaType') == 'image/png' and all(row.get(field) == value for field, value in source.items()),
+                'Private material upload lost its real payload, source or fixed scope')
+        return {'path': path, 'row': row, 'body': body, 'headers': headers, 'original': original}
+
+    def verify_revision_material_fixture(self, api, fixture):
+        path, row = fixture['path'], fixture['row']
+        require(api.request('GET', path + '/' + row['id']) == row,
+                'Restored private material changed its metadata, source or fixed scope')
+        page = api.request('POST', path + '/_query', {'pageSize': 100})
+        require(page.get('total') == 1 and page.get('data') == [row],
+                'Restored material list omitted or duplicated the actual upload')
+        require(api.request('POST', path, fixture['body'], headers=fixture['headers']) == row,
+                'Original material upload key did not preserve its metadata and identity')
+        content, headers = api.request('GET', path + '/' + row['id'] + '/content', raw=True)
+        require(content == fixture['original'] and len(content) == row['fileSize'] and
+                hashlib.sha256(content).hexdigest() == row['sha256'],
+                'Restored private material original bytes or hash changed')
+        require(headers.get('Content-Type', '').split(';', 1)[0] == row['mediaType'] and
+                headers.get('Content-Disposition', '').startswith('attachment;') and
+                'no-store' in headers.get('Cache-Control', '') and headers.get('X-Content-Type-Options') == 'nosniff' and
+                'sandbox' in headers.get('Content-Security-Policy', ''),
+                'Private material download lost its member attachment security boundary')
+        self.report['revisionMaterials'] = {'realPrivatePayloadAndSourceMetadataRetained': True,
+            'fixedScopeAndOriginalUploadKeyRetained': True, 'originalBytesAndPrivateAttachmentRetained': True}
+
     def create_organization_fixture(self, api, project, member):
         path = '/api/prototype-hub/projects/' + project['id']
         original = api.request('GET', path)
@@ -2272,11 +2465,16 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         rows = self.sql('runtime_source', 'select id from p_share_visit order by received_at,id;').splitlines()
         require(len(rows) == 3, 'Current fixture did not record exactly three initial visits')
         fixture['visits'] = {'path': visit_path, 'grant': grant, 'recentTicket': tickets[2],
-                              'oldId': rows[0], 'oldRestoreId': rows[1], 'recentId': rows[2]}
+                              'oldId': rows[0], 'oldRestoreId': rows[1], 'recentId': rows[2],
+                              'ticketExpiresAt': int(tickets[2].split(':', 1)[0]) + 24 * 60 * 60 * 1000}
         fixture['pageTraceability'] = self.create_page_traceability_fixture(
             api, version['id'], base['revisionId'], base['pageId'], fixture['workItem']['row'], fixture['viewportCheck']['row'])
         fixture['codeMappings'] = self.create_code_mapping_fixture(api, version['id'], base['revisionId'], base['pageId'])
         fixture['tokenPackages'] = self.create_token_package_fixture(api, project['id'], version['id'], base['revisionId'])
+        fixture['usabilityStudies'] = self.create_usability_fixture(
+            api, version['id'], base['revisionId'], base['pageId'], review)
+        fixture['revisionMaterial'] = self.create_revision_material_fixture(
+            api, project['id'], version['id'], base['revisionId'])
         self.current_restore_fixture = fixture
         return fixture
 
@@ -2288,6 +2486,8 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         self.verify_page_traceability_fixture(api, fixture['pageTraceability'])
         self.verify_code_mapping_fixture(api, fixture['codeMappings'])
         self.verify_token_package_fixture(api, fixture['tokenPackages'])
+        self.verify_usability_fixture(api, fixture['usabilityStudies'])
+        self.verify_revision_material_fixture(api, fixture['revisionMaterial'])
         work = fixture['workItem']
         require(api.request('POST', work['path'], work['payload']) == work['row'],
                 'Work item receipt replay changed identity or metadata')
@@ -2350,14 +2550,7 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
         foreign = copy['path'].replace('/revisions/' + fixture['version']['revisionId'] + '/',
                                        '/revisions/' + fixture['copyVersion']['revisionId'] + '/')
         api.request('GET', foreign, expected=404)
-        visits = fixture['visits']
-        before = self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) "
-                          'from p_share_visit v;')
-        anonymous = Api(api.origin, self.secrets_seen)
-        headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
-        anonymous.request('POST', visits['path'], {'ticket': visits['recentTicket']}, headers=headers)
-        require(self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) "
-                         'from p_share_visit v;') == before, 'A restored visit ticket was counted twice')
+        self.verify_visit_replay(api, fixture['visits'], database)
         stats = api.request('GET', '/api/prototype-hub/statistics?days=30')
         expected = int(self.sql(database, "select count(*) from p_share_visit v join p_project p on p.id=v.project_id "
                                 "join p_version n on n.id=v.version_id where p.deleted_time is null "
@@ -2373,6 +2566,19 @@ INSERT INTO p_file_cleanup(id,resource_type,project_id,version_id,storage_path,c
             'fixedCopyStates': [item['state'] for item in fixture['copy']],
             'staticManualOccurrencesAndReceiptsPreserved': True, 'readWriteAndForeignScopeChecked': True,
             'recentVisitReplayDoesNotInsert': True, 'statisticsMatchDatabase': True}
+
+    def verify_visit_replay(self, api, visits, database):
+        before = self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) from p_share_visit v;")
+        observed_at = int(time.time() * 1000)
+        unexpired = observed_at < visits['ticketExpiresAt']
+        headers = {'Origin': ('http://127.0.0.1:' + str(self.ui_port)) if self.ui_port else api.origin}
+        Api(api.origin, self.secrets_seen).request('POST', visits['path'], {'ticket': visits['recentTicket']},
+            headers=headers, expected=200 if unexpired else 403)
+        require(self.sql(database, "select md5(coalesce(jsonb_agg(to_jsonb(v) order by id)::text,'[]')) from p_share_visit v;") == before,
+                'An original visit replay or expiry rejection inserted or changed stored visits')
+        self.report['originalVisitTicketReplay'] = {'originalDeadline': visits['ticketExpiresAt'],
+            'observedAt': observed_at, 'unexpiredReplayAccepted': unexpired,
+            'naturallyExpiredRejected403': not unexpired, 'storedRowsUnchanged': True}
 
     def expire_current_rows(self, database, fixture, *, restoring=False):
         require(not self.processes, 'Cannot age current fixture while an owned writer is running')
@@ -2406,14 +2612,17 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         require(clean['integrityErrors'] == 0 and clean['referencesComplete'] and
                 clean.get('demoScriptReferencesChecked') is True and clean.get('organizationReferencesChecked') is True and
                 clean.get('pageTraceabilityReferencesChecked') is True and clean.get('codeMappingReferencesChecked') is True and
-                clean.get('tokenPackageReferencesChecked') is True,
+                clean.get('tokenPackageReferencesChecked') is True and clean.get('usabilityReferencesChecked') is True,
                 'Valid current receipt or resource scope was rejected by storage diagnostics')
         require('current_scope_errors|0' in self.sql_script(database, 'preflight-db.sql').splitlines(),
                 'Valid thread, message or association receipt was rejected by preflight')
         before = self.sql_script(database, 'snapshot-db.sql')
         require(any(line.startswith(f'business_table_coverage|{len(BUSINESS_TABLES)}|') for line in before.splitlines()),
                 'Operational snapshot omitted current business tables')
-        variables = {'token_package': fixture['tokenPackages']['row']['id'],
+        variables = {'usability_study': fixture['usabilityStudies']['row']['id'],
+                     'usability_response': fixture['usabilityStudies']['participants'][0]['row']['id'],
+                     'usability_withdrawn': fixture['usabilityStudies']['participants'][1]['row']['id'],
+                     'token_package': fixture['tokenPackages']['row']['id'],
                      'code_mapping': fixture['codeMappings']['rows'][0]['id'],
                      'trace_relation': fixture['pageTraceability']['relation']['id'],
                      'trace_context': fixture['pageTraceability']['context']['id'],
@@ -2464,7 +2673,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_demo_script SET steps=jsonb_set(steps::jsonb,'{1,id}',steps::jsonb->0->'id')::text WHERE id=:'demo';",
             "UPDATE p_demo_script SET steps='{}' WHERE id=:'demo';",
             "UPDATE p_project_tag SET project_id='missing-fixture-project' WHERE project_id=:'organization_project';",
-            "UPDATE p_project_tag SET tag_name='' WHERE project_id=:'organization_project';",
+            "UPDATE p_project_tag SET tag_name='' WHERE project_id=:'organization_project' AND id=(SELECT min(id) FROM p_project_tag WHERE project_id=:'organization_project');",
             "UPDATE p_project_favorite SET project_id='missing-fixture-project' WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
             "UPDATE p_project_favorite SET user_id='missing-fixture-user' WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
             "UPDATE p_project_favorite SET config_version=0 WHERE project_id=:'organization_project' AND user_id=:'favorite_user';",
@@ -2477,7 +2686,14 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             "UPDATE p_design_token_package SET revision_id=:'foreign_revision' WHERE id=:'token_package';",
             "UPDATE p_design_token_package SET sha256='invalid' WHERE id=:'token_package';",
             "UPDATE p_design_token_package SET file_size=1048577 WHERE id=:'token_package';",
-            "UPDATE p_design_token_package SET config_version=-1 WHERE id=:'token_package';")
+            "UPDATE p_design_token_package SET config_version=-1 WHERE id=:'token_package';",
+            "UPDATE p_usability_study SET revision_id=:'foreign_revision' WHERE id=:'usability_study';",
+            "UPDATE p_usability_study SET content_version=config_version+1 WHERE id=:'usability_study';",
+            "UPDATE p_usability_study SET tasks=jsonb_set(tasks::jsonb,'{0,steps,0,pageId}','\"missing-page\"')::text WHERE id=:'usability_study';",
+            "UPDATE p_usability_response SET project_id=:'foreign_project' WHERE id=:'usability_response';",
+            "UPDATE p_usability_response SET content_version=content_version+1 WHERE id=:'usability_response';",
+            "UPDATE p_usability_response SET answers='[]' WHERE id=:'usability_response';",
+            "UPDATE p_usability_response SET feedback='unexpected retained answer' WHERE id=:'usability_withdrawn';")
         for index, mutation in enumerate(mutations, 1):
             case = 'SQL negative case ' + str(index)
             require(self.sql_script(database, 'snapshot-db.sql', mutation, variables) != before,
@@ -2604,11 +2820,8 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             review = self.create_review_identity(api, version)
             current_graph = self.create_current_graph(api, project, version, current, member, review)
             self.verify_current_graph(api, current_graph, 'runtime_source')
-            deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
-            self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
-            recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage)
-            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
-                                         version['revisionId'])
+            # Expire this pair before allocating retained backup fixtures. Deleted
+            # roots still count; the complete run must fit the default five slots.
             expired = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage)
             review_state = self.review_rows('runtime_source')
         with self.phase('full-process-restart'):
@@ -2621,7 +2834,7 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             restart_files = storage_manifest(storage)
             api, process = self.start('runtime_source', storage, system_storage, 'restarted')
             self.verify_cleanup('runtime_source', storage, restart_files, pending_restart, expired=expired)
-            self.verify_expired_access(api, expired)
+            reusable_project = self.verify_expired_access(api, expired)
             self.report['expiredRetention'] = {
                 'retentionDays': 30, 'expiredProjectCount': 2, 'expiredVersionCount': 2,
                 'expiredRevisionCount': 3, 'expiredFileCount': len(expired['files']),
@@ -2630,9 +2843,6 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
                 'pendingCleanupSurvivedRestart': True, 'pendingFileCount': len(pending_restart['files']),
                 'unrelatedFileHashesUnchanged': True}
             self.verify_system_files(api, system_files)
-            self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
-            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
-                                         version['revisionId'])
             require(api.usage()['installationId'] == installation_id,
                     'Installation identity changed on restart')
             require(api.project('Runtime restore project', project_key)['id'] == project['id'],
@@ -2655,41 +2865,51 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
         with self.phase('two-process-final-project-slot'):
             other, second_process = self.start('runtime_source', storage, system_storage, 'second-replica')
             self.verify_system_files(other, system_files)
-            self.verify_deleted_fixture(other, deleted, zip_path, storage, 'runtime_source')
-            self.verify_restored_fixture(other, recovered, zip_path, storage, 'runtime_source',
-                                         version['revisionId'])
             require(other.usage()['installationId'] == installation_id,
                     'Replicas do not share installation identity')
             self.verify_review_fixtures(other, review, 'runtime_source')
             current_review = self.review_rows('runtime_source')
             compare_review_rows(review_state, current_review, int(time.time() * 1000))
             review_state = current_review
-            contested = api.project('Runtime contested recovery')
-            api.request('DELETE', '/api/prototype-hub/projects/' + contested['id'])
-            for index in range(4 - api.usage()['projects']['used']):
-                api.project('Runtime capacity filler ' + str(index))
+            # Reserve the empty tombstone fixture as root4. Two genuinely new
+            # creates then compete for root5 across independent JVMs. Recovery of
+            # an existing root is tested at full capacity below; it needs no slot.
+            require(api.usage()['projects']['used'] == 3,
+                    'Expired cleanup and original-key recreation did not leave three roots')
+            retained_name = 'Runtime retained project'
+            empty_key = uuid.uuid4().hex
+            empty = api.project(retained_name, empty_key)
+            require(api.usage()['projects']['used'] == 4, 'Empty fixture did not reserve exactly root4')
             barrier = Barrier(2)
+            keys = (uuid.uuid4().hex, uuid.uuid4().hex)
             def compete(candidate):
-                # Two different HTTP requests reach separate JVMs and independent transactions.
-                client, restore = candidate
+                client, request_key = candidate
                 barrier.wait(timeout=10)
-                result = (client.request('POST', '/api/prototype-hub/projects/' + contested['id'] +
-                                         '/_restore', expected=(200, 409)) if restore else
-                          client.project('Runtime contested ' + uuid.uuid4().hex, expected=(200, 409)))
+                result = client.project(retained_name, request_key, expected=(200, 409))
                 if result.get('id'):
-                    require(not restore or result['id'] == contested['id'],
-                            'Contested recovery replaced the project identity')
-                    return 200
+                    return 200, result, request_key
                 require(result.get('code') == 'PROTOTYPE_HUB_PROJECT_LIMIT_REACHED',
                         'The rejected replica did not report project capacity')
-                return 409
+                return 409, result, request_key
             with ThreadPoolExecutor(max_workers=2) as pool:
-                outcomes = list(pool.map(compete, ((api, False), (other, True))))
-            require(sorted(outcomes) == [200, 409], 'Replicas exceeded the last project slot')
-            self.report['projectCreateRestoreCompetition'] = {'replicas': 2, 'outcomes': sorted(outcomes),
-                                                               'used': 5, 'limit': 5}
+                results = list(pool.map(compete, ((api, keys[0]), (other, keys[1]))))
+            outcomes = sorted(item[0] for item in results)
+            require(outcomes == [200, 409], 'Replicas exceeded the last project slot')
+            winner = next(item for item in results if item[0] == 200)
+            self.report['projectCreateCompetition'] = {'replicas': 2, 'outcomes': outcomes,
+                                                       'used': 5, 'limit': 5}
             usage = api.usage()['projects']
             require(usage['used'] == 5 and not usage['canCreate'], 'Final project capacity differs')
+            roots = {'project': winner[1], 'projectKey': winner[2],
+                     'emptyProject': empty, 'emptyKey': empty_key}
+            deleted = self.create_deleted_fixture(api, member, zip_path, replacement_zip, storage, roots)
+            self.verify_deleted_fixture(api, deleted, zip_path, storage, 'runtime_source')
+            recovered = self.create_restored_fixture(api, zip_path, replacement_zip, storage, reusable_project)
+            self.verify_restored_fixture(api, recovered, zip_path, storage, 'runtime_source',
+                                         version['revisionId'])
+            self.verify_deleted_fixture(other, deleted, zip_path, storage, 'runtime_source')
+            self.verify_restored_fixture(other, recovered, zip_path, storage, 'runtime_source',
+                                         version['revisionId'])
         with self.phase('source-current-graph-before-backup'):
             self.verify_current_graph(api, current_graph, 'runtime_source')
             # A genuinely new OTP immediately before quiescence keeps a representative
@@ -2702,7 +2922,9 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             require(not self.processes, 'Backup attempted while an owned writer is still registered')
             self.expire_current_rows('runtime_source', current_graph, restoring=True)
             pending_restore = self.seed_pending_cleanup('runtime_source', storage, expired)
-            before_database = current_manifest(self.database_manifest('runtime_source'))
+            before_database = self.database_manifest('runtime_source')
+            self.report['businessTablesInBackup'] = {table: before_database[table] for table in BUSINESS_TABLES}
+            current_manifest(before_database)
             self.verify_sql_diagnostics('runtime_source', current_graph)
             before_sql_snapshot = self.sql_script('runtime_source', 'snapshot-db.sql')
             before_rows = self.database_rows('runtime_source')
@@ -2749,7 +2971,10 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             # Remove only this run's retired roots so a successful read cannot fall back to them.
             shutil.rmtree(storage)
             shutil.rmtree(system_storage)
-            allowed_expiry = registered_review_expiry(before_review_rows, int(time.time() * 1000))
+            registered_at = int(time.time() * 1000)
+            allowed_expiry = registered_review_deadlines(before_review_rows)
+            self.review_expiry_evidence['restored'] = {'registeredAt': registered_at,
+                'registeredOriginalDeadlines': allowed_expiry}
             restored, restored_process = self.start('runtime_restored', restored_storage,
                                                     restored_system_storage, 'restored')
             expected_restored_files = self.verify_cleanup('runtime_restored', restored_storage,
@@ -2774,16 +2999,24 @@ UPDATE p_review_event SET create_time=:'event_time'::bigint WHERE thread_id=:'th
             self.verify_share_policy(restored, retired_share, grant=retired_grant)
             self.verify_share_policy(restored, following_share, expected_preview=current_hashes)
             self.verify_review_fixtures(restored, review, 'runtime_restored')
-            self.report['reviewStartupExpiredRowsRemoved'] = compare_review_rows(
-                before_review_rows, self.review_rows('runtime_restored'), int(time.time() * 1000), allowed_expiry)
             self.verify_current_retention('runtime_restored', current_graph, before_review_rows, allowed_expiry)
+            current_review_rows = self.review_rows('runtime_restored')
+            observed_at = int(time.time() * 1000)
+            removed, expiry_details = review_expiry_observation(
+                before_review_rows, current_review_rows, registered_at, observed_at, allowed_expiry)
+            self.report['reviewStartupExpiredRowsRemoved'] = removed
+            self.report['reviewExpiryObservation'] = {'registeredAt': registered_at, 'observedAt': observed_at,
+                'removedByBoundary': {group: {table: len(values) for table, values in tables.items()}
+                    for group, tables in expiry_details.items()}, 'exactOriginalDeadlinesPreserved': True,
+                'intervalDoesNotMeasureDeletionInstant': True}
+            self.review_expiry_evidence['restored'].update(observedAt=observed_at, removedByBoundary=expiry_details)
             after_rows = self.database_rows('runtime_restored')
             expected_visits = dict(before_rows['p_share_visit'])
             require(expected_visits.pop(current_graph['visits']['oldRestoreId'], None) is not None,
                     'Restored backup omitted the registered expired visit')
             require(after_rows['p_share_visit'] == expected_visits,
                     'Visit retention changed an unregistered row or rewrote a surviving event')
-            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
+            for table in ('p_page_relation', 'p_page_trace_context', 'p_page_trace_decision', 'p_component_code_mapping', 'p_design_token_package', 'p_usability_response', 'p_usability_study', 'p_project_tag', 'p_project_favorite', 'p_review_association', 'p_copy_snapshot', 'p_copy_entry', 'p_work_item', 'p_element_description', 'p_page_delivery', 'p_revision_approval', 'p_demo_script', 'p_viewport_check', 'p_revision_material',
                           'p_creation_receipt', 'p_review_thread', 'p_review_message'):
                 require(after_rows[table] == before_rows[table], 'Startup or replay changed durable rows: ' + table)
             self.report['reviewIdentity']['survivedRestartReplicaAndRestore'] = True
@@ -3013,6 +3246,9 @@ def main(argv=None):
     # Only publish success after children, the container and the private directory are gone.
     if args.report:
         write_private(args.report, json.dumps(report, ensure_ascii=False, indent=2) + '\n')
+        if check and getattr(check, 'review_expiry_evidence', None):
+            write_private(args.report.with_suffix('.expiry.json'),
+                          json.dumps(check.review_expiry_evidence, indent=2) + '\n')
         if exit_code:
             write_private(args.report.with_suffix('.diagnostics.log'), diagnostics)
     print(json.dumps(report, ensure_ascii=False, indent=2))
