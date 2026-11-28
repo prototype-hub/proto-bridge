@@ -115,6 +115,14 @@ public class PrototypeStorageService {
                                         .getParent()));
     }
 
+    public Mono<Void> deleteTokenPackage(String project, String path) {
+        return work.run(
+                () ->
+                        SecureZipExtractor.deleteRecursively(
+                                SafePaths.designTokenPackage(properties.getRoot(), project, path)
+                                        .getParent()));
+    }
+
     public Path site(PrototypeVersionEntity version) {
         return SafePaths.storedVersion(
                         properties.getRoot(), version.getProjectId(), version.getStoragePath())

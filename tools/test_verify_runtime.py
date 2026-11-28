@@ -31,6 +31,82 @@ spec.loader.exec_module(runtime)
 
 
 class CurrentGraphVerificationTest(unittest.TestCase):
+    def test_token_package_restore_rejects_changed_scope_source_hash_missing_and_binary_boundary(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            original = b'\xef\xbb\xbf{ "n": {"$type":"number", "$value":3} }\r\n'
+            row = {'id': 'package', 'projectId': 'project', 'versionId': 'version', 'revisionId': 'revision',
+                   'sourceName': 'Current private source', 'sourceUrl': None, 'configVersion': 1,
+                   'sha256': hashlib.sha256(original).hexdigest(), 'fileSize': len(original)}
+            fixture = {'path': '/packages', 'row': row, 'body': b'original-multipart', 'original': original,
+                       'headers': {'Idempotency-Key': 'original-current'},
+                       'deletedHeaders': {'Idempotency-Key': 'original-deleted'}, 'deletedId': 'removed',
+                       'update': {'clientRequestId': 'original-source'}, 'delete': {'clientRequestId': 'original-delete'},
+                       'document': {'valid': True, 'inputs': {'density': 'compact'}},
+                       'chosen': {'valid': True, 'inputs': {'density': 'comfortable'}}}
+            current = copy.deepcopy(row)
+            missing = {'id': 'removed', 'status': 'missing', 'package': None}
+            content = original
+            headers = {'Content-Type': 'application/octet-stream', 'Content-Disposition': 'attachment; filename="tokens.json"',
+                       'Cache-Control': 'private, no-store', 'X-Content-Type-Options': 'nosniff',
+                       'Content-Security-Policy': "sandbox; default-src 'none'"}
+            api = unittest.mock.Mock()
+            def respond(method, path, payload=None, **kwargs):
+                if kwargs.get('expected') == 404: return None
+                if path.endswith('/_query'): return {'total': 1, 'data': [current]}
+                if path.endswith('/_import'):
+                    return missing if kwargs['headers'] == fixture['deletedHeaders'] else {
+                        'id': 'package', 'status': 'current', 'package': current}
+                if path.endswith('/_delete'): return True
+                if path.endswith('/_document'):
+                    return fixture['chosen'] if payload.get('inputs') else fixture['document']
+                if path.endswith('/content'): return content, headers
+                return current
+            api.request.side_effect = respond
+            check.verify_token_package_fixture(api, fixture)
+            self.assertTrue(check.report['designTokenPackages']['originalImportReadsCurrentMissing'])
+            self.assertEqual(len(original), check.report['designTokenPackages']['originalByteCount'])
+            self.assertNotIn('private', json.dumps(check.report['designTokenPackages']).lower())
+            self.assertIn(unittest.mock.call('POST', '/packages/_import', fixture['body'],
+                                            headers=fixture['headers']), api.request.call_args_list)
+            for field, value in [('sha256', 'b' * 64), ('sourceName', 'Changed'), ('revisionId', 'foreign')]:
+                current[field] = value
+                with self.subTest(field=field), self.assertRaisesRegex(runtime.VerificationFailure, 'hash, source, fixed scope'):
+                    check.verify_token_package_fixture(api, fixture)
+                current = copy.deepcopy(row)
+            current = None
+            with self.assertRaises(runtime.VerificationFailure):
+                check.verify_token_package_fixture(api, fixture)
+            current = copy.deepcopy(row)
+            missing = {'id': 'removed', 'status': 'current', 'package': row}
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'retain its missing result'):
+                check.verify_token_package_fixture(api, fixture)
+            missing = {'id': 'removed', 'status': 'missing', 'package': None}
+            content = original + b' '
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'original bytes or hash changed'):
+                check.verify_token_package_fixture(api, fixture)
+            content = original
+            headers['Content-Type'] = 'application/json'
+            with self.assertRaisesRegex(runtime.VerificationFailure, 'envelope-free binary'):
+                check.verify_token_package_fixture(api, fixture)
+
+    def test_shared_current_graph_verification_runs_token_package_readback(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
+            check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
+            fixture = {name: object() for name in ('approval', 'demoScripts', 'organization', 'pageTraceability',
+                                                  'codeMappings', 'tokenPackages')}
+            with contextlib.ExitStack() as stack:
+                for name in ('approval', 'demo_script', 'organization', 'page_traceability', 'code_mapping'):
+                    stack.enter_context(patch.object(check, 'verify_' + name + '_fixture'))
+                tokens = stack.enter_context(patch.object(check, 'verify_token_package_fixture',
+                                                          side_effect=RuntimeError('token-readback-reached')))
+                api = unittest.mock.Mock()
+                with self.assertRaisesRegex(RuntimeError, 'token-readback-reached'):
+                    check.verify_current_graph(api, fixture, 'owned')
+                tokens.assert_called_once_with(api, fixture['tokenPackages'])
+
     def test_code_mapping_restore_checks_private_text_sources_and_exact_deleted_batch(self):
         with tempfile.TemporaryDirectory() as temporary:
             jar = Path(temporary) / 'fixture.jar'; jar.write_bytes(b'not executed')
@@ -312,13 +388,14 @@ class CurrentGraphVerificationTest(unittest.TestCase):
 
     def test_current_coverage_fails_for_missing_extra_empty_or_corrupt_business_table(self):
         manifest = {table: {'count': 1, 'contentMd5': 'a' * 32} for table in runtime.TABLES}
-        self.assertEqual(35, len(runtime.BUSINESS_TABLES))
+        self.assertEqual(36, len(runtime.BUSINESS_TABLES))
         self.assertIn('p_project_tag', runtime.BUSINESS_TABLES)
         self.assertIn('p_project_favorite', runtime.BUSINESS_TABLES)
         self.assertIn('p_page_delivery', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_approval', runtime.BUSINESS_TABLES)
         self.assertIn('p_demo_script', runtime.BUSINESS_TABLES)
         self.assertIn('p_component_code_mapping', runtime.BUSINESS_TABLES)
+        self.assertIn('p_design_token_package', runtime.BUSINESS_TABLES)
         self.assertIn('p_element_description', runtime.BUSINESS_TABLES)
         self.assertIn('p_viewport_check', runtime.BUSINESS_TABLES)
         self.assertIn('p_revision_material', runtime.BUSINESS_TABLES)
@@ -388,7 +465,8 @@ class CurrentGraphVerificationTest(unittest.TestCase):
             jar = Path(temporary) / 'fixture.jar'
             jar.write_bytes(b'not executed')
             check = runtime.RuntimeCheck(argparse.Namespace(jar=jar, postgres_image='unused'), Path(temporary))
-            fixture = {'codeMappings': {'rows': [{'id': 'code-card'}]}, 'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
+            fixture = {'tokenPackages': {'row': {'id': 'token-package'}},
+                       'codeMappings': {'rows': [{'id': 'code-card'}]}, 'pageTraceability': {'relation': {'id': 'edge'}, 'context': {'id': 'context'}, 'decision': {'id': 'decision'}},
                        'associations': {'active': {'id': 'association', 'targetGuestId': 'target'}},
                        'project': {'id': 'organization-project'}, 'organization': {'member': {'id': 'reader'}},
                        'demoScripts': {'shared': {'id': 'demo'}},
@@ -411,11 +489,11 @@ class CurrentGraphVerificationTest(unittest.TestCase):
                     return json.dumps({'integrityErrors': int(bool(mutation) and not invalidation),
                                        'referencesComplete': True, 'demoScriptReferencesChecked': True,
                                        'organizationReferencesChecked': True, 'pageTraceabilityReferencesChecked': True,
-                                       'codeMappingReferencesChecked': True})
+                                       'codeMappingReferencesChecked': True, 'tokenPackageReferencesChecked': True})
                 return 'current_scope_errors|' + str(int(bool(mutation) and not invalidation))
             with patch.object(check, 'sql_script', side_effect=script):
                 check.verify_sql_diagnostics('owned', fixture)
-            self.assertEqual(35, check.report['operationalSql']['crossScopeNegativeCases'])
+            self.assertEqual(40, check.report['operationalSql']['crossScopeNegativeCases'])
             with patch.object(check, 'sql_script', side_effect=lambda *args: script(*args, zero_reply=True)):
                 with self.assertRaisesRegex(runtime.VerificationFailure, 'SQL negative case 10 did not change'):
                     check.verify_sql_diagnostics('owned', fixture)

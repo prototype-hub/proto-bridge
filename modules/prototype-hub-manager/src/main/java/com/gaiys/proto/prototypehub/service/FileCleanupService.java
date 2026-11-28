@@ -1,6 +1,7 @@
 package com.gaiys.proto.prototypehub.service;
 
 import com.gaiys.proto.prototypehub.entity.FileCleanupEntity;
+import com.gaiys.proto.prototypehub.entity.PrototypeDesignTokenPackageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeReviewMessageEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionEntity;
 import com.gaiys.proto.prototypehub.entity.PrototypeRevisionMaterialEntity;
@@ -28,6 +29,7 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
     private final ReactiveRepository<PrototypeReviewMessageEntity, String> messages;
 
     private final ReactiveRepository<PrototypeRevisionMaterialEntity, String> materials;
+    private final ReactiveRepository<PrototypeDesignTokenPackageEntity, String> tokenPackages;
 
     /** 只登记已确认未提交归属的上传候选；保留期内的业务删除不得调用文件清理。 */
     public Mono<FileCleanupEntity> enqueueCandidate(String project, String version, String path) {
@@ -105,6 +107,27 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
                 .then();
     }
 
+    /** 独立规范包引用不能交给只检查资料表的清理分支。 */
+    public Mono<Void> enqueueTokenPackage(String project, String version, String path) {
+        String canonical = SafePaths.canonicalDesignTokenPackagePath(project, path);
+        FileCleanupEntity task = new FileCleanupEntity();
+        task.setId(
+                HexFormat.of()
+                        .formatHex(
+                                PrototypeCreationReceiptService.sha256()
+                                        .digest(canonical.getBytes(StandardCharsets.UTF_8))));
+        task.setProjectId(SafePaths.id(project));
+        task.setVersionId(SafePaths.id(version));
+        task.setResourceType("token-package");
+        task.setStoragePath(canonical);
+        task.setCreateTime(System.currentTimeMillis());
+        task.setNextAttempt(0L);
+        task.setAttempts(0);
+        return findById(task.getId())
+                .switchIfEmpty(Mono.defer(() -> insert(task).thenReturn(task)))
+                .then();
+    }
+
     /** 软删行仍是保留引用；不使用业务侧的活动查询。 */
     private Mono<Boolean> referenced(FileCleanupEntity task) {
         Path target = Path.of(task.getStoragePath());
@@ -140,6 +163,25 @@ public class FileCleanupService extends GenericReactiveCrudService<FileCleanupEn
         Mono<Void> deletion =
                 Mono.defer(
                         () -> {
+                            if ("token-package".equals(task.getResourceType())) {
+                                SafePaths.canonicalDesignTokenPackagePath(
+                                        task.getProjectId(), task.getStoragePath());
+                                return tokenPackages
+                                        .createQuery()
+                                        .where(
+                                                PrototypeDesignTokenPackageEntity::getStoragePath,
+                                                task.getStoragePath())
+                                        .count()
+                                        .flatMap(
+                                                count ->
+                                                        count > 0
+                                                                ? Mono.error(
+                                                                        new IllegalStateException(
+                                                                                "Referenced design token package"))
+                                                                : storage.deleteTokenPackage(
+                                                                        task.getProjectId(),
+                                                                        task.getStoragePath()));
+                            }
                             if ("material".equals(task.getResourceType())) {
                                 SafePaths.canonicalMaterialPath(
                                         task.getProjectId(), task.getStoragePath());

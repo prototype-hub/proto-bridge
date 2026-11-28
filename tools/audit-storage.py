@@ -28,7 +28,10 @@ def main():
                 and manifest.get('format') == 'prototype-hub-storage-references'
                 and ((manifest.get('formatVersion') == 3 and manifest.get('sourceSchema') == 'immutable-revisions-review-images-v1')
                      or (manifest.get('formatVersion') == 4 and manifest.get('sourceSchema') == 'immutable-revisions-materials-v1'
-                         and manifest.get('materialReferencesChecked') is True))
+                         and manifest.get('materialReferencesChecked') is True)
+                     or (manifest.get('formatVersion') == 5 and manifest.get('sourceSchema') == 'immutable-revisions-token-packages-v1'
+                         and manifest.get('materialReferencesChecked') is True
+                         and manifest.get('tokenPackageReferencesChecked') is True))
                 and manifest.get('imageReferencesChecked') is True
                 and manifest.get('referencesComplete') is True
                 and manifest.get('receiptReferencesChecked') is True
@@ -40,19 +43,28 @@ def main():
     image_rows = manifest.get('imageEntries', []) if isinstance(manifest, dict) else []
     if not isinstance(image_rows, list):
         parser.error('Image reference entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4) and 'imageEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5) and 'imageEntries' not in manifest:
         parser.error('Version 3 requires image reference entries')
-    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4)
+    images_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (3, 4, 5)
                       and manifest.get('imageReferencesChecked') is True)
     material_rows = manifest.get('materialEntries', []) if isinstance(manifest, dict) else []
-    materials_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 4
+    materials_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5)
                          and manifest.get('materialReferencesChecked') is True)
     if not isinstance(material_rows, list):
         parser.error('Material reference entries must be an array')
-    if isinstance(manifest, dict) and manifest.get('formatVersion') == 4 and 'materialEntries' not in manifest:
+    if isinstance(manifest, dict) and manifest.get('formatVersion') in (4, 5) and 'materialEntries' not in manifest:
         parser.error('Version 4 requires material reference entries')
     if args.delete_unreferenced and not materials_checked and any((root / 'projects').glob('*/materials/*')):
         parser.error('Private material directories require a complete version 4 material reference export')
+    token_rows = manifest.get('tokenPackageEntries', []) if isinstance(manifest, dict) else []
+    tokens_checked = (isinstance(manifest, dict) and manifest.get('formatVersion') == 5
+                      and manifest.get('tokenPackageReferencesChecked') is True)
+    if not isinstance(token_rows, list):
+        parser.error('Token package entries must be an array')
+    if isinstance(manifest, dict) and manifest.get('formatVersion') == 5 and 'tokenPackageEntries' not in manifest:
+        parser.error('Version 5 requires token package reference entries')
+    if args.delete_unreferenced and not tokens_checked and any((root / 'projects').glob('*/design-token-packages/*')):
+        parser.error('Token package directories require a complete version 5 token package reference export')
     if args.delete_unreferenced:
         # Legacy exports cannot prove that a private image directory is unreferenced.
         if not complete:
@@ -170,6 +182,37 @@ def main():
                     checksum.update(block)
             if checksum.hexdigest() != digest:
                 findings.append(dict(kind='material-hash-mismatch', **identity))
+    referenced_tokens = set()
+    token_ids = set()
+    for row in token_rows:
+        if not isinstance(row, dict):
+            parser.error('Invalid token package reference entry')
+        project, version, revision, package, storage = (row.get(key) for key in
+            ('projectId', 'versionId', 'revisionId', 'packageId', 'storagePath'))
+        if any(not isinstance(value, str) or not re.fullmatch('[A-Za-z0-9_-]{1,128}', value)
+               for value in (project, version, revision, package)) or package in token_ids:
+            parser.error('Invalid or duplicate token package identity')
+        token_ids.add(package)
+        size, digest = row.get('size'), row.get('sha256')
+        if (type(size) is not int or not 1 <= size <= 1048576 or not isinstance(digest, str)
+                or not re.fullmatch('[a-f0-9]{64}', digest)):
+            parser.error('Invalid token package size or checksum')
+        if (not isinstance(storage, str) or not re.fullmatch(
+                r'projects/' + re.escape(project) + r'/design-token-packages/[A-Za-z0-9_-]{1,128}/content', storage)):
+            parser.error('Invalid token package storage boundary')
+        path = root / storage
+        if any(part.is_symlink() for part in (path, path.parent, path.parent.parent, path.parent.parent.parent)):
+            parser.error('Symlink in token package storage boundary')
+        if path.parent in referenced_tokens:
+            parser.error('Duplicate token package payload reference')
+        referenced_tokens.add(path.parent)
+        identity = {'projectId': project, 'versionId': version, 'revisionId': revision, 'packageId': package}
+        if not path.is_file():
+            findings.append(dict(kind='missing-token-package', **identity))
+        elif path.stat().st_size != size:
+            findings.append(dict(kind='token-package-size-mismatch', **identity))
+        elif hashlib.sha256(path.read_bytes()).hexdigest() != digest:
+            findings.append(dict(kind='token-package-hash-mismatch', **identity))
     unreferenced = []
     for version in sorted((root / 'projects').glob('*/versions/*')):
         if any(part.is_symlink() for part in
@@ -204,10 +247,21 @@ def main():
                 unreferenced.append(material)
             findings.append({'kind': 'unreferenced-directory' if materials_checked else 'unchecked-material-directory',
                              'path': str(material.relative_to(root))})
+    for package in sorted((root / 'projects').glob('*/design-token-packages/*')):
+        if any(part.is_symlink() for part in (package, package.parent, package.parent.parent, package.parent.parent.parent)):
+            findings.append({'kind': 'symlink', 'path': str(package.relative_to(root))})
+            continue
+        if not package.is_dir() or not re.fullmatch('[A-Za-z0-9_-]{1,128}', package.name):
+            findings.append({'kind': 'invalid-token-package-directory', 'path': str(package.relative_to(root))})
+        elif package not in referenced_tokens:
+            if tokens_checked:
+                unreferenced.append(package)
+            findings.append({'kind': 'unreferenced-directory' if tokens_checked else 'unchecked-token-package-directory',
+                             'path': str(package.relative_to(root))})
     print(json.dumps(findings, ensure_ascii=False, indent=2))
     # A broken snapshot cannot authorize any repair, even of an apparently orphaned
     # directory. Scan every reference first so failure never leaves partial repair.
-    if any(finding['kind'] not in ('unreferenced-directory', 'unchecked-image-directory', 'unchecked-material-directory')
+    if any(finding['kind'] not in ('unreferenced-directory', 'unchecked-image-directory', 'unchecked-material-directory', 'unchecked-token-package-directory')
            for finding in findings):
         return 1
     if args.delete_unreferenced:
